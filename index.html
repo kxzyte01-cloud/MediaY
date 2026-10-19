@@ -19,36 +19,46 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><span class="brand-icon">Y</span>ProjectMedia Y</div>
+    <div class="brand"><span class="brand-icon">Y</span><span class="brand-text">ProjectMedia Y</span></div>
     <select id="aspectRatio" aria-label="Aspect ratio">
       <option value="9:16">9:16</option><option value="16:9">16:9</option><option value="1:1">1:1</option>
     </select>
+    <button id="tplBtn">Templates</button>
     <button id="saveBtn">Save</button>
     <button id="exportBtn" class="primary">Export</button>
   </header>
 
   <main>
     <div class="stage">
+      <div id="emptyState">
+        <div class="empty-logo">Y</div>
+        <h1>What are you making?</h1>
+        <div id="ratioPick" class="ratios">
+          <button data-r="16:9"><b>▭</b>YouTube<small>wide 16:9</small></button>
+          <button data-r="9:16"><b>▯</b>Shorts &amp; Reels<small>tall 9:16</small></button>
+          <button data-r="1:1"><b>□</b>Square<small>1:1</small></button>
+        </div>
+        <label for="mediaInput" class="primary import-label">Import media</label>
+        <small class="muted">You can pick several videos at once.</small>
+        <button id="tplStart" class="wide-btn">Use my template</button>
+        <a href="./legal.html">Terms, privacy &amp; licenses</a>
+      </div>
       <div id="previewFrame" class="preview-frame">
         <video id="sourceVideo" playsinline preload="metadata"></video>
         <canvas id="overlayCanvas"></canvas>
-        <div id="emptyState">
-          <div class="empty-logo">Y</div>
-          <h1>Start a new video</h1>
-          <p>Pick clips, photos or music from your phone.</p>
-          <label for="mediaInput" class="primary import-label">Import media</label>
-          <a href="./legal.html">Terms, privacy &amp; licenses</a>
-        </div>
+        
       </div>
     </div>
+    <input id="tplInput" type="file" accept="video/*" multiple hidden>
     <input id="mediaInput" type="file" accept="video/*,image/*,audio/*" multiple hidden>
     <p id="status" role="status">Ready to create.</p>
 
     <section class="transport">
-      <button id="playBtn" class="play-button" aria-label="Play">▶</button>
+      <div class="nav"><button id="toStart" aria-label="Go to start">⏮</button><button id="playBtn" class="play-button" aria-label="Play">▶</button><button id="toEnd" aria-label="Go to end">⏭</button></div>
       <span id="timeDisplay">00:00 / 00:00</span>
       <div class="history"><button id="undoBtn" aria-label="Undo">↶</button><button id="redoBtn" aria-label="Redo">↷</button></div>
     </section>
+    <div id="tipBar" class="tip"><span id="tip"></span><button id="tipOff">Got it</button></div>
     <section class="timeline">
       <div id="tl"><div class="pad"></div><div id="tlInner"></div><div class="pad"></div></div>
       <i class="cursor"></i>
@@ -58,12 +68,26 @@
   </main>
 
   <div id="sheet" class="sheet" hidden>
-    <div class="sheet-head"><span data-pane="fx">Filters</span><span data-pane="text" hidden>Text</span><span data-pane="export" hidden>Export</span><span data-pane="speed" hidden>Speed</span><span data-pane="vol" hidden>Volume</span><span data-pane="tr" hidden>Transition</span><button id="sheetClose" aria-label="Close">✕</button></div>
+    <div class="sheet-head"><span data-pane="fx">Filters</span><span data-pane="text" hidden>Text</span><span data-pane="export" hidden>Export</span><span data-pane="speed" hidden>Speed</span><span data-pane="vol" hidden>Volume</span><span data-pane="tr" hidden>Transition</span><span data-pane="cap" hidden>Auto captions</span><span data-pane="tpl" hidden>Templates</span><button id="sheetClose" aria-label="Close">✕</button></div>
     <div data-pane="fx"><div id="fxList" class="chips"></div></div>
     <div data-pane="export" hidden>
-      <p class="lbl">Resolution (higher is slower on phones)</p><div id="resList" class="pills"></div>
+      <p class="lbl">Quality: 1080p is best for YouTube but exports slower on phones</p><div id="resList" class="pills"></div>
       <p class="lbl">Frames per second</p><div id="fpsList" class="pills"></div>
       <button id="goExport" class="primary wide">Export video</button>
+    </div>
+    <div data-pane="tpl" hidden>
+      <div id="tplList"></div>
+      <p class="lbl">Save this project as a template</p>
+      <input id="tplName" type="text" maxlength="40" placeholder="Template name, e.g. Evening News">
+      <p class="lbl">Which clip is the news video? It is swapped each time you use the template.</p>
+      <select id="tplSlot" aria-label="News video clip"></select>
+      <button id="tplSave" class="primary wide">Save template</button>
+    </div>
+    <div data-pane="cap" hidden>
+      <select id="capLang" aria-label="Spoken language"></select>
+      <label class="chk"><input type="checkbox" id="capTr"> Translate speech to English</label>
+      <button id="capGo" class="primary wide">Generate captions</button>
+      <p class="lbl">Works on the selected clip and runs on your phone. The speech model (about 40 MB) downloads once. Accuracy is best for English; other languages can be rough.</p>
     </div>
     <div data-pane="tr" hidden>
       <div id="trList" class="pills"></div>
@@ -85,18 +109,26 @@
     </div>
   </div>
 
-  <nav class="dock" aria-label="Editing tools">
+  <nav id="dockMain" class="dock" aria-label="Add to your video">
     <button id="importBtn"><i data-lucide="image-plus"></i>Media</button>
     <button id="audioBtn"><i data-lucide="music"></i>Audio</button>
-    <button id="volBtn" data-sheet="vol"><i data-lucide="volume-2"></i>Volume</button>
-    <button id="splitBtn"><i data-lucide="scissors"></i>Split</button>
-        <button id="speedBtn" data-sheet="speed"><i data-lucide="gauge"></i>Speed</button>
-    <button id="fxBtn" data-sheet="fx"><i data-lucide="sparkles"></i>Filters</button>
-    <button id="trBtn" data-sheet="tr"><i data-lucide="arrow-left-right"></i>Transition</button>
-    <button id="fadeBtn"><i data-lucide="blend"></i>Fade</button>
+    <button id="voiceBtn"><i data-lucide="mic"></i>Voice</button>
     <button id="textBtn" data-sheet="text"><i data-lucide="type"></i>Text</button>
-    <button id="pipBtn"><i data-lucide="picture-in-picture-2"></i>Overlay</button>
-    <button id="deleteBtn"><i data-lucide="trash-2"></i>Delete</button>
+    <button id="capBtn" data-sheet="cap"><i data-lucide="captions"></i>Captions</button>
+    <button id="pipBtn"><i data-lucide="layers"></i>Overlay</button>
+  </nav>
+  <nav id="dockEdit" class="dock" aria-label="Edit the selected clip" hidden>
+    <button id="doneBtn"><i data-lucide="check"></i>Done</button>
+    <button id="splitBtn" data-for="main"><i data-lucide="scissors"></i>Split</button>
+    <button id="speedBtn" data-sheet="speed" data-for="main"><i data-lucide="gauge"></i>Speed</button>
+    <button id="volBtn" data-sheet="vol" data-for="main audio"><i data-lucide="volume-2"></i>Volume</button>
+    <button id="fxBtn" data-sheet="fx" data-for="main"><i data-lucide="sparkles"></i>Filters</button>
+    <button id="fadeBtn" data-for="main audio"><i data-lucide="blend"></i>Fade</button>
+    <button id="trBtn" data-sheet="tr" data-for="main"><i data-lucide="arrow-left-right"></i>Transition</button>
+    <button id="styleBtn" data-sheet="text" data-for="overlay"><i data-lucide="type"></i>Edit text</button>
+    <button id="fitBtn" data-for="overlay audio"><i data-lucide="move-horizontal"></i>Whole video</button>
+    <button id="replBtn" data-for="overlay"><i data-lucide="replace"></i>Replace</button>
+    <button id="deleteBtn" data-for="main audio overlay"><i data-lucide="trash-2"></i>Delete</button>
   </nav>
 
   <dialog id="consentDialog" aria-labelledby="consentTitle">

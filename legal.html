@@ -41,9 +41,9 @@
   <h3>What stays on your device</h3>
   <p>Media you choose and your project data are saved in your browser’s local storage (IndexedDB) on your device. They are never uploaded to the developer. Exporting happens on your device. The app only reads files you pick yourself.</p>
   <h3>What the app does not collect</h3>
-  <p>The developer does not collect your name, email, location, contacts, advertising ID or usage statistics.</p>
+  <p>The developer does not collect your name, email, location, contacts, advertising ID or usage statistics. The microphone is used only while you record a voice-over; the recording is saved on your device and is not uploaded. Templates you save also stay on your device.</p>
   <h3>Third-party services that see your IP address</h3>
-  <p>To start, the app downloads code and fonts from public content delivery networks: cdnjs.cloudflare.com, unpkg.com, cdn.jsdelivr.net, fonts.googleapis.com and fonts.gstatic.com. The web version is also hosted on GitHub Pages. These providers can see your IP address and basic device information when your device requests files, under their own privacy policies.</p>
+  <p>To start, the app downloads code and fonts from public content delivery networks: cdnjs.cloudflare.com, unpkg.com, cdn.jsdelivr.net, fonts.googleapis.com and fonts.gstatic.com. If you use Auto captions, the app also downloads a speech model once from huggingface.co and its content network; your audio is processed on your device and is not uploaded. The web version is also hosted on GitHub Pages. These providers can see your IP address and basic device information when your device requests files, under their own privacy policies.</p>
   <h3>Deleting your data</h3>
   <p>Clear the site data for this app in your browser, or uninstall the Android app, to remove saved projects and media.</p>
   <h3>Children</h3>
@@ -62,6 +62,8 @@
     <tr><td>Lucide icons</td><td>ISC</td></tr>
     <tr><td>FFmpeg.wasm wrapper (@ffmpeg/ffmpeg, @ffmpeg/util)</td><td>MIT</td></tr>
     <tr><td>FFmpeg.wasm core (@ffmpeg/core), loaded when you export</td><td>FFmpeg and its libraries, including x264, under GPL version 2 or later. Source: <a href="https://ffmpeg.org/download.html">ffmpeg.org</a> and <a href="https://github.com/ffmpegwasm/ffmpeg.wasm-core">ffmpeg.wasm-core</a></td></tr>
+    <tr><td>Transformers.js (@xenova/transformers) and ONNX Runtime Web, used for Auto captions</td><td>Apache License 2.0 and MIT</td></tr>
+    <tr><td>Whisper speech model (OpenAI), ONNX conversion by Xenova</td><td>MIT</td></tr>
     <tr><td>DM Sans font</td><td>SIL Open Font License 1.1</td></tr>
     <tr><td>Capacitor (Android app wrapper)</td><td>MIT</td></tr>
   </table>
