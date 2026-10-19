@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f01925">
+  <meta name="description" content="ProjectMedia Y — mobile video editing">
+  <title>ProjectMedia Y</title>
+  <link rel="manifest" href="./manifest.json">
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <link rel="stylesheet" href="./style.css">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.2/anime.min.js"></script>
+  <script src="https://unpkg.com/dexie@3.2.7/dist/dexie.min.js"></script>
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-icon">Y</span>
+      <span>ProjectMedia <b>Y</b></span>
+    </div>
+    <button id="saveBtn" class="secondary">Save</button>
+    <button id="exportBtn" class="primary">Export</button>
+  </header>
+
+  <main>
+    <section class="preview-section">
+      <div class="section-heading">
+        <span>PREVIEW</span>
+        <select id="aspectRatio" aria-label="Preview aspect ratio">
+          <option value="9:16">9:16</option>
+          <option value="16:9">16:9</option>
+          <option value="1:1">1:1</option>
+        </select>
+      </div>
+
+      <div id="previewFrame" class="preview-frame">
+        <video id="sourceVideo" playsinline preload="metadata"></video>
+        <canvas id="overlayCanvas"></canvas>
+        <div id="emptyState">
+          <div class="empty-logo">Y</div>
+          <p>Your video appears here</p>
+          <label for="mediaInput" class="primary import-label">＋ Import media</label>
+        </div>
+      </div>
+
+      <input id="mediaInput" type="file" accept="video/*,image/*,audio/*" multiple hidden>
+      <input id="textInput" type="text" maxlength="200" placeholder="Enter caption" hidden>
+      <p id="status" role="status">Ready to create.</p>
+    </section>
+
+    <section class="controls">
+      <button id="undoBtn" aria-label="Undo">↶</button>
+      <button id="playBtn" class="play-button" aria-label="Play">▶</button>
+      <button id="redoBtn" aria-label="Redo">↷</button>
+      <span id="timeDisplay">00:00 / 00:00</span>
+    </section>
+
+    <section class="tools">
+      <button id="importBtn">＋ Media</button>
+      <button id="splitBtn">✂ Split</button>
+      <button id="trimBtn">Trim</button>
+      <button id="textBtn">T Text</button>
+      <button id="pipBtn">▣ PiP</button>
+      <button id="deleteBtn">Delete</button>
+    </section>
+
+    <section class="timeline-section">
+      <div class="section-heading">
+        <span>TIMELINE</span>
+        <button id="addTrackBtn">＋ Track</button>
+      </div>
+      <div class="timeline-ruler" id="timelineRuler">
+        <span>00:00</span><span>00:05</span><span>00:10</span><span>00:15</span>
+      </div>
+      <div id="timelineTracks">
+        <div class="track">
+          <span class="track-name">VIDEO</span>
+          <div class="track-lane" id="videoLane">
+            <span class="empty-track">Import a video to begin</span>
+          </div>
+        </div>
+        <div class="track">
+          <span class="track-name">OVERLAY</span>
+          <div class="track-lane" id="overlayLane"></div>
+        </div>
+        <div class="track">
+          <span class="track-name">AUDIO</span>
+          <div class="track-lane" id="audioLane"></div>
+        </div>
+      </div>
+      <input id="playhead" type="range" min="0" max="1000" value="0" aria-label="Timeline position">
+    </section>
+  </main>
+
+  <footer>ProjectMedia Y <span>• Your projects, on your device</span><br><a href="./legal.html">Terms, privacy &amp; licenses</a></footer>
+
+  <dialog id="consentDialog" aria-labelledby="consentTitle">
+    <h2 id="consentTitle">Before you start</h2>
+    <ul>
+      <li>Only edit photos, videos, music and fonts you own or have permission to use.</li>
+      <li>Your media and projects stay on this device. Nothing is uploaded.</li>
+      <li>The app is provided “as is”, without warranty. Keep a copy of videos you export.</li>
+    </ul>
+    <p><a href="./legal.html">Read the terms, privacy policy and licenses</a></p>
+    <button id="consentBtn" class="primary">I agree and continue</button>
+  </dialog>
+
+  <script src="./app.js"></script>
+</body>
+</html>

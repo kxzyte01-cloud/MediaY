@@ -1,0 +1,123 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Create icons if they are missing
+        run: |
+          pip install pillow
+          python3 - <<'PY'
+          import os
+          from PIL import Image, ImageDraw
+          red = (240, 25, 37, 255)
+          white = (255, 255, 255, 255)
+          pts = [(105, 100), (205, 100), (256, 205), (307, 100), (407, 100),
+                 (286, 300), (286, 412), (226, 412), (226, 300)]
+          def make(name, size, pad, rounded):
+              if os.path.exists(name):
+                  return
+              img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+              d = ImageDraw.Draw(img)
+              if rounded:
+                  d.rounded_rectangle([0, 0, size - 1, size - 1],
+                                      radius=size * 0.2, fill=red)
+              else:
+                  d.rectangle([0, 0, size, size], fill=red)
+              k = size * (1 - 2 * pad) / 512.0
+              o = size * pad
+              d.polygon([(o + x * k, o + y * k) for x, y in pts], fill=white)
+              img.save(name)
+          make('icon-192.png', 192, 0.0, True)
+          make('icon-512.png', 512, 0.0, True)
+          make('icon-maskable-512.png', 512, 0.12, False)
+          PY
+
+      - name: Copy web files
+        run: |
+          mkdir -p www
+          cp index.html style.css app.js manifest.json sw.js www/
+          cp favicon.svg icon-192.png icon-512.png www/
+          cp icon-maskable-512.png legal.html www/
+
+      - name: Create Android project
+        run: |
+          npm init -y
+          npm i @capacitor/core@6 @capacitor/cli@6
+          npm i @capacitor/android@6
+          npm i @capacitor/filesystem@6 @capacitor/share@6
+          npx cap init "ProjectMedia Y" com.projectmediay.app --web-dir www
+          npx cap add android
+          npx cap sync android
+
+      - name: Set red Y app icon and splash
+        run: |
+          pip install pillow
+          python3 - <<'PY'
+          import glob, os
+          from PIL import Image
+          res = 'android/app/src/main/res'
+          for p in glob.glob(res + '/mipmap-*/ic_launcher*.png'):
+              fg = 'foreground' in os.path.basename(p)
+              src = 'icon-maskable-512.png' if fg else 'icon-512.png'
+              size = Image.open(p).size
+              img = Image.open(src).convert('RGBA')
+              img.resize(size, Image.LANCZOS).save(p)
+          for p in glob.glob(res + '/drawable*/splash.png'):
+              w, h = Image.open(p).size
+              img = Image.new('RGBA', (w, h), (240, 25, 37, 255))
+              s = int(min(w, h) * 0.4)
+              logo = Image.open('icon-512.png').convert('RGBA')
+              logo = logo.resize((s, s), Image.LANCZOS)
+              img.paste(logo, ((w - s) // 2, (h - s) // 2), logo)
+              img.save(p)
+          PY
+          f=android/app/src/main/res/values/ic_launcher_background.xml
+          sed -i 's/#FFFFFF/#F01925/I' "$f" || true
+
+      - name: Prepare Android SDK
+        run: |
+          SM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SM" --licenses > /dev/null || true
+          "$SM" "platforms;android-34" "build-tools;34.0.0" || true
+
+      - name: Build debug APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Rename APK
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk ProjectMedia-Y.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ProjectMedia-Y-apk
+          path: ProjectMedia-Y.apk
+
+      - name: Publish download link
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-${{ github.run_number }}
+          name: ProjectMedia Y APK ${{ github.run_number }}
+          files: ProjectMedia-Y.apk
