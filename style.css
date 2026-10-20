@@ -143,3 +143,5 @@ dialog button { width:100%; margin-top:8px; }
 .wide-btn { width:100%; max-width:420px; min-height:46px; }
 .muted { color:var(--muted); }
 @media (max-width:440px) { .brand-text { display:none; } }
+
+#tl.picking .clip { outline:2px dashed var(--red); outline-offset:1px; }

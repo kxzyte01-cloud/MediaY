@@ -50,6 +50,7 @@
       </div>
     </div>
     <input id="tplInput" type="file" accept="video/*" multiple hidden>
+    <input id="repInput" type="file" hidden>
     <input id="mediaInput" type="file" accept="video/*,image/*,audio/*" multiple hidden>
     <p id="status" role="status">Ready to create.</p>
 
@@ -111,6 +112,7 @@
 
   <nav id="dockMain" class="dock" aria-label="Add to your video">
     <button id="importBtn"><i data-lucide="image-plus"></i>Media</button>
+    <button id="repMain"><i data-lucide="replace"></i>Replace</button>
     <button id="audioBtn"><i data-lucide="music"></i>Audio</button>
     <button id="voiceBtn"><i data-lucide="mic"></i>Voice</button>
     <button id="textBtn" data-sheet="text"><i data-lucide="type"></i>Text</button>
@@ -127,7 +129,7 @@
     <button id="trBtn" data-sheet="tr" data-for="main"><i data-lucide="arrow-left-right"></i>Transition</button>
     <button id="styleBtn" data-sheet="text" data-for="overlay"><i data-lucide="type"></i>Edit text</button>
     <button id="fitBtn" data-for="overlay audio"><i data-lucide="move-horizontal"></i>Whole video</button>
-    <button id="replBtn" data-for="overlay"><i data-lucide="replace"></i>Replace</button>
+    <button id="replBtn" data-for="main audio overlay"><i data-lucide="replace"></i>Replace</button>
     <button id="deleteBtn" data-for="main audio overlay"><i data-lucide="trash-2"></i>Delete</button>
   </nav>
 

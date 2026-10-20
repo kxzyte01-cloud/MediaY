@@ -231,11 +231,12 @@ function hints(V, O, A) {
   if (!S.audio.length) h(A, '＋ Add music or voice-over', 'audioBtn');
 }
 function updateChrome() {
+  $('emptyState').hidden = !(S.main.length || S.overlays.length || S.audio.length);
   const on = !!sel; $('dockMain').hidden = on; $('dockEdit').hidden = !on;
   if (on) { document.querySelectorAll('#dockEdit [data-for]').forEach(b => (b.hidden = !b.dataset.for.split(' ').includes(sel.lane))); $('styleBtn').hidden = !textSel(); }
   let off = false; try { off = !!localStorage.getItem('pmy-tips-off'); } catch (e) {}
   $('tipBar').hidden = off;
-  $('tip').textContent = !S.main.length ? 'Tap “Import media” to add your first video.' : on ? 'Hold and drag a clip to move it. Drag the white ends to trim it.' : 'Swipe the timeline to move. Tap a clip to edit it.';
+  $('tip').textContent = pendingRep ? 'Tap the clip on the timeline that you want to replace.' : !S.main.length ? 'Tap “Import media” to add your first video.' : on ? 'Hold and drag a clip to move it. Drag the white ends to trim it.' : 'Swipe the timeline to move. Tap a clip to edit it.';
 }
 function restackRows() { // higher row on screen = in front, like other editors
   pack(S.overlays, o => o.start, o => o.dur).sort((a, b) => b[1] - a[1] || a[0].layer - b[0].layer).forEach(([o], i) => { o.layer = i + 1; const ob = objOf(o.id); if (ob) ob.layer = o.layer; });
@@ -264,7 +265,7 @@ tl.addEventListener('pointermove', e => {
 });
 tl.addEventListener('pointerup', e => {
   if (!drag) return; clearTimeout(drag.timer); const d = drag, c = itemOf(d.id, d.lane); drag = null; if (!c) return;
-  if (d.mode === 'wait') return select(c.id, d.lane);
+  if (d.mode === 'wait') { select(c.id, d.lane); if (pendingRep) applyRep(c.id, d.lane); return; }
   if (d.mode === 'trim') applyTrim(c, d.lane, d.side, d.dt || 0);
   else if (d.lane === 'main') {
     const cx = d.s0 + d.len / 2 + (e.clientX - d.x + tl.scrollLeft - d.sl0) / PX; let acc = 0, idx = 0;
@@ -532,6 +533,34 @@ $('addText').onclick = async () => {
 
 $('exportBtn').onclick = () => openSheet('export');
 
+/* ---------- Replace a video or music clip: keep its place, filter, speed, layers ---------- */
+let pendingRep = null;
+function askReplace(kind) { $('repInput').accept = kind === 'audio' ? 'audio/*' : 'video/*'; $('repInput').dataset.kind = kind; $('repInput').click(); }
+$('repMain').onclick = () => { if (pendingRep) { pendingRep = null; $('tl').classList.remove('picking'); updateChrome(); return say('Replace cancelled.'); } askReplace('video'); };
+$('repInput').onchange = async e => {
+  const f = e.target.files[0], kind = e.target.dataset.kind; e.target.value = ''; if (!f) return;
+  say('Loading your new file…');
+  const mediaId = await storeMedia(f), d = await probe(urls[mediaId]); pendingRep = { mediaId, name: f.name, dur: d, kind };
+  if (sel && sel.lane === (kind === 'audio' ? 'audio' : 'main')) applyRep(sel.id, sel.lane); // a clip was already selected
+  else { $('tl').classList.add('picking'); updateChrome(); say(`Now tap the ${kind === 'audio' ? 'music' : 'video'} clip you want to replace. (Tap Replace again to cancel.)`); }
+};
+function retime(a0, oldLen, newLen) { // layers and music that covered the old clip stretch to the new one; later ones shift
+  const a1 = a0 + oldLen, T = total(), f = x => (x >= a1 - 0.01 ? x - oldLen + newLen : x <= a0 ? x : Math.min(x, a0 + newLen));
+  S.overlays.forEach(o => { const s0 = f(o.start), e0 = Math.min(f(o.start + o.dur), T); o.start = s0; o.dur = Math.max(0.5, e0 - s0); });
+  S.audio.forEach(a => { const s0 = f(a.start), len = Math.min(f(a.start + a.out - a.in), T) - s0; a.start = s0; a.out = a.in + Math.max(0.3, Math.min(len, (a.src || a.out) - a.in)); });
+}
+async function applyRep(id, lane) {
+  const p = pendingRep, c = itemOf(id, lane); if (!p || !c) return;
+  if (lane === 'overlay') return say('To swap a logo or picture, select it and tap Replace.');
+  if ((lane === 'main') !== (p.kind === 'video')) return say(`Tap a ${p.kind === 'video' ? 'video' : 'music'} clip.`);
+  pendingRep = null; $('tl').classList.remove('picking');
+  const a0 = lane === 'main' ? startOf(c, 'main') : 0, oldLen = lane === 'main' ? dur(c) : 0;
+  Object.assign(c, { mediaId: p.mediaId, name: p.name, in: 0, out: p.dur, src: p.dur });
+  if (lane === 'audio') { if (audios[c.id]) { audios[c.id].pause(); delete audios[c.id]; } } else retime(a0, oldLen, dur(c));
+  t = Math.min(t, total()); commit(); await seek(t); refresh(t);
+  say(lane === 'main' ? 'Video replaced. Your logo and layers were fitted to the new length.' : 'Music replaced.');
+}
+
 /* ---------- Voice-over: record while the video plays ---------- */
 let rec;
 $('voiceBtn').onclick = async () => {
@@ -569,12 +598,21 @@ function markTpl() {
     info.textContent = `${p.name} · ${p.pre.length} intro, ${p.post.length} outro, ${p.overlays.length} layers`;
     use.className = 'primary'; use.textContent = 'Use'; use.onclick = () => { pendingTpl = p.id; $('tplInput').click(); };
     del.textContent = '✕'; del.setAttribute('aria-label', 'Delete template'); del.onclick = () => { saveTpls(loadTpls().filter(x => x.id !== p.id)); markTpl(); };
-    row.append(info, use, del); $('tplList').appendChild(row);
+    const open = document.createElement('button'); open.textContent = 'Open'; open.onclick = () => openTpl(p);
+    row.append(info, open, use, del); $('tplList').appendChild(row);
   });
   $('tplSlot').textContent = '';
   S.main.forEach((c, i) => { const o = document.createElement('option'); o.value = i; o.textContent = `${i + 1}. ${c.name}`; $('tplSlot').appendChild(o); });
   const none = document.createElement('option'); none.value = -1; none.textContent = 'None: put my news video at the end'; $('tplSlot').appendChild(none);
   if (S.main.length) $('tplSlot').value = S.main.reduce((b, c, i) => (dur(c) > dur(S.main[b]) ? i : b), 0);
+}
+async function openTpl(p) { // load the template as an editable project; then tap Replace to swap in the new video
+  if ((S.main.length || S.overlays.length) && !confirm('This replaces your current project. You can still undo it. Continue?')) return;
+  const fresh = c => { const n = { ...c, id: uid() }; delete n.el; return n; };
+  const main = [...p.pre.map(fresh), ...(p.slotClip ? [fresh(p.slotClip)] : []), ...p.post.map(fresh)];
+  t = 0; await restore(JSON.stringify({ ratio: p.ratio, main, audio: p.audio.map(fresh), overlays: p.overlays.map(fresh), nextLayer: Math.max(1, ...p.overlays.map(o => o.layer || 0)) + 1 }));
+  commit(); closeSheet(); await seek(0); refresh(0);
+  say(p.slotClip ? 'Template opened. Tap Replace, choose your news video, then tap the sample clip.' : 'Template opened.');
 }
 $('tplBtn').onclick = () => openSheet('tpl'); $('tplStart').onclick = () => openSheet('tpl');
 $('tplSave').onclick = () => {
@@ -582,7 +620,7 @@ $('tplSave').onclick = () => {
   const st = JSON.parse(snap()), i = +$('tplSlot').value, slot = i >= 0 ? st.main[i] : null;
   st.overlays.forEach(o => delete o.el);
   const tpl = { id: uid(), name: $('tplName').value.trim() || 'My template', ratio: st.ratio, pre: st.main.slice(0, i >= 0 ? i : st.main.length), post: i >= 0 ? st.main.slice(i + 1) : [],
-    slotLen: slot ? dur(slot) : 0, proto: slot ? { fx: slot.fx, fade: slot.fade, vol: slot.vol, speed: slot.speed, tr: slot.tr } : {}, overlays: st.overlays, audio: st.audio };
+    slotLen: slot ? dur(slot) : 0, slotClip: slot, proto: slot ? { fx: slot.fx, fade: slot.fade, vol: slot.vol, speed: slot.speed, tr: slot.tr } : {}, overlays: st.overlays, audio: st.audio };
   saveTpls([...loadTpls(), tpl]); $('tplName').value = ''; markTpl(); say('Template saved. Next time, tap Use and pick your news videos.');
 };
 $('tplInput').onchange = async e => {
@@ -593,16 +631,17 @@ $('tplInput').onchange = async e => {
     const news = [];
     for (const file of list) { const mediaId = await storeMedia(file), d = await probe(urls[mediaId]); news.push({ ...tpl.proto, id: uid(), mediaId, name: file.name, in: 0, out: d, src: d, tr: news.length ? undefined : tpl.proto.tr }); }
     const fresh = c => ({ ...c, id: uid() }), N = news.reduce((a, c) => a + dur(c), 0), a0 = tpl.pre.reduce((a, c) => a + dur(c), 0), a1 = a0 + tpl.slotLen;
-    const f = x => (x >= a1 - 0.01 ? x - tpl.slotLen + N : x <= a0 ? x : Math.min(x, a0 + N)); // intro stays, outro shifts, "whole video" layers stretch
-    const ov = tpl.overlays.map(o => { const s0 = f(o.start), e0 = f(o.start + o.dur), c = fresh(o); delete c.el; return Object.assign(c, { start: s0, dur: Math.max(0.5, e0 - s0) }); });
-    const au = tpl.audio.map(a => { const s0 = f(a.start), len = f(a.start + a.out - a.in) - s0; return { ...fresh(a), start: s0, out: a.in + Math.max(0.3, Math.min(len, (a.src || a.out) - a.in)) }; });
+    const f = x => (x >= a1 - 0.01 ? x - tpl.slotLen + N : x <= a0 ? x : Math.min(x, a0 + N)), Tnew = a0 + N + tpl.post.reduce((a, c) => a + dur(c), 0);
+    const fS = x => (tpl.slotLen === 0 ? (x > a0 + 0.01 ? x + N : x) : f(x)); // with no sample clip, a layer starting at 0 must stay at 0 // intro stays, outro shifts, "whole video" layers stretch
+    const ov = tpl.overlays.map(o => { const s0 = fS(o.start), e0 = Math.min(f(o.start + o.dur), Tnew), c = fresh(o); delete c.el; return Object.assign(c, { start: s0, dur: Math.max(0.5, e0 - s0) }); });
+    const au = tpl.audio.map(a => { const s0 = fS(a.start), len = Math.min(f(a.start + a.out - a.in), Tnew) - s0; return { ...fresh(a), start: s0, out: a.in + Math.max(0.3, Math.min(len, (a.src || a.out) - a.in)) }; });
     const S2 = { ratio: tpl.ratio, main: [...tpl.pre.map(fresh), ...news, ...tpl.post.map(fresh)], audio: au, overlays: ov, nextLayer: Math.max(1, ...ov.map(o => o.layer || 0)) + 1 };
     t = 0; await restore(JSON.stringify(S2)); commit(); await seek(0); refresh(0); closeSheet(); say(`Done: ${list.length} video${list.length > 1 ? 's' : ''} placed in your template.`);
   } catch (err) { say('Could not use the template: ' + (err.message || err)); }
 };
 $('doneBtn').onclick = () => { select(null); closeSheet(); };
 $('styleBtn').onclick = () => openSheet('text');
-$('replBtn').onclick = () => $('pipBtn').click();
+$('replBtn').onclick = () => (sel && sel.lane === 'overlay' ? $('pipBtn').click() : askReplace(sel && sel.lane === 'audio' ? 'audio' : 'video'));
 async function jump(x) { t = Math.max(0, Math.min(x, total())); lastScroll = 0; await seek(t); refresh(t); }
 $('toStart').onclick = () => jump(0); $('toEnd').onclick = () => jump(total());
 $('tipOff').onclick = () => { try { localStorage.setItem('pmy-tips-off', '1'); } catch (e) {} $('tipBar').hidden = true; };
