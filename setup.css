@@ -1,0 +1,27 @@
+/* ProjectMedia Y — setup.css (uses the variables from style.css) */
+#setup { position: fixed; inset: 0; z-index: 50; background: var(--bg); overflow-y: auto; display: flex;
+  padding: calc(16px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom)); }
+#setup[hidden] { display: none !important; }
+.su-wrap { width: 100%; max-width: 480px; margin: auto; display: grid; gap: 20px; }
+.su-head { text-align: center; }
+.su-head .empty-logo { width: 56px; height: 56px; border-radius: 16px; font-size: 30px; margin: 0 auto 10px; }
+.su-head h1 { margin: 0 0 4px; font-size: 24px; }
+.su-head p { margin: 0; color: var(--muted); }
+.su-label { margin: 0 0 8px; color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.su-shapes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.su-row { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 8px; }
+.su-shapes button, .su-row button { display: grid; justify-items: center; align-content: center; gap: 3px;
+  background: var(--panel); border: 2px solid transparent; padding: 8px 2px; }
+.su-shapes button { min-height: 118px; gap: 8px; }
+.su-row button { min-height: 58px; }
+.su-shapes .on, .su-row .on { border-color: var(--red); background: #2a1519; }
+.su-shapes i { display: block; border: 2px solid var(--muted); border-radius: 4px; }
+.su-shapes .on i { border-color: var(--text); }
+.su-shapes b { font-size: 13px; text-align: center; }
+.su-shapes small, .su-row small { color: var(--muted); font-size: 11px; }
+.su-hint { margin: 8px 0 0; color: var(--muted); font-size: 12px; min-height: 16px; }
+.su-foot { display: grid; gap: 10px; text-align: center; }
+#suSum { margin: 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+#suStart { min-height: 52px; font-size: 16px; }
+#suClose { position: absolute; top: calc(10px + env(safe-area-inset-top)); right: 12px; width: 40px; padding: 0; background: var(--panel2); }
+#suClose[hidden] { display: none !important; }

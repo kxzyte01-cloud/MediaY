@@ -10,6 +10,7 @@
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="./icon-192.png">
   <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./setup.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
@@ -33,11 +34,6 @@
       <div id="emptyState">
         <div class="empty-logo">Y</div>
         <h1>What are you making?</h1>
-        <div id="ratioPick" class="ratios">
-          <button data-r="16:9"><b>▭</b>YouTube<small>wide 16:9</small></button>
-          <button data-r="9:16"><b>▯</b>Shorts &amp; Reels<small>tall 9:16</small></button>
-          <button data-r="1:1"><b>□</b>Square<small>1:1</small></button>
-        </div>
         <label for="mediaInput" class="primary import-label">Import media</label>
         <small class="muted">You can pick several videos at once.</small>
         <button id="tplStart" class="wide-btn">Use my template</button>
@@ -155,5 +151,6 @@
   </dialog>
 
   <script src="./app.js"></script>
+  <script src="./setup.js"></script>
 </body>
 </html>
