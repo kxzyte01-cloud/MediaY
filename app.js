@@ -73,8 +73,14 @@ async function storeMedia(file) {
 async function loadMedia(id) {
   if (urls[id]) return urls[id];
   const row = await db.media.get(id);
-  if (!row) return null;
-  files[id] = row.blob; return (urls[id] = URL.createObjectURL(row.blob));
+  if (!row || !row.blob) return null;
+  // Preserve the original name/type after IndexedDB restores a Blob, so FFmpeg can
+  // choose the appropriate input suffix for saved projects and reusable templates.
+  const blob = row.blob;
+  files[id] = (typeof File !== 'undefined' && blob instanceof File)
+    ? blob
+    : new File([blob], row.name || `${id}.bin`, { type: row.type || blob.type || 'application/octet-stream' });
+  return (urls[id] = URL.createObjectURL(files[id]));
 }
 
 /* ---------- State (single source of truth) ---------- */
