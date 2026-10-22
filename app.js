@@ -13,6 +13,46 @@ const FX = [
   { n: 'Fade', c: 'contrast(.85) brightness(1.1) saturate(.8)', f: 'eq=contrast=.85:brightness=.06:saturation=.8' },
   { n: 'Retro', c: 'sepia(.7) contrast(1.1)', f: 'colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131' },
   { n: 'Cinema', c: 'contrast(1.2) saturate(.9) brightness(.95)', f: 'eq=contrast=1.2:saturation=.9:brightness=-.03,vignette=PI/5' }];
+
+const DEFAULT_ADJUST = Object.freeze({ brightness: 0, contrast: 100, saturation: 100, sharpen: 0, highlights: 0, shadows: 0, grain: 0 });
+const BLEND_OPTIONS = [
+  ['Normal', 'normal', 'source-over'], ['Add', 'addition', 'lighter'], ['Average', 'average', 'source-over'],
+  ['Color burn', 'burn', 'color-burn'], ['Color dodge', 'dodge', 'color-dodge'], ['Darken', 'darken', 'darken'],
+  ['Lighten', 'lighten', 'lighten'], ['Multiply', 'multiply', 'multiply'], ['Screen', 'screen', 'screen'],
+  ['Overlay', 'overlay', 'overlay'], ['Hard light', 'hardlight', 'hard-light'], ['Soft light', 'softlight', 'soft-light']
+];
+const adjustOf = clip => ({ ...DEFAULT_ADJUST, ...(clip && clip.adjust || {}) });
+const bounded = (value, min, max) => Math.max(min, Math.min(max, Number(value) || 0));
+function adjustmentFilter(clip) {
+  const a = adjustOf(clip), filters = [];
+  if (a.brightness !== 0 || a.contrast !== 100 || a.saturation !== 100) {
+    filters.push('eq=brightness=' + (bounded(a.brightness, -100, 100) / 200).toFixed(3) +
+      ':contrast=' + Math.max(0.1, bounded(a.contrast, 0, 200) / 100).toFixed(3) +
+      ':saturation=' + (bounded(a.saturation, 0, 200) / 100).toFixed(3));
+  }
+  if (a.highlights !== 0 || a.shadows !== 0) {
+    const low = bounded(0.25 + bounded(a.shadows, -100, 100) / 100 * 0.12, 0.13, 0.37);
+    const high = bounded(0.75 + bounded(a.highlights, -100, 100) / 100 * 0.12, 0.63, 0.87);
+    filters.push("curves=all='0/0 0.25/" + low.toFixed(3) + " 0.5/0.5 0.75/" + high.toFixed(3) + " 1/1'");
+  }
+  if (a.sharpen > 0) filters.push('unsharp=5:5:' + (bounded(a.sharpen, 0, 100) / 50).toFixed(2) + ':5:5:0.00');
+  if (a.grain > 0) filters.push('noise=alls=' + (bounded(a.grain, 0, 100) * 0.18).toFixed(1) + ':allf=t+u');
+  return filters.join(',');
+}
+function previewFilter(clip) {
+  if (!clip) return '';
+  const a = adjustOf(clip), filters = [];
+  if (FX[clip.fx || 0] && FX[clip.fx || 0].c) filters.push(FX[clip.fx || 0].c);
+  if (a.brightness !== 0) filters.push('brightness(' + (1 + bounded(a.brightness, -100, 100) / 200).toFixed(2) + ')');
+  if (a.contrast !== 100) filters.push('contrast(' + Math.max(0, bounded(a.contrast, 0, 200) / 100).toFixed(2) + ')');
+  if (a.saturation !== 100) filters.push('saturate(' + (bounded(a.saturation, 0, 200) / 100).toFixed(2) + ')');
+  return filters.join(' ');
+}
+function canvasBlendMode(mode) {
+  const found = BLEND_OPTIONS.find(item => item[1] === mode);
+  return found ? found[2] : 'source-over';
+}
+
 const TS = [ // text styles
   () => ({ fill: '#fff', stroke: '#000', strokeWidth: 2 }),
   () => ({ fill: '#fff', strokeWidth: 0, shadow: new fabric.Shadow({ color: '#ff2d95', blur: 26 }) }),
@@ -20,10 +60,45 @@ const TS = [ // text styles
   () => ({ fill: '#ffe14a', stroke: '#000', strokeWidth: 5, fontStyle: 'italic', paintFirst: 'stroke' }),
   () => ({ fill: '#fff', strokeWidth: 0, backgroundColor: '#c8101e', fontSize: 44 }),
   () => ({ fill: '#fff', strokeWidth: 0, backgroundColor: '#0b2a5b', fontSize: 40 })];
-const PX = 30; // timeline pixels per second
+const BASE_PX = 30;
+let PX = BASE_PX; // timeline pixels per second; editable with timeline zoom controls
 const uid = () => Math.random().toString(36).slice(2, 10);
 const fmt = s => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 const say = m => ($('status').textContent = m);
+
+// Shared blocking progress UI for long-running media tasks.
+function updateBusy(title, detail, progress = null, stage = 'Working') {
+  const overlay = $('busyOverlay');
+  if (!overlay) return;
+  overlay.hidden = false;
+  overlay.dataset.state = 'busy';
+  document.body.setAttribute('aria-busy', 'true');
+  $('busyDismiss').hidden = true;
+  if (title != null) $('busyTitle').textContent = title;
+  if (detail != null) $('busyDetail').textContent = detail;
+  $('busyStage').textContent = stage;
+  const bar = $('busyProgress'), label = $('busyPercent');
+  if (typeof progress === 'number' && Number.isFinite(progress)) {
+    const value = Math.max(0, Math.min(100, progress));
+    bar.value = value;
+    label.textContent = Math.round(value) + '%';
+  } else {
+    bar.removeAttribute('value');
+    label.textContent = '';
+  }
+}
+function showBusyError(title, detail) {
+  updateBusy(title, detail, null, 'Needs attention');
+  const overlay = $('busyOverlay');
+  if (overlay) overlay.dataset.state = 'error';
+  $('busyDismiss').hidden = false;
+}
+function hideBusy() {
+  const overlay = $('busyOverlay');
+  if (overlay) { overlay.hidden = true; delete overlay.dataset.state; }
+  document.body.removeAttribute('aria-busy');
+}
+$('busyDismiss').onclick = hideBusy;
 
 /* ---------- Database (Dexie): media blobs + project state ---------- */
 const db = new Dexie('projectmedia-y');
@@ -39,8 +114,95 @@ async function storeMedia(file) {
 async function loadMedia(id) {
   if (urls[id]) return urls[id];
   const row = await db.media.get(id);
-  if (!row) return null;
-  files[id] = row.blob; return (urls[id] = URL.createObjectURL(row.blob));
+  if (!row || !row.blob) return null;
+  // Preserve the original name/type after IndexedDB restores a Blob, so FFmpeg can
+  // choose the appropriate input suffix for saved projects and reusable templates.
+  const blob = row.blob;
+  files[id] = (typeof File !== 'undefined' && blob instanceof File)
+    ? blob
+    : new File([blob], row.name || `${id}.bin`, { type: row.type || blob.type || 'application/octet-stream' });
+  return (urls[id] = URL.createObjectURL(files[id]));
+}
+
+// Decode template image media before changing the active project. Some mobile pickers
+// supply images in a browser-supported-but-not-HTMLImageElement-friendly format, or with
+// a MIME type/extension that does not match the actual encoding. Fall back to bitmap decode
+// and normalize it to PNG so the template can reuse the same durable media ID.
+const decodeImageElement = (src, label) => new Promise((resolve, reject) => {
+  const image = new Image();
+  image.onload = () => resolve(image);
+  image.onerror = () => reject(new Error(`Could not decode overlay image “${label}”.`));
+  image.src = src;
+});
+async function loadOverlayImage(url, overlay) {
+  const label = overlay.name || 'unnamed image';
+  try {
+    return await decodeImageElement(url, label);
+  } catch (firstError) {
+    const row = await db.media.get(overlay.mediaId).catch(() => null);
+    const source = files[overlay.mediaId] || (row && row.blob);
+    if (!source || typeof createImageBitmap !== 'function') {
+      throw new Error(`Could not read overlay image “${label}”. Re-import it as a standard JPG or PNG and save the template again.`);
+    }
+    let bitmap;
+    try {
+      bitmap = await createImageBitmap(source);
+    } catch (_) {
+      throw new Error(`Overlay image “${label}” is missing, damaged, or in a format this browser cannot decode. Re-import a standard JPG or PNG and save the template again.`);
+    }
+    try {
+      const normalized = document.createElement('canvas');
+      normalized.width = bitmap.width;
+      normalized.height = bitmap.height;
+      const ctx = normalized.getContext('2d');
+      if (!ctx) throw new Error('Could not create an image conversion canvas.');
+      ctx.drawImage(bitmap, 0, 0);
+      const png = await new Promise((resolve, reject) => normalized.toBlob(blob => blob ? resolve(blob) : reject(new Error('Could not convert the overlay image to PNG.')), 'image/png'));
+      const name = `${label.replace(/\.[^.]+$/, '') || 'overlay'}.png`;
+      const file = new File([png], name, { type: 'image/png', lastModified: Date.now() });
+      await db.media.put({ id: overlay.mediaId, name, type: 'image/png', blob: file });
+      files[overlay.mediaId] = file;
+      if (urls[overlay.mediaId]) URL.revokeObjectURL(urls[overlay.mediaId]);
+      urls[overlay.mediaId] = URL.createObjectURL(file);
+      return await decodeImageElement(urls[overlay.mediaId], name);
+    } finally {
+      if (bitmap && typeof bitmap.close === 'function') bitmap.close();
+    }
+  }
+}
+async function validateTemplateAssets(template, options = {}) {
+  // A template can contain original intro/outro clips, a replaceable slot, and audio
+  // as well as visual overlays. Check every stored reference before changing the edit.
+  const mainClips = [
+    ...(template.pre || []),
+    ...(template.slotClip && !options.skipSlotClip ? [template.slotClip] : []),
+    ...(template.post || [])
+  ];
+  for (const clip of mainClips) {
+    const url = clip.mediaId && await loadMedia(clip.mediaId);
+    if (!url) throw new Error(`Template video “${clip.name || 'unnamed clip'}” is missing from this browser's local storage. Re-import it, save the template again, and retry.`);
+    const length = await probe(url, 'video');
+    if (!Number.isFinite(length) || length <= 0) throw new Error(`Template video “${clip.name || 'unnamed clip'}” cannot be decoded by this browser. Convert it to a standard MP4 or MOV and save the template again.`);
+  }
+  for (const track of template.audio || []) {
+    const url = track.mediaId && await loadMedia(track.mediaId);
+    if (!url) throw new Error(`Template audio “${track.name || 'unnamed track'}” is missing from local storage. Re-import it and save the template again.`);
+    const length = await probe(url, 'audio');
+    if (!Number.isFinite(length) || length <= 0) throw new Error(`Template audio “${track.name || 'unnamed track'}” cannot be decoded by this browser. Re-import it as a supported audio file and save the template again.`);
+  }
+  for (const overlay of template.overlays || []) {
+    if (overlay.type === 'text' || !overlay.mediaId) continue;
+    const url = await loadMedia(overlay.mediaId);
+    if (!url) throw new Error(`Template media for “${overlay.name || overlay.type}” is missing from local storage. Re-import the original image/video and save the template again.`);
+    if (overlay.type === 'image') {
+      await loadOverlayImage(url, overlay);
+    } else if (overlay.type === 'video') {
+      const length = await probe(url, 'video');
+      if (!Number.isFinite(length) || length <= 0) {
+        throw new Error(`Template overlay video “${overlay.name || 'unnamed video'}” cannot be decoded in this browser. Convert it to MP4 and save the template again.`);
+      }
+    }
+  }
 }
 
 /* ---------- State (single source of truth) ---------- */
@@ -94,13 +256,13 @@ async function buildObject(o) {
       el.width = el.videoWidth; el.height = el.videoHeight;
       obj = new fabric.Image(el);
     } else {
-      el = await new Promise((resolve, reject) => { const i = new Image(); i.onload = () => resolve(i); i.onerror = () => reject(new Error('Could not read this overlay image. Try a JPG or PNG.')); i.src = url; });
+      el = await loadOverlayImage(url, o);
       obj = new fabric.Image(el);
     }
     if (o.scaleX == null) { o.scaleX = o.scaleY = (w * 0.4) / obj.width; }
   }
   Object.assign(obj, { pmId: o.id, layer: o.layer });
-  obj.set({ left: o.left ?? w * 0.1, top: o.top ?? h * 0.1, scaleX: o.scaleX ?? 1, scaleY: o.scaleY ?? 1, angle: o.angle || 0, cornerSize: 22, transparentCorners: false });
+  obj.set({ left: o.left ?? w * 0.1, top: o.top ?? h * 0.1, scaleX: o.scaleX ?? 1, scaleY: o.scaleY ?? 1, angle: o.angle || 0, opacity: bounded(o.opacity ?? 1, 0, 1), globalCompositeOperation: canvasBlendMode(o.blend || 'normal'), cornerSize: 22, transparentCorners: false });
   Object.assign(o, { left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY });
   if (o.key && obj.applyFilters) { obj.filters = [keyFilter(o.key)]; obj.applyFilters(); }
   canvas.add(obj); restack(); return obj;
@@ -159,8 +321,11 @@ $('mediaInput').onchange = async e => {
   const selected = [...(e.target.files || [])]; e.target.value = '';
   if (!selected.length) return;
   say('Importing…'); let added = 0;
+  updateBusy('Importing media…', 'Preparing the selected files.', 0, 'Import');
   try {
-    for (const f of selected) {
+    for (let fileIndex = 0; fileIndex < selected.length; fileIndex++) {
+      const f = selected[fileIndex];
+      updateBusy('Importing media…', `Reading ${f.name} (${fileIndex + 1} of ${selected.length}).`, (fileIndex / Math.max(1, selected.length)) * 100, 'Import');
       const mediaId = await storeMedia(f);
       const isImage = f.type.startsWith('image'), isAudio = f.type.startsWith('audio'), isVideo = f.type.startsWith('video');
       if (isImage) { await addOverlay({ type: 'image', mediaId, name: f.name, start: t, dur: 5 }); added++; continue; }
@@ -175,6 +340,7 @@ $('mediaInput').onchange = async e => {
   } catch (err) {
     commit(); refresh(t); console.error(err); say('Import stopped: ' + (err.message || err));
   }
+  hideBusy();
 };
 const probe = (url, kind = 'video') => new Promise(resolve => {
   const m = document.createElement(kind === 'audio' ? 'audio' : 'video'); m.preload = 'metadata';
@@ -270,6 +436,109 @@ function drawTimeline() {
   hints(V, O, A); updateChrome();
 }
 const snapT = v => { let a = 0; const e = [0, t, ...S.main.map(c => (a += dur(c)))].find(x => Math.abs(x - v) < 8 / PX); return e != null ? e : v; };
+
+const clampTimelineZoom = value => Math.max(6, Math.min(90, Math.round((Number(value) || BASE_PX) / 3) * 3));
+try {
+  const savedTimelineZoom = Number(localStorage.getItem('pmy-timeline-zoom'));
+  if (Number.isFinite(savedTimelineZoom) && savedTimelineZoom >= 6) PX = clampTimelineZoom(savedTimelineZoom);
+} catch (_) {}
+$('tlZoom').value = String(PX);
+$('tlZoomLabel').textContent = (PX / BASE_PX).toFixed(1) + '×';
+function setTimelineZoom(value, persist = false) {
+  PX = clampTimelineZoom(value);
+  $('tlZoom').value = String(PX);
+  $('tlZoomLabel').textContent = (PX / BASE_PX).toFixed(1) + '×';
+  drawTimeline();
+  tl.scrollLeft = Math.max(0, t * PX);
+  if (persist) { try { localStorage.setItem('pmy-timeline-zoom', String(PX)); } catch (_) {} }
+}
+$('tlZoomOut').onclick = () => setTimelineZoom(PX - 6, true);
+$('tlZoomIn').onclick = () => setTimelineZoom(PX + 6, true);
+$('tlZoom').oninput = e => setTimelineZoom(Number(e.target.value), false);
+$('tlZoom').onchange = e => setTimelineZoom(Number(e.target.value), true);
+$('tlZoomFit').onclick = () => {
+  const duration = Math.max(total(), 1);
+  const fitPx = (tl.clientWidth * 0.5) / duration;
+  setTimelineZoom(Math.max(6, Math.min(90, Math.floor(fitPx / 3) * 3)), true);
+  say('Timeline zoom adjusted to fit as much of the edit as possible.');
+};
+
+function updateCopyTillButton() {
+  const btn = $('copyTillBtn');
+  if (!btn) return;
+  const item = sel ? itemOf(sel.id, sel.lane) : null;
+  const end = item ? startOf(item, sel.lane) + lenOf(item, sel.lane) : Infinity;
+  btn.disabled = !item || t - end < 0.2;
+}
+async function copyTillPlayhead() {
+  if (!sel) return say('Select a timeline clip first.');
+  const lane = sel.lane, source = itemOf(sel.id, lane);
+  if (!source) return say('Select a clip that still exists on the timeline.');
+  const start = startOf(source, lane), length = lenOf(source, lane), end = start + length;
+  const gap = t - end;
+  if (gap < 0.2) return say('Move the playhead at least 0.2 seconds beyond the selected clip, then copy till here.');
+  if (!Number.isFinite(length) || length < 0.2) return say('The selected item is too short to copy.');
+  const previous = snap();
+  const clones = [];
+  const cloneRecord = value => JSON.parse(JSON.stringify(value, (key, child) => key === 'el' ? undefined : child));
+  try {
+    if (lane === 'main') {
+      let remaining = gap;
+      while (remaining >= 0.2) {
+        const part = Math.min(length, remaining);
+        if (part < 0.2) break;
+        const copy = cloneRecord(source);
+        copy.id = uid();
+        if (part < length - 0.001) copy.out = Math.min(source.out, source.in + part * (source.speed || 1));
+        clones.push(copy);
+        remaining -= part;
+      }
+      S.main.splice(S.main.indexOf(source) + 1, 0, ...clones);
+    } else if (lane === 'audio') {
+      let position = end, remaining = gap;
+      while (remaining >= 0.2) {
+        const part = Math.min(length, remaining);
+        if (part < 0.2) break;
+        const copy = cloneRecord(source);
+        copy.id = uid();
+        copy.start = position;
+        if (part < length - 0.001) copy.out = Math.min(source.out, source.in + part);
+        clones.push(copy);
+        position += part;
+        remaining -= part;
+      }
+      S.audio.push(...clones);
+    } else {
+      let position = end, remaining = gap;
+      while (remaining >= 0.2) {
+        const part = Math.min(length, remaining);
+        if (part < 0.2) break;
+        const copy = cloneRecord(source);
+        copy.id = uid();
+        copy.start = position;
+        copy.dur = part;
+        copy.layer = S.nextLayer++;
+        delete copy.el;
+        clones.push(copy);
+        position += part;
+        remaining -= part;
+      }
+      S.overlays.push(...clones);
+      for (const copy of clones) await buildObject(copy);
+      restackRows();
+    }
+    if (!clones.length) return say('There is not enough room before the playhead to make another copy.');
+    commit();
+    select(clones[clones.length - 1].id, lane);
+    refresh(t);
+    say('Copied ' + clones.length + ' repeat' + (clones.length === 1 ? '' : 's') + ' up to the playhead.');
+  } catch (err) {
+    await restore(previous);
+    showBusyError('Copy till here failed', err.message || String(err));
+  }
+}
+$('copyTillBtn').onclick = copyTillPlayhead;
+
 function clampTrim(c, lane, side, dt) {
   const sp = lane === 'main' ? c.speed || 1 : 1, len = lenOf(c, lane), max = lane === 'overlay' ? 36000 : ((c.src || c.out) - c.in) / sp;
   if (side === 'r') return Math.min(Math.max(dt, 0.2 - len), max - len);
@@ -294,6 +563,10 @@ function updateChrome() {
   let off = false; try { off = !!localStorage.getItem('pmy-tips-off'); } catch (e) {}
   $('tipBar').hidden = off;
   $('tip').textContent = pendingRep ? 'Tap the clip on the timeline that you want to replace.' : !S.main.length ? 'Tap “Import media” to add your first video.' : on ? 'Hold and drag a clip to move it. Drag the white ends to trim it.' : 'Swipe the timeline to move. Tap a clip to edit it.';
+  $('adjustBtn').hidden = !(on && sel.lane === 'main');
+  const blendItem = on && sel.lane === 'overlay' ? S.overlays.find(o => o.id === sel.id) : null;
+  $('blendBtn').hidden = !(blendItem && blendItem.type !== 'text');
+  updateCopyTillButton();
 }
 function keyFilter(k) { return new fabric.Image.filters.RemoveColor({ color: k.color, distance: 0.1 + k.sim / 100 * 0.5 }); }
 function restackRows() { // higher row on screen = in front, like other editors
@@ -379,7 +652,7 @@ function refresh(time) {
     video.playbackRate = 1; video.volume = 1;
     if (video.dataset.mid) { delete video.dataset.mid; video.removeAttribute('src'); video.load(); }
   } else {
-    video.style.display = 'block'; video.style.filter = FX[hit.c.fx || 0].c || '';
+    video.style.display = 'block'; video.style.filter = previewFilter(hit.c);
     video.playbackRate = hit.c.speed || 1; video.volume = Math.min(1, hit.c.vol ?? 1);
   }
   if (Date.now() - lastScroll > 200) tl.scrollLeft = t * PX;
@@ -393,6 +666,7 @@ function refresh(time) {
     else if (o.el && !o.el.paused) o.el.pause();
   });
   canvas.requestRenderAll();
+  updateCopyTillButton();
 }
 function tick() {
   if (!playing) return;
@@ -450,27 +724,83 @@ $('aspectRatio').onchange = async e => {
 };
 
 /* ---------- Export: FFmpeg.wasm, one clip at a time (chunked) ---------- */
-const loadScript = src => new Promise((ok, no) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = () => no(new Error('Could not load ' + src)); document.head.appendChild(s); });
-let ff;
+// FFmpeg's small wrapper and class-worker chunk are hosted in this app's origin.
+// This avoids the cross-origin Worker path that produced "ffmpeg is not loaded" in WebView.
+let ff, ffLogs = [], exportProgressHandler = null, exportClipIndex = 0, exportGroupIndex = 0, ffAssetURLs = [];
+const CDN = 'https://cdn.jsdelivr.net/npm/';
+async function remoteBlobURL(url, mimeType) {
+  const assetName = url.split('/').pop() || 'FFmpeg asset';
+  updateBusy('Downloading video engine…', `Downloading ${assetName}. The first run may take a little longer.`, null, 'Engine download');
+  const response = await fetch(url, { mode: 'cors', cache: 'force-cache' });
+  if (!response.ok) throw new Error(`Could not download FFmpeg component (${response.status}): ${url}`);
+  const total = Number(response.headers.get('content-length')) || 0;
+  let blob;
+  if (response.body && typeof response.body.getReader === 'function') {
+    const reader = response.body.getReader(), chunks = [];
+    let received = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.byteLength;
+      const detail = total
+        ? `${assetName}: ${(received / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(1)} MB`
+        : `${assetName}: ${(received / 1048576).toFixed(1)} MB downloaded`;
+      updateBusy('Downloading video engine…', detail, total ? received / total * 100 : null, 'Engine download');
+    }
+    blob = new Blob(chunks, { type: mimeType });
+  } else {
+    blob = await response.blob();
+  }
+  const objectURL = URL.createObjectURL(new Blob([blob], { type: mimeType }));
+  ffAssetURLs.push(objectURL);
+  return objectURL;
+}
+function disposeFFmpeg() {
+  try { if (ff) ff.terminate(); } catch (_) { /* engine may already be stopped */ }
+  ff = null;
+  for (const url of ffAssetURLs) URL.revokeObjectURL(url);
+  ffAssetURLs = [];
+}
 async function getFFmpeg() {
-  if (ff) return ff;
-  const CDN = 'https://cdn.jsdelivr.net/npm/';
-  await loadScript(CDN + '@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js');
-  await loadScript(CDN + '@ffmpeg/util@0.12.1/dist/umd/index.js');
-  const { toBlobURL } = FFmpegUtil, core = CDN + '@ffmpeg/core@0.12.6/dist/umd/';
+  if (ff && ff.loaded) return ff;
+  if (ff) disposeFFmpeg();
+  if (!window.FFmpegWASM || typeof FFmpegWASM.FFmpeg !== 'function') {
+    throw new Error('The local FFmpeg wrapper did not load. Reload MediaY; if this persists, redeploy the vendor/ffmpeg files.');
+  }
+  const core = CDN + '@ffmpeg/core@0.12.10/dist/umd/';
   ff = new FFmpegWASM.FFmpeg();
-  await ff.load({
-    classWorkerURL: await toBlobURL(CDN + '@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js', 'text/javascript'),
-    coreURL: await toBlobURL(core + 'ffmpeg-core.js', 'text/javascript'),
-    wasmURL: await toBlobURL(core + 'ffmpeg-core.wasm', 'application/wasm'),
+  ff.on('log', ({ message }) => {
+    const line = String(message || '');
+    if (/error|invalid|failed|not found|unsupported|could not|unable|aborted/i.test(line)) {
+      ffLogs.push(line);
+      if (ffLogs.length > 30) ffLogs.shift();
+    }
   });
-  return ff;
+  ff.on('progress', event => { if (exportProgressHandler) exportProgressHandler(event || {}); });
+  try {
+    updateBusy('Starting video engine…', 'The core files are downloaded. Initializing FFmpeg in its local worker.', null, 'Engine startup');
+    // Do not pass classWorkerURL: the vendored UMD wrapper automatically resolves
+    // 814.ffmpeg.js beside vendor/ffmpeg/ffmpeg.js, so Worker stays same-origin.
+    await ff.load({
+      coreURL: await remoteBlobURL(core + 'ffmpeg-core.js', 'text/javascript'),
+      wasmURL: await remoteBlobURL(core + 'ffmpeg-core.wasm', 'application/wasm'),
+    });
+    if (!ff.loaded) throw new Error('FFmpeg finished loading without becoming ready.');
+    return ff;
+  } catch (error) {
+    disposeFFmpeg();
+    throw error;
+  }
 }
 const run = async (args) => { const code = await ff.exec(args); if (code !== 0) throw new Error('FFmpeg failed (code ' + code + ')'); };
 async function overlayPNG(o) { // render one overlay alone, full canvas size, transparent
   const obj = objOf(o.id), keep = canvas.getObjects().map(x => x.visible);
   canvas.discardActiveObject(); canvas.getObjects().forEach(x => (x.visible = x === obj));
+  const previousComposite = obj && obj.globalCompositeOperation;
+  if (obj) obj.globalCompositeOperation = 'source-over'; // render raw pixels and alpha; FFmpeg composites the chosen blend mode per frame
   const url = canvas.toDataURL({ format: 'png' });
+  if (obj) obj.globalCompositeOperation = previousComposite || 'source-over';
   canvas.getObjects().forEach((x, i) => (x.visible = keep[i])); canvas.requestRenderAll();
   return new Uint8Array(await (await fetch(url)).arrayBuffer());
 }
@@ -491,22 +821,50 @@ async function saveVideo(data) {
     await Share.share({ title: 'ProjectMedia Y video', url: uri, dialogTitle: 'Save or share your video' });
     return;
   }
-  const url = URL.createObjectURL(new Blob([data.buffer], { type: 'video/mp4' }));
+  const url = URL.createObjectURL(new Blob([data], { type: 'video/mp4' }));
   Object.assign(document.createElement('a'), { href: url, download: name }).click();
 }
 
 const EXP = { res: 720, fps: 30 };
-$('goExport').onclick = async () => {
+$('goExport').onclick = async (_event, recoveryAttempt = 0) => {
   if (!S.main.length) return say('Nothing to export yet.');
   if (playing) stop();
   closeSheet(); const btn = $('goExport'); btn.disabled = true;
+  let exportFailed = false;
+  ffLogs = [];
+  updateBusy('Preparing your export…', 'Checking project media before rendering.', 1, 'Preparing');
   try {
-    for (const id of new Set([...S.main.map(c => c.mediaId), ...S.audio.map(a => a.mediaId), ...S.overlays.filter(o => o.mediaId).map(o => o.mediaId)])) await loadMedia(id); // media loads lazily; make sure all of it is ready
-    say('Loading video engine (first time only)…'); await getFFmpeg();
-    ff.on('progress', ({ progress }) => say(`Rendering… ${Math.round(Math.min(progress, 1) * 100)}%`));
+    if (!S.main.length) throw new Error('Add at least one video clip to the main timeline before exporting.');
+    for (const c of S.main) {
+      if (!Number.isFinite(c.in) || !Number.isFinite(c.out) || c.out <= c.in || !Number.isFinite(dur(c)) || dur(c) <= 0) {
+        throw new Error(`The clip “${c.name || 'Untitled clip'}” has an invalid trim range or duration. Re-import the clip and try again.`);
+      }
+    }
+    const mediaRefs = [...S.main, ...S.audio, ...S.overlays.filter(o => o.mediaId)];
+    const mediaIds = [...new Set(mediaRefs.map(x => x.mediaId))];
+    for (let m = 0; m < mediaIds.length; m++) {
+      const id = mediaIds[m], url = await loadMedia(id), file = files[id];
+      if (!url || !file || !file.size) {
+        const ref = mediaRefs.find(x => x.mediaId === id);
+        throw new Error(`Media “${(ref && ref.name) || id}” is missing from this browser’s local storage. Re-import that file, wait for it to finish, and export again.`);
+      }
+      updateBusy('Checking project media…', `Checking file ${m + 1} of ${mediaIds.length}.`, 2 + ((m + 1) / Math.max(1, mediaIds.length)) * 3, 'Preparing');
+    }
+    say('Loading video engine (first time only)…');
+    updateBusy('Loading video engine…', 'The first export needs to download the rendering engine.', 6, 'Loading encoder');
+    await getFFmpeg();
+    updateBusy('Rendering video…', 'Encoding each clip with its effects and overlays.', 8, 'Rendering');
+    exportProgressHandler = ({ progress }) => {
+      const fraction = Number.isFinite(progress) ? Math.max(0, Math.min(1, progress)) : 0;
+      const overall = 8 + ((exportClipIndex + fraction) / Math.max(1, S.main.length)) * 58;
+      updateBusy(`Rendering clip ${Math.min(exportClipIndex + 1, S.main.length)} of ${S.main.length}…`, 'Encoding video, effects, and overlays. Longer clips can take more time.', overall, 'Rendering');
+      say(`Rendering clip ${Math.min(exportClipIndex + 1, S.main.length)} of ${S.main.length}…`);
+    };
     const [bw, bh] = RATIOS[S.ratio], kk = EXP.res / Math.min(bw, bh), W = Math.round(bw * kk / 2) * 2, H = Math.round(bh * kk / 2) * 2, segs = []; let offset = 0, cached = null;
     const TD = S.main.map((c, i) => (i && c.tr ? Math.min(c.trDur || 0.5, dur(S.main[i - 1]) * 0.45, dur(c) * 0.45) : 0)); // overlap length at each clip's start
     for (let i = 0; i < S.main.length; i++) {
+      exportClipIndex = i;
+      updateBusy(`Rendering clip ${i + 1} of ${S.main.length}…`, 'Encoding video, effects, and overlays.', 8 + (i / Math.max(1, S.main.length)) * 58, 'Rendering');
       const c = S.main[i], d = c.out - c.in, sp = c.speed || 1, td = d / sp, ext = (files[c.mediaId].name || 'v.mp4').split('.').pop().toLowerCase();
       const src = `src_${c.mediaId}.${ext}`;
       say(`Clip ${i + 1} of ${S.main.length}…`);
@@ -519,25 +877,54 @@ $('goExport').onclick = async () => {
           const n = `ovv${k}`, ob = objOf(o.id), bb = ob.getBoundingRect(true, true), rad = ((ob.angle || 0) * Math.PI / 180).toFixed(4);
           await ff.writeFile(n, new Uint8Array(await files[o.mediaId].arrayBuffer())); names.push(n);
           inputs.push('-ss', Math.max(0, offset - o.start).toFixed(2), '-i', n);
-          geo[k] = { ox: Math.round(bb.left * K), oy: Math.round(bb.top * K), chain: `${o.start > offset ? `tpad=start_mode=clone:start_duration=${(o.start - offset).toFixed(2)},` : ''}scale=${Math.max(2, Math.round(ob.getScaledWidth() * K))}:${Math.max(2, Math.round(ob.getScaledHeight() * K))}${o.key ? `,chromakey=color=0x${o.key.color.slice(1)}:similarity=${(0.08 + o.key.sim / 100 * 0.32).toFixed(3)}:blend=${((o.key.soft || 0) / 100 * 0.25).toFixed(3)}` : ''}${+rad ? `,format=rgba,rotate=${rad}:ow=rotw(${rad}):oh=roth(${rad}):c=none` : ''}` };
+          geo[k] = { ox: Math.round(bb.left * K), oy: Math.round(bb.top * K), chain: `${o.start > offset ? `tpad=start_mode=clone:start_duration=${(o.start - offset).toFixed(2)},` : ''}scale=${Math.max(2, Math.round(ob.getScaledWidth() * K))}:${Math.max(2, Math.round(ob.getScaledHeight() * K))}${o.key ? `,chromakey=color=0x${o.key.color.slice(1)}:similarity=${(0.08 + o.key.sim / 100 * 0.32).toFixed(3)}:blend=${((o.key.soft || 0) / 100 * 0.25).toFixed(3)}` : ''}${+rad ? `,format=rgba,rotate=${rad}:ow=rotw(${rad}):oh=roth(${rad}):c=none` : ''},format=rgba,colorchannelmixer=aa=${bounded(o.opacity ?? 1, 0, 1).toFixed(2)}` };
         } else { const n = `ov${k}.png`; await ff.writeFile(n, await overlayPNG(o)); names.push(n); inputs.push('-i', n); }
       }
-      let g = `[0:v]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:black,setsar=1${c.rev ? ',reverse' : ''}${sp !== 1 ? `,setpts=PTS/${sp}` : ''},fps=${EXP.fps}${FX[c.fx || 0].f ? ',' + FX[c.fx || 0].f : ''}${c.fade ? `,fade=t=in:d=.4,fade=t=out:st=${Math.max(0, td - .4).toFixed(2)}:d=.4` : ''}[b0]`, last = 'b0';
+      const fd = Math.min(0.4, Math.max(0.05, td / 2));
+      const videoFadeFilter = c.fade ? ',fade=type=in:duration=' + fd.toFixed(3) + ',fade=type=out:start_time=' + Math.max(0, td - fd).toFixed(3) + ':duration=' + fd.toFixed(3) : '';
+      const audioFadeFilter = c.fade ? 'afade=type=in:duration=' + fd.toFixed(3) + ',afade=type=out:start_time=' + Math.max(0, td - fd).toFixed(3) + ':duration=' + fd.toFixed(3) : '';
+      const adjFilter = adjustmentFilter(c);
+      let g = '[0:v]scale=' + W + ':' + H + ':force_original_aspect_ratio=decrease,pad=' + W + ':' + H + ':(ow-iw)/2:(oh-ih)/2:black,setsar=1' +
+        (c.rev ? ',reverse' : '') + (sp !== 1 ? ',setpts=PTS/' + sp : '') + ',fps=' + EXP.fps +
+        (FX[c.fx || 0].f ? ',' + FX[c.fx || 0].f : '') + (adjFilter ? ',' + adjFilter : '') + videoFadeFilter + '[b0]', last = 'b0';
       live.forEach((o, k) => { // lower layers first so stacking matches the preview
-        g += `;[${k + 1}:v]${geo[k] ? geo[k].chain : `scale=${W}:${H}`}[s${k}];[${last}][s${k}]overlay=${geo[k] ? geo[k].ox + ':' + geo[k].oy : '0:0'}:enable='between(t,${Math.max(0, o.start - offset).toFixed(2)},${(o.start + o.dur - offset).toFixed(2)})'[b${k + 1}]`; last = `b${k + 1}`;
+        const blend = o.type !== 'video' ? (o.blend || 'normal') : 'normal';
+        const enable = "enable='between(t," + Math.max(0, o.start - offset).toFixed(2) + ',' + (o.start + o.dur - offset).toFixed(2) + ")'";
+        const outTag = 'b' + (k + 1);
+        if (blend !== 'normal' && !geo[k]) {
+          // Full-canvas overlays use their alpha as a mask so pixels outside the overlay remain unchanged.
+          g += ';[' + last + ']format=yuv444p,split[baseKeep' + k + '][baseBlend' + k + '];' +
+            '[' + (k + 1) + ':v]scale=' + W + ':' + H + ',format=rgba,split[overlayColor' + k + '][overlayAlpha' + k + '];' +
+            '[overlayColor' + k + ']format=yuv444p[overlayYuv' + k + '];' +
+            '[baseBlend' + k + '][overlayYuv' + k + ']blend=all_mode=' + blend + ':all_opacity=1[blendFrame' + k + '];' +
+            "[overlayAlpha" + k + "]alphaextract,format=yuv444p,geq=lum='(lum(X,Y)-16)*255/219':cb='(lum(X,Y)-16)*255/219':cr='(lum(X,Y)-16)*255/219'[blendMask" + k + "];" +
+            '[baseKeep' + k + '][blendFrame' + k + '][blendMask' + k + ']maskedmerge=' + enable + '[' + outTag + ']';
+        } else {
+          g += ';[' + (k + 1) + ':v]' + (geo[k] ? geo[k].chain : 'scale=' + W + ':' + H) + '[s' + k + '];' +
+            '[' + last + '][s' + k + ']overlay=' + (geo[k] ? geo[k].ox + ':' + geo[k].oy : '0:0') + ':' + enable + '[' + outTag + ']';
+        }
+        last = outTag;
       });
       const tx = TD[i + 1] || 0; // hold the last frame so the blend has something to fade from
       if (tx) { g += `;[${last}]tpad=stop_mode=clone:stop_duration=${tx.toFixed(2)}[bt]`; last = 'bt'; }
       const seg = `seg${i}.mp4`;
-      const af = [c.rev && 'areverse', sp !== 1 && `atempo=${sp}`, (c.vol ?? 1) !== 1 && `volume=${c.vol}`, c.fade && `afade=t=in:d=.4,afade=t=out:st=${Math.max(0, td - .4).toFixed(2)}:d=.4`, tx > 0 && `apad=pad_dur=${tx.toFixed(2)}`].filter(Boolean).join(','), enc = a => ['-ss', String(c.in), '-t', String(d), '-i', src, ...inputs, '-filter_complex', g, '-map', `[${last}]`, '-map', '0:a:0?', ...a, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-t', (td + tx).toFixed(3), seg]; // -t: a long overlay video must not stretch the clip
+      const af = [c.rev && 'areverse', sp !== 1 && `atempo=${sp}`, (c.vol ?? 1) !== 1 && `volume=${c.vol}`, c.fade && audioFadeFilter, tx > 0 && `apad=pad_dur=${tx.toFixed(2)}`].filter(Boolean).join(','), enc = a => ['-ss', String(c.in), '-t', String(d), '-i', src, ...inputs, '-filter_complex', g, '-map', `[${last}]`, '-map', '0:a:0?', ...a, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-t', (td + tx).toFixed(3), seg]; // -t: a long overlay video must not stretch the clip
       try { await run(enc(af ? ['-af', af] : [])); } catch (e) { if (!af) throw e; await run(enc(['-an'])); }
       for (const n of names) await ff.deleteFile(n);
       segs.push(seg); offset += td;
     }
     if (cached) await ff.deleteFile(cached).catch(() => {});
+    exportProgressHandler = null;
+    updateBusy('Finishing transitions…', 'Preparing the final sequence of clips.', 68, 'Transitions');
     const groups = []; segs.forEach((sg, i) => (i && TD[i] ? groups[groups.length - 1].push(i) : groups.push([i])));
     const pieces = [];
+    exportProgressHandler = ({ progress }) => {
+      const fraction = Number.isFinite(progress) ? Math.max(0, Math.min(1, progress)) : 0;
+      updateBusy('Blending transitions…', `Processing transition group ${Math.min(exportGroupIndex + 1, groups.length)} of ${groups.length}.`, 70 + ((exportGroupIndex + fraction) / Math.max(1, groups.length)) * 12, 'Transitions');
+    };
     for (const [gi, grp] of groups.entries()) {
+      exportGroupIndex = gi;
+      updateBusy('Blending transitions…', `Preparing group ${gi + 1} of ${groups.length}.`, 70 + (gi / Math.max(1, groups.length)) * 12, 'Transitions');
       if (grp.length === 1) { pieces.push(segs[grp[0]]); continue; }
       say(`Blending clips (${gi + 1} of ${groups.length})…`);
       const ins = grp.flatMap(i => ['-i', segs[i]]), name = `grp${gi}.mp4`;
@@ -552,6 +939,8 @@ $('goExport').onclick = async () => {
       try { await enc2(fv + fa.slice(0, -1), ['-map', pv, '-map', pa]); } catch (e) { await enc2(fv.slice(0, -1), ['-map', pv, '-an']); }
       pieces.push(name);
     }
+    exportProgressHandler = null;
+    updateBusy('Joining clips…', 'Combining the rendered clips into one MP4.', 84, 'Final assembly');
     say('Joining clips…');
     await ff.writeFile('list.txt', new TextEncoder().encode(pieces.map(s => `file '${s}'`).join('\n')));
     await run(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', 'joined.mp4']);
@@ -559,11 +948,12 @@ $('goExport').onclick = async () => {
     let out = 'joined.mp4';
     const ovA = S.overlays.filter(o => o.type === 'video');
     if (S.audio.length || ovA.length) { // mix music, voice-over and overlay-video sound on top
+      updateBusy('Mixing audio tracks…', 'Combining the original sound, music, and voice-over.', 90, 'Audio');
       say('Mixing audio…');
       const trk = [...S.audio.map(a => ({ m: a.mediaId, st: a.start, in: a.in, out: a.out, vol: a.vol, fade: a.fade, ov: false })), ...ovA.map(o => ({ m: o.mediaId, st: o.start, in: 0, out: o.dur, ov: true }))], ins = [];
       for (let k = 0; k < trk.length; k++) { await ff.writeFile(`aud${k}`, new Uint8Array(await files[trk[k].m].arrayBuffer())); ins.push('-i', `aud${k}`); }
       const tryMix = (idx, withOrig) => {
-        const parts = idx.map(k => { const a = trk[k], ms = Math.round(a.st * 1000); return `[${k + 1}:a]atrim=start=${a.in}:end=${a.out},asetpts=PTS-STARTPTS${(a.vol ?? 1) !== 1 ? `,volume=${a.vol}` : ''}${a.fade ? `,afade=t=in:d=1,afade=t=out:st=${Math.max(0, a.out - a.in - 1).toFixed(2)}:d=1` : ''},adelay=${ms}|${ms}[a${k}]`; });
+        const parts = idx.map(k => { const a = trk[k], ms = Math.round(a.st * 1000); return `[${k + 1}:a]atrim=start=${a.in}:end=${a.out},asetpts=PTS-STARTPTS${(a.vol ?? 1) !== 1 ? `,volume=${a.vol}` : ''}${a.fade ? ',afade=type=in:duration=1,afade=type=out:start_time=' + Math.max(0, a.out - a.in - 1).toFixed(2) + ':duration=1' : ''},adelay=${ms}|${ms}[a${k}]`; });
         return run(['-i', 'joined.mp4', ...ins, '-filter_complex', `${parts.join(';')};${withOrig ? '[0:a]' : ''}${idx.map(k => `[a${k}]`).join('')}amix=inputs=${idx.length + (withOrig ? 1 : 0)}:duration=first:normalize=0[m]`, '-map', '0:v', '-map', '[m]', '-c:v', 'copy', '-c:a', 'aac', 'final.mp4']);
       };
       const all = trk.map((_, k) => k), music = all.filter(k => !trk[k].ov); let done = false;
@@ -574,19 +964,41 @@ $('goExport').onclick = async () => {
       if (!done) throw new Error('Could not mix the audio tracks.');
       out = 'final.mp4';
     }
+    updateBusy('Preparing your MP4…', 'Writing the final video file.', 97, 'Finishing');
     const data = await ff.readFile(out);
     await saveVideo(data);
     ['joined.mp4', 'final.mp4', 'list.txt'].forEach(n => ff.deleteFile(n).catch(() => {}));
-    say('Done — your video was downloaded.');
+    say('Export complete — your MP4 is ready.');
   } catch (err) {
     console.error(err);
-    if (EXP.res > 1080) { // 2K / 4K can run out of memory on a phone: drop to 1080p and try again
-      EXP.res = 1080; [...$('resList').children].forEach(b => b.classList.toggle('on', +b.dataset.v === 1080));
-      try { ff.terminate(); } catch (e) { /* already gone */ } ff = null; say('That size ran out of memory. Trying again at 1080p…'); btn.disabled = false; return $('goExport').onclick();
+    const errText = String(err && err.message || err);
+    const encoderNotLoaded = /ffmpeg is not loaded|not loaded, call.*ffmpeg\.load|called FFmpeg\.terminate/i.test(errText);
+    if (encoderNotLoaded && recoveryAttempt < 1) {
+      // The browser/WebView can lose the FFmpeg worker. A truthy `ff` reference is not proof
+      // that its worker is still alive; throw it away and rebuild the full export once.
+      exportProgressHandler = null;
+      disposeFFmpeg();
+      ffLogs = [];
+      updateBusy('Restarting video engine…', 'The encoder worker stopped responding. MediaY is reloading it and retrying once.', 2, 'Recovery');
+      say('Video engine stopped responding; reloading it and retrying once…');
+      btn.disabled = false;
+      return $('goExport').onclick(null, recoveryAttempt + 1);
     }
-    say('Export problem: ' + (err.message || err) + '. Try 720p or a shorter video.');
+    const memoryProblem = /out of memory|memory access out of bounds|failed to grow memory|cannot allocate|allocation failed|out of memory|oom/i.test(errText + ' ' + ffLogs.join(' '));
+    if (EXP.res > 1080 && memoryProblem) { // only downgrade resolution when there is evidence of a memory failure
+      EXP.res = 1080; [...$('resList').children].forEach(b => b.classList.toggle('on', +b.dataset.v === 1080));
+      exportProgressHandler = null; disposeFFmpeg(); updateBusy('Retrying at 1080p…', 'The selected resolution used too much memory. Retrying at a lower resolution.', 3, 'Retry'); say('That size ran out of memory. Trying again at 1080p…'); btn.disabled = false; return $('goExport').onclick();
+    }
+    exportFailed = true;
+    exportProgressHandler = null;
+    const diagnostics = ffLogs.length ? (' Encoder details: ' + ffLogs.slice(-4).join(' | ').slice(0, 650)) : '';
+    const message = 'Export problem: ' + (err && err.message || err) + '. Try 720p or a shorter clip.' + diagnostics;
+    say(message);
+    showBusyError('Export failed', message);
   }
+  exportProgressHandler = null;
   btn.disabled = false;
+  if (!exportFailed) hideBusy();
 };
 
 /* ---------- Effects sheet, fades, text styles ---------- */
@@ -594,9 +1006,10 @@ const sheet = $('sheet'), clipNow = () => (sel && sel.lane === 'main' ? S.main.f
 function markFx() { const c = clipNow(); [...$('fxList').children].forEach((b, i) => b.classList.toggle('on', i === ((c && c.fx) || 0))); }
 function openSheet(name) {
   sheet.hidden = false; sheet.dataset.tab = name;
+  sheet.classList.toggle('sheet-tall', name === 'adjust' || name === 'blend');
   document.querySelectorAll('[data-pane]').forEach(p => (p.hidden = p.dataset.pane !== name));
   document.querySelectorAll('.dock button').forEach(b => b.classList.toggle('on', b.dataset.sheet === name));
-  if (name === 'fx') markFx(); else if (name === 'speed') markSp(); else if (name === 'vol') markVol(); else if (name === 'tr') markTr(); else if (name === 'text') markText(); else if (name === 'tpl') markTpl(); else if (name === 'key') markKey(); else if (window.lucide) lucide.createIcons();
+  if (name === 'fx') markFx(); else if (name === 'adjust') markAdjust(); else if (name === 'blend') markBlend(); else if (name === 'speed') markSp(); else if (name === 'vol') markVol(); else if (name === 'tr') markTr(); else if (name === 'text') markText(); else if (name === 'tpl') markTpl(); else if (name === 'key') markKey(); else if (window.lucide) lucide.createIcons();
 }
 const closeSheet = () => { sheet.hidden = true; document.querySelectorAll('.dock button').forEach(b => b.classList.remove('on')); };
 $('sheetClose').onclick = closeSheet;
@@ -607,6 +1020,79 @@ $('fxList').onclick = e => {
   if (!c) return say('Import a video first.');
   c.fx = +b.dataset.fx; commit(); refresh(t); markFx(); say(`${FX[c.fx].n} applied to this clip.`);
 };
+
+/* ---------- Adjustments + blending ---------- */
+function markAdjust() {
+  const c = clipNow(), a = adjustOf(c);
+  document.querySelectorAll('[data-adjust]').forEach(input => {
+    const key = input.dataset.adjust;
+    input.value = String(a[key]);
+    const output = $('adjustVal' + key[0].toUpperCase() + key.slice(1));
+    if (output) output.textContent = (a[key] > 0 && (key === 'brightness' || key === 'highlights' || key === 'shadows') ? '+' : '') + a[key] + (key === 'contrast' || key === 'saturation' ? '%' : '');
+  });
+}
+function adjustInputChanged(input) {
+  const c = clipNow();
+  if (!c) return say('Select a video clip before adjusting it.');
+  c.adjust = adjustOf(c);
+  c.adjust[input.dataset.adjust] = Number(input.value);
+  const key = input.dataset.adjust, output = $('adjustVal' + key[0].toUpperCase() + key.slice(1));
+  if (output) output.textContent = (c.adjust[key] > 0 && (key === 'brightness' || key === 'highlights' || key === 'shadows') ? '+' : '') + c.adjust[key] + (key === 'contrast' || key === 'saturation' ? '%' : '');
+  refresh(t);
+}
+document.querySelectorAll('[data-adjust]').forEach(input => {
+  input.oninput = () => adjustInputChanged(input);
+  input.onchange = () => {
+    const c = clipNow();
+    if (c) { commit(); refresh(t); say('Adjustment saved. It will be included in the exported video.'); }
+  };
+});
+$('adjustBtn').onclick = () => (sheet.hidden || sheet.dataset.tab !== 'adjust' ? openSheet('adjust') : closeSheet());
+$('adjustApplyAll').onclick = () => {
+  const c = clipNow();
+  if (!c) return say('Select a video clip first.');
+  const settings = adjustOf(c);
+  S.main.forEach(item => { item.adjust = { ...settings }; });
+  commit(); markAdjust(); refresh(t); say('Adjustment settings applied to all video clips.');
+};
+
+function blendItem() { return sel && sel.lane === 'overlay' ? S.overlays.find(o => o.id === sel.id) : null; }
+function applyBlend(o) {
+  const obj = o && objOf(o.id);
+  if (!obj) return;
+  obj.set({ opacity: bounded(o.opacity ?? 1, 0, 1), globalCompositeOperation: canvasBlendMode(o.blend || 'normal') });
+  canvas.requestRenderAll();
+}
+function markBlend() {
+  const o = blendItem(), opacity = o ? Math.round(bounded(o.opacity ?? 1, 0, 1) * 100) : 100;
+  $('blendOpacity').value = opacity; $('blendOpacityLabel').textContent = opacity + '%';
+  [...$('blendModes').children].forEach(b => b.classList.toggle('on', b.dataset.blend === ((o && o.blend) || 'normal')));
+}
+$('blendBtn').onclick = () => (sheet.hidden || sheet.dataset.tab !== 'blend' ? openSheet('blend') : closeSheet());
+$('blendModes').innerHTML = BLEND_OPTIONS.map(([name, mode]) => '<button type="button" data-blend="' + mode + '">' + name + '</button>').join('');
+$('blendModes').onclick = e => {
+  const b = e.target.closest('[data-blend]'), o = blendItem();
+  if (!b) return;
+  if (!o || o.type === 'text') return say('Select a picture or video overlay first.');
+  o.blend = b.dataset.blend; applyBlend(o); markBlend(); commit(); refresh(t);
+  say((BLEND_OPTIONS.find(item => item[1] === o.blend) || BLEND_OPTIONS[0])[0] + ' blend applied.');
+};
+$('blendOpacity').oninput = e => {
+  const o = blendItem();
+  if (!o) return say('Select a picture or video overlay first.');
+  o.opacity = Number(e.target.value) / 100;
+  $('blendOpacityLabel').textContent = e.target.value + '%';
+  applyBlend(o); refresh(t);
+};
+$('blendOpacity').onchange = () => { if (blendItem()) { commit(); say('Overlay opacity saved.'); } };
+$('blendApplyAll').onclick = () => {
+  const o = blendItem();
+  if (!o) return say('Select a picture or video overlay first.');
+  const opacity = bounded(o.opacity ?? 1, 0, 1), mode = o.blend || 'normal';
+  S.overlays.forEach(item => { item.opacity = opacity; item.blend = mode; applyBlend(item); });
+  commit(); markBlend(); refresh(t); say('Blending settings applied to all overlay layers.');
+};
+
 $('fadeBtn').onclick = () => { const c = volClip(); if (!c) return say('Import a video first.'); c.fade = !c.fade; commit(); say(c.fade ? 'Fade in and out added.' : 'Fade removed.'); };
 let txtStyle = 0;
 $('styleList').innerHTML = ['Classic', 'Neon', 'Label', 'Pop', 'Headline', 'News blue'].map((n, i) => `<button data-ts="${i}" class="${i ? '' : 'on'}">${n}</button>`).join('');
@@ -723,9 +1209,18 @@ async function openTpl(p) { // load the template as an editable project; then ta
   if ((S.main.length || S.overlays.length || S.audio.length) && !confirm('This replaces your current project. Continue?')) return;
   const fresh = c => { const n = { ...c, id: uid() }; delete n.el; return n; };
   const main = [...p.pre.map(fresh), ...(p.slotClip ? [fresh(p.slotClip)] : []), ...p.post.map(fresh)];
-  t = 0; await restore(JSON.stringify({ ratio: p.ratio, main, audio: p.audio.map(fresh), overlays: p.overlays.map(fresh), nextLayer: Math.max(1, ...p.overlays.map(o => o.layer || 0)) + 1 }));
-  commit(); closeSheet(); await seek(0); refresh(0);
-  say(p.slotClip ? 'Template opened. Tap Replace, choose your news video, then tap the sample clip.' : 'Template opened.');
+  updateBusy('Opening template…', 'Restoring clips, audio, overlays, and timing.', 15, 'Template');
+  try {
+    await validateTemplateAssets(p);
+    t = 0; await restore(JSON.stringify({ ratio: p.ratio, main, audio: p.audio.map(fresh), overlays: p.overlays.map(fresh), nextLayer: Math.max(1, ...p.overlays.map(o => o.layer || 0)) + 1 }));
+    updateBusy('Finishing template…', 'Rebuilding the preview and timeline.', 85, 'Template');
+    commit(); closeSheet(); await seek(0); refresh(0);
+    say(p.slotClip ? 'Template opened. Tap Replace, choose your news video, then tap the sample clip.' : 'Template opened.');
+    hideBusy();
+  } catch (err) {
+    showBusyError('Could not open template', err.message || String(err));
+    say('Could not open template: ' + (err.message || err));
+  }
 }
 $('tplBtn').onclick = () => openSheet('tpl'); $('tplStart').onclick = () => openSheet('tpl');
 $('tplSave').onclick = () => {
@@ -740,17 +1235,20 @@ $('tplInput').onchange = async e => {
   const tpl = loadTpls().find(x => x.id === pendingTpl), list = [...e.target.files]; e.target.value = ''; if (!tpl || !list.length) return;
   if ((S.main.length || S.overlays.length || S.audio.length) && !confirm('This replaces your current project. Continue?')) return;
   say('Building your video from the template…');
+  updateBusy('Applying template…', 'Importing replacement clips and rebuilding the timeline.', 2, 'Template');
   try {
+    await validateTemplateAssets(tpl, { skipSlotClip: true });
     const news = [];
-    for (const file of list) { const mediaId = await storeMedia(file), d = await probe(urls[mediaId]); if (!d || !Number.isFinite(d)) throw new Error('Could not read the duration of ' + file.name + '. Try a standard MP4 or MOV video.'); news.push({ ...tpl.proto, id: uid(), mediaId, name: file.name, in: 0, out: d, src: d, tr: news.length ? undefined : tpl.proto.tr }); }
+    for (let fileIndex = 0; fileIndex < list.length; fileIndex++) { const file = list[fileIndex]; updateBusy('Applying template…', `Reading replacement video ${fileIndex + 1} of ${list.length}: ${file.name}.`, 5 + (fileIndex / Math.max(1, list.length)) * 60, 'Template'); const mediaId = await storeMedia(file), d = await probe(urls[mediaId]); if (!d || !Number.isFinite(d)) throw new Error('Could not read the duration of ' + file.name + '. Try a standard MP4 or MOV video.'); news.push({ ...tpl.proto, id: uid(), mediaId, name: file.name, in: 0, out: d, src: d, tr: news.length ? undefined : tpl.proto.tr }); }
     const fresh = c => ({ ...c, id: uid() }), N = news.reduce((a, c) => a + dur(c), 0), a0 = tpl.pre.reduce((a, c) => a + dur(c), 0), a1 = a0 + tpl.slotLen;
     const f = x => (x >= a1 - 0.01 ? x - tpl.slotLen + N : x <= a0 ? x : Math.min(x, a0 + N)), Tnew = a0 + N + tpl.post.reduce((a, c) => a + dur(c), 0);
     const fS = x => (tpl.slotLen === 0 ? (x > a0 + 0.01 ? x + N : x) : f(x)); // with no sample clip, a layer starting at 0 must stay at 0 // intro stays, outro shifts, "whole video" layers stretch
     const ov = tpl.overlays.map(o => { const s0 = fS(o.start), e0 = Math.min(f(o.start + o.dur), Tnew), c = fresh(o); delete c.el; return Object.assign(c, { start: s0, dur: Math.max(0.5, e0 - s0) }); });
     const au = tpl.audio.map(a => { const s0 = fS(a.start), len = Math.min(f(a.start + a.out - a.in), Tnew) - s0; return { ...fresh(a), start: s0, out: a.in + Math.max(0.3, Math.min(len, (a.src || a.out) - a.in)) }; });
     const S2 = { ratio: tpl.ratio, main: [...tpl.pre.map(fresh), ...news, ...tpl.post.map(fresh)], audio: au, overlays: ov, nextLayer: Math.max(1, ...ov.map(o => o.layer || 0)) + 1 };
-    t = 0; await restore(JSON.stringify(S2)); commit(); await seek(0); refresh(0); closeSheet(); say(`Done: ${list.length} video${list.length > 1 ? 's' : ''} placed in your template.`);
-  } catch (err) { say('Could not use the template: ' + (err.message || err)); }
+    t = 0; updateBusy('Rebuilding timeline…', 'Restoring overlays, timing, and audio tracks.', 75, 'Template'); await restore(JSON.stringify(S2)); commit(); await seek(0); refresh(0); closeSheet(); say(`Done: ${list.length} video${list.length > 1 ? 's' : ''} placed in your template.`);
+  } catch (err) { say('Could not use the template: ' + (err.message || err)); showBusyError('Could not apply template', err.message || String(err)); return; }
+  hideBusy();
 };
 $('doneBtn').onclick = () => { select(null); closeSheet(); };
 $('styleBtn').onclick = () => openSheet('text');
@@ -763,12 +1261,29 @@ document.querySelectorAll('#ratioPick button').forEach(b => (b.onclick = () => {
 const LANGS = [['Auto-detect', ''], ['English', 'english'], ['Hindi', 'hindi'], ['Bengali', 'bengali'], ['Urdu', 'urdu'], ['Spanish', 'spanish'], ['French', 'french'], ['Portuguese', 'portuguese'], ['Arabic', 'arabic'], ['Indonesian', 'indonesian']];
 $('capLang').innerHTML = LANGS.map(([n, v]) => `<option value="${v}">${n}</option>`).join('');
 $('capBtn').onclick = () => (sheet.hidden || sheet.dataset.tab !== 'cap' ? openSheet('cap') : closeSheet());
-let asr;
+let asr, asrBackend = 'wasm';
+async function createSpeechPipeline(useWebGPU) {
+  const packageName = useWebGPU ? '@huggingface/transformers@3.8.1' : '@xenova/transformers@2.17.2';
+  const { pipeline, env } = await import(`https://cdn.jsdelivr.net/npm/${packageName}`);
+  env.allowLocalModels = false;
+  const progress_callback = p => {
+    if (p.status !== 'progress') return;
+    const detail = `Downloading speech model… ${Math.round(p.progress || 0)}%`;
+    say(detail);
+    updateBusy('Downloading speech model…', detail, Number.isFinite(p.progress) ? p.progress : null, 'Model download');
+  };
+  const options = { progress_callback };
+  if (useWebGPU) options.device = 'webgpu';
+  const modelId = useWebGPU ? 'onnx-community/whisper-tiny' : 'Xenova/whisper-tiny';
+  const model = await pipeline('automatic-speech-recognition', modelId, options);
+  asrBackend = useWebGPU ? 'webgpu' : 'wasm';
+  return model;
+}
 async function pcmOf(src) { // 16 kHz mono sound of one clip; throws if it has no sound
   await loadMedia(src.m);
   const ac = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
   try {
-    const buf = await ac.decodeAudioData(await files[src.m].arrayBuffer()), pcm = buf.getChannelData(0).slice(Math.floor(src.in * 16000), Math.ceil(src.out * 16000));
+    const buf = await ac.decodeAudioData(await files[src.m].arrayBuffer()), sampleRate = buf.sampleRate || 16000, pcm = buf.getChannelData(0).slice(Math.floor(src.in * sampleRate), Math.ceil(src.out * sampleRate));
     if (pcm.length < 1600) throw new Error('empty'); return pcm;
   } finally { ac.close(); }
 }
@@ -793,25 +1308,73 @@ $('capGo').onclick = async () => {
   const cands = aSel ? [A(aSel)] : [...(vid ? [{ m: vid.mediaId, in: vid.in, out: vid.out, start: startOf(vid, 'main'), sp: vid.speed || 1, label: 'this video' }] : []), ...S.audio.map(A)];
   if (!cands.length) return say('Import a video or add audio first.');
   const btn = $('capGo'); btn.disabled = true;
+  let captionFailed = false;
+  updateBusy('Preparing captions…', 'Loading the selected audio and speech-recognition model.', 1, 'Captions');
   try {
     if (!asr) {
-      say('Loading the speech model (about 40 MB the first time)…');
-      const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
-      env.allowLocalModels = false;
-      asr = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny', { progress_callback: p => p.status === 'progress' && say(`Downloading speech model… ${Math.round(p.progress)}%`) });
+      let gpuReady = false;
+      if (navigator.gpu && typeof navigator.gpu.requestAdapter === 'function') {
+        try {
+          updateBusy('Starting GPU captions…', 'Checking whether this browser can accelerate speech recognition.', null, 'GPU acceleration');
+          asr = await createSpeechPipeline(true);
+          gpuReady = true;
+        } catch (gpuError) {
+          asr = null;
+          updateBusy('Switching to compatibility mode…', 'GPU acceleration is unavailable on this device. Using the compatible speech engine instead.', null, 'Compatibility');
+        }
+      }
+      if (!asr) {
+        say('Loading the speech model (about 40 MB the first time)…');
+        updateBusy('Loading speech model…', 'The first download is cached for later sessions.', null, 'Model download');
+        asr = await createSpeechPipeline(false);
+      } else if (gpuReady) {
+        updateBusy('Speech model ready', 'Using browser GPU acceleration for transcription.', null, 'GPU accelerated');
+      }
     }
     let n = 0, used = '';
     for (const src of cands) { // the video first, then your audio tracks; a silent video is skipped automatically
       say(`Listening to ${src.label}…`);
+      updateBusy('Transcribing speech…', `Listening to ${src.label}. This step can take time on slower phones.`, null, 'Transcription');
       let pcm; try { pcm = await pcmOf(src); } catch (e) { continue; }
-      n = await captionFrom(pcm, src); if (n) { used = src.label; break; }
+      try {
+        n = await captionFrom(pcm, src);
+      } catch (inferenceError) {
+        if (asrBackend !== 'webgpu') throw inferenceError;
+        // GPU model loading can succeed while inference fails on certain drivers.
+        asr = null;
+        updateBusy('Switching to compatible captions…', 'This device could not finish GPU inference. Retrying with the CPU engine.', null, 'Compatibility');
+        asr = await createSpeechPipeline(false);
+        n = await captionFrom(pcm, src);
+      }
+      if (n) { used = src.label; break; }
     }
     if (n) { restack(); commit(); refresh(t); closeSheet(); say(`Added ${n} captions from ${used}. Tap one to restyle or move it.`); }
     else say(S.audio.length || aSel ? 'No speech found.' : 'This video has no sound to caption. Add or record audio, then try again.');
-  } catch (e) { say('Captions failed: ' + (e.message || e) + ' (the first run needs internet).'); }
+  } catch (e) { const message = 'Captions failed: ' + (e.message || e) + ' (the first run needs internet).'; say(message); captionFailed = true; showBusyError('Caption generation failed', message); }
   btn.disabled = false;
+  if (!captionFailed) hideBusy();
 };
-const TR = [['None', ''], ['Fade', 'fade'], ['Dip black', 'fadeblack'], ['Flash', 'fadewhite'], ['Slide', 'slideleft'], ['Wipe', 'wipeleft'], ['Circle', 'circleopen'], ['Dissolve', 'dissolve'], ['Pixelate', 'pixelize'], ['Radial', 'radial'], ['Slide right', 'slideright'], ['Wipe up', 'wipeup'], ['Diagonal', 'diagtl'], ['Iris in', 'circleclose'], ['Blinds', 'hlslice']];
+const TR = [
+  ['None', ''],
+  ['Fade', 'fade'], ['Fade black', 'fadeblack'], ['Fade white', 'fadewhite'],
+  ['Fade fast', 'fadefast'], ['Fade slow', 'fadeslow'], ['Fade grays', 'fadegrays'],
+  ['Dissolve', 'dissolve'], ['Pixelate', 'pixelize'], ['Blur', 'hblur'], ['Distance', 'distance'],
+  ['Circle crop', 'circlecrop'], ['Rectangle crop', 'rectcrop'], ['Radial', 'radial'],
+  ['Circle open', 'circleopen'], ['Circle close', 'circleclose'],
+  ['Vertical open', 'vertopen'], ['Vertical close', 'vertclose'],
+  ['Horizontal open', 'horzopen'], ['Horizontal close', 'horzclose'],
+  ['Smooth left', 'smoothleft'], ['Smooth right', 'smoothright'], ['Smooth up', 'smoothup'], ['Smooth down', 'smoothdown'],
+  ['Slide left', 'slideleft'], ['Slide right', 'slideright'], ['Slide up', 'slideup'], ['Slide down', 'slidedown'],
+  ['Wipe left', 'wipeleft'], ['Wipe right', 'wiperight'], ['Wipe up', 'wipeup'], ['Wipe down', 'wipedown'],
+  ['Wipe top-left', 'wipetl'], ['Wipe top-right', 'wipetr'], ['Wipe bottom-left', 'wipebl'], ['Wipe bottom-right', 'wipebr'],
+  ['Diagonal TL', 'diagtl'], ['Diagonal TR', 'diagtr'], ['Diagonal BL', 'diagbl'], ['Diagonal BR', 'diagbr'],
+  ['Horizontal slice', 'hlslice'], ['Horizontal reverse slice', 'hrslice'],
+  ['Vertical up-slice', 'vuslice'], ['Vertical down-slice', 'vdslice'],
+  ['Squeeze horizontal', 'squeezeh'], ['Squeeze vertical', 'squeezev'], ['Zoom in', 'zoomin'],
+  ['Wind left', 'hlwind'], ['Wind right', 'hrwind'], ['Wind up', 'vuwind'], ['Wind down', 'vdwind'],
+  ['Cover left', 'coverleft'], ['Cover right', 'coverright'], ['Cover up', 'coverup'], ['Cover down', 'coverdown'],
+  ['Reveal left', 'revealleft'], ['Reveal right', 'revealright'], ['Reveal up', 'revealup'], ['Reveal down', 'revealdown']
+];
 function markTr() { const c = clipNow(); [...$('trList').children].forEach((b, i) => b.classList.toggle('on', ((c && c.tr) || '') === TR[i][1])); const d = c && c.trDur || 0.5; $('trDuration').value = d; $('trDurationLabel').textContent = Number(d).toFixed(1) + ' s'; $('trDuration').disabled = !c || !c.tr; }
 $('trBtn').onclick = () => (sheet.hidden || sheet.dataset.tab !== 'tr' ? openSheet('tr') : closeSheet());
 $('trList').innerHTML = TR.map(([n, v]) => `<button data-tr="${v}">${n}</button>`).join('');

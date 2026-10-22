@@ -3,6 +3,8 @@ name: Build APK
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -29,7 +31,9 @@ jobs:
 
       - run: |
           mkdir -p www
-          cp index.html style.css app.js manifest.json sw.js legal.html favicon.svg icon-*.png www/
+          cp index.html style.css app.js setup.js setup.css manifest.json sw.js legal.html favicon.svg icon-*.png www/
+          mkdir -p www/vendor/ffmpeg
+          cp vendor/ffmpeg/ffmpeg.js vendor/ffmpeg/814.ffmpeg.js vendor/ffmpeg/LICENSE www/vendor/ffmpeg/
 
       - run: |
           npm init -y
@@ -38,6 +42,10 @@ jobs:
           npx cap init "ProjectMedia Y" com.projectmediay.app --web-dir www
           npx cap add android
           npx cap sync android
+
+      - run: |
+          M=android/app/src/main/AndroidManifest.xml
+          grep -q RECORD_AUDIO "$M" || sed -i 's#<application#<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <application#' "$M"
 
       - run: python3 make_icons.py after
 
@@ -58,7 +66,8 @@ jobs:
           name: ProjectMedia-Y-apk
           path: ProjectMedia-Y.apk
 
-      - uses: softprops/action-gh-release@v2
+      - if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
           name: ProjectMedia Y APK ${{ github.run_number }}

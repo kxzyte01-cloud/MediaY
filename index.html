@@ -17,6 +17,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.2/anime.min.js"></script>
   <script src="https://unpkg.com/dexie@3.2.7/dist/dexie.min.js"></script>
   <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+  <script src="./vendor/ffmpeg/ffmpeg.js"></script>
 </head>
 <body>
   <header class="topbar">
@@ -58,6 +59,17 @@
     </section>
     <div id="tipBar" class="tip"><span id="tip"></span><button id="tipOff">Got it</button></div>
     <section class="timeline">
+      <div class="timeline-tools" role="toolbar" aria-label="Timeline tools">
+        <span class="timeline-tools-title">TIMELINE</span>
+        <div class="timeline-zoom" aria-label="Timeline zoom controls">
+          <button id="tlZoomOut" type="button" aria-label="Zoom out timeline" title="Zoom out">−</button>
+          <input id="tlZoom" type="range" min="6" max="90" step="3" value="30" aria-label="Timeline zoom">
+          <button id="tlZoomIn" type="button" aria-label="Zoom in timeline" title="Zoom in">+</button>
+          <button id="tlZoomFit" type="button" aria-label="Fit timeline" title="Fit timeline">Fit</button>
+          <span id="tlZoomLabel" aria-live="polite">1.0×</span>
+        </div>
+        <button id="copyTillBtn" type="button" title="Repeat the selected item from its end to the playhead" aria-label="Copy the selected item until the playhead" disabled>Copy till here</button>
+      </div>
       <div id="tl"><div class="pad"></div><div id="tlInner"></div><div class="pad"></div></div>
       <i class="cursor"></i>
       <button id="addClip" aria-label="Add media">＋</button>
@@ -66,8 +78,28 @@
   </main>
 
   <div id="sheet" class="sheet" hidden>
-    <div class="sheet-head"><span data-pane="fx">Filters</span><span data-pane="text" hidden>Text</span><span data-pane="export" hidden>Export</span><span data-pane="speed" hidden>Speed</span><span data-pane="vol" hidden>Volume</span><span data-pane="tr" hidden>Transition</span><span data-pane="cap" hidden>Auto captions</span><span data-pane="tpl" hidden>Templates</span><span data-pane="key" hidden>Chroma key</span><button id="sheetClose" aria-label="Close">✕</button></div>
+    <div class="sheet-head"><span data-pane="fx">Filters</span><span data-pane="adjust" hidden>Adjust</span><span data-pane="blend" hidden>Blending</span><span data-pane="text" hidden>Text</span><span data-pane="export" hidden>Export</span><span data-pane="speed" hidden>Speed</span><span data-pane="vol" hidden>Volume</span><span data-pane="tr" hidden>Transition</span><span data-pane="cap" hidden>Auto captions</span><span data-pane="tpl" hidden>Templates</span><span data-pane="key" hidden>Chroma key</span><button id="sheetClose" aria-label="Close">✕</button></div>
     <div data-pane="fx"><div id="fxList" class="chips"></div></div>
+    <div data-pane="adjust" hidden>
+      <button id="adjustApplyAll" class="apply-all" type="button">▱ Apply to all</button>
+      <div id="adjustControls" class="adjust-grid">
+        <label class="adjust-control"><span>Brightness <output id="adjustValBrightness">0</output></span><input type="range" min="-100" max="100" step="1" value="0" data-adjust="brightness"></label>
+        <label class="adjust-control"><span>Contrast <output id="adjustValContrast">100%</output></span><input type="range" min="0" max="200" step="1" value="100" data-adjust="contrast"></label>
+        <label class="adjust-control"><span>Saturation <output id="adjustValSaturation">100%</output></span><input type="range" min="0" max="200" step="1" value="100" data-adjust="saturation"></label>
+        <label class="adjust-control"><span>Sharpen <output id="adjustValSharpen">0</output></span><input type="range" min="0" max="100" step="1" value="0" data-adjust="sharpen"></label>
+        <label class="adjust-control"><span>Highlights <output id="adjustValHighlights">0</output></span><input type="range" min="-100" max="100" step="1" value="0" data-adjust="highlights"></label>
+        <label class="adjust-control"><span>Shadows <output id="adjustValShadows">0</output></span><input type="range" min="-100" max="100" step="1" value="0" data-adjust="shadows"></label>
+        <label class="adjust-control"><span>Grain <output id="adjustValGrain">0</output></span><input type="range" min="0" max="100" step="1" value="0" data-adjust="grain"></label>
+      </div>
+      <p class="lbl">Adjustments update the preview where supported and are rendered during export. Use Apply to all to copy these settings to every video clip.</p>
+    </div>
+    <div data-pane="blend" hidden>
+      <button id="blendApplyAll" class="apply-all" type="button">▱ Apply to all</button>
+      <label class="adjust-control blend-opacity"><span>Opacity <output id="blendOpacityLabel">100%</output></span><input id="blendOpacity" type="range" min="0" max="100" step="1" value="100"></label>
+      <p class="lbl">Blending mode</p>
+      <div id="blendModes" class="pills blend-modes"></div>
+      <p class="lbl">Blend modes and opacity are included in the exported video for picture overlays.</p>
+    </div>
     <div data-pane="export" hidden>
       <p class="lbl">Quality: 1080p is best for YouTube. 2K and 4K are very heavy for a phone, so the app drops to 1080p if it runs out of memory</p><div id="resList" class="pills"></div>
       <p class="lbl">Frames per second</p><div id="fpsList" class="pills"></div>
@@ -97,7 +129,7 @@
       <p class="lbl">Works on the selected clip and runs on your phone. The speech model (about 40 MB) downloads once. Accuracy is best for English; other languages can be rough.</p>
     </div>
     <div data-pane="tr" hidden>
-      <p class="lbl">Choose a transition for the cut before this clip.</p>
+      <p class="lbl">Choose a transition for the cut before this clip. Includes the full built-in FFmpeg transition set.</p>
       <div id="trList" class="pills"></div>
       <div class="tr-duration"><label for="trDuration">Duration <b id="trDurationLabel">0.5 s</b></label><input id="trDuration" class="rng" type="range" min="0.2" max="1.5" step="0.1" value="0.5"></div>
       <p class="lbl">Transitions are rendered into the exported video. Preview playback currently shows the cut without the transition effect.</p>
@@ -133,6 +165,8 @@
     <button id="speedBtn" data-sheet="speed" data-for="main"><i data-lucide="gauge"></i>Speed</button>
     <button id="volBtn" data-sheet="vol" data-for="main audio"><i data-lucide="volume-2"></i>Volume</button>
     <button id="fxBtn" data-sheet="fx" data-for="main"><i data-lucide="sparkles"></i>Filters</button>
+    <button id="adjustBtn" data-sheet="adjust" data-for="main"><i data-lucide="sliders-horizontal"></i>Adjust</button>
+    <button id="blendBtn" data-sheet="blend" data-for="overlay"><i data-lucide="blend"></i>Blending</button>
     <button id="fadeBtn" data-for="main audio"><i data-lucide="blend"></i>Fade</button>
     <button id="trBtn" data-sheet="tr" data-for="main"><i data-lucide="arrow-left-right"></i>Transition</button>
     <button id="styleBtn" data-sheet="text" data-for="overlay"><i data-lucide="type"></i>Edit text</button>
@@ -152,6 +186,18 @@
     <p><a href="./legal.html">Read the terms, privacy policy and licenses</a></p>
     <button id="consentBtn" class="primary">I agree and continue</button>
   </dialog>
+
+  <div id="busyOverlay" class="busy-overlay" role="dialog" aria-modal="true" aria-labelledby="busyTitle" aria-describedby="busyDetail" hidden>
+    <div class="busy-card">
+      <div class="busy-symbol" aria-hidden="true"><span class="busy-spinner"></span></div>
+      <p class="busy-eyebrow">MEDIAY WORKSPACE</p>
+      <h2 id="busyTitle">Working on your video…</h2>
+      <p id="busyDetail">Please keep this tab open while the task finishes.</p>
+      <progress id="busyProgress" max="100"></progress>
+      <div class="busy-footer"><span id="busyStage">Processing</span><span id="busyPercent"></span></div>
+      <button id="busyDismiss" class="busy-dismiss" type="button" hidden>Close</button>
+    </div>
+  </div>
 
   <script src="./app.js"></script>
   <script src="./setup.js"></script>

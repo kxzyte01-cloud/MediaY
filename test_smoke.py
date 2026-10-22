@@ -1,8 +1,10 @@
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
-root=Path('/mnt/data/MediaY-fixed')
+root=Path(__file__).resolve().parent
 html=(root/'index.html').read_text()
+# FFmpeg is covered by a real-origin integration test; stub the vendored script in this DOM-only smoke test.
+html=html.replace('<script src="./vendor/ffmpeg/ffmpeg.js"></script>', '<script>window.FFmpegWASM={};</script>')
 style=(root/'style.css').read_text()
 setup_style=(root/'setup.css').read_text()
 app=(root/'app.js').read_text()
@@ -44,7 +46,7 @@ html=html.replace('<script src="./setup.js"></script>', '<script>'+setup+'</scri
 html=html.replace('<script>'+app+'</script>', '<script>try{localStorage.setItem("pmy-consent-v1","yes")}catch(e){}</script><script>'+app+'</script>')
 
 with sync_playwright() as p:
-    browser=p.chromium.launch(executable_path='/usr/bin/chromium',headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
+    browser=p.chromium.launch(headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
     context=browser.new_context(viewport={'width':390,'height':844}, is_mobile=True, has_touch=True)
     page=context.new_page(); errors=[]; page.on('pageerror', lambda e: errors.append(str(e)))
     page.set_content(html, wait_until='domcontentloaded')
@@ -55,6 +57,31 @@ with sync_playwright() as p:
     print('PASS: New project opens setup screen')
     page.locator('#suStart').click(); page.wait_for_function("document.querySelector('#homeScreen').hidden === true")
     print('PASS: Start editing closes home/setup and opens editor')
+    assert page.locator('#tlZoom').count() == 1, 'timeline zoom slider is missing'
+    assert page.locator('#copyTillBtn').count() == 1, 'Copy till here control is missing'
+    assert page.locator('#adjustBtn').count() == 1, 'Adjust control is missing'
+    assert page.locator('#blendBtn').count() == 1, 'Blending control is missing'
+    transition_count = page.locator('#trList button').count()
+    assert transition_count == 59, f'expected None plus 58 FFmpeg transitions, found {transition_count}'
+    old_zoom = page.evaluate('PX')
+    page.locator('#tlZoomIn').click()
+    assert page.evaluate('PX') == min(90, old_zoom + 6), 'timeline zoom-in control did not change scale'
+    page.locator('#tlZoomFit').click()
+    print('PASS: timeline zoom controls work and all 58 built-in transitions are offered')
+    page.evaluate("""() => {
+      S.main.push({id:'adjust-test-a', mediaId:'missing-adjust-a', name:'adjust-a.mp4', in:0, out:5, src:5});
+      S.main.push({id:'adjust-test-b', mediaId:'missing-adjust-b', name:'adjust-b.mp4', in:0, out:5, src:5});
+      select('adjust-test-a','main');
+    }""")
+    page.locator('#adjustBtn').click()
+    page.locator('[data-adjust="brightness"]').evaluate("(e)=>{e.value='24';e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}")
+    page.locator('#adjustApplyAll').click()
+    adjust_result = page.evaluate("({a:S.main[0].adjust,b:S.main[1].adjust,filter:adjustmentFilter(S.main[0])})")
+    assert adjust_result['a']['brightness'] == 24 and adjust_result['b']['brightness'] == 24, adjust_result
+    assert 'eq=brightness=0.120' in adjust_result['filter'], adjust_result
+    assert 'fade=type=in:duration=' not in adjust_result['filter'], adjust_result
+    page.evaluate("S.main=[]; select(null); drawTimeline(); refresh(0);")
+    print('PASS: Adjust sliders and Apply to all copy valid export settings to every video clip')
     page.locator('#homeBtn').click(); page.wait_for_selector('#homeScreen:not([hidden])')
     print('PASS: Home button returns to dashboard')
     page.locator('#hmNew').click(); page.locator('#suStart').click(); page.wait_for_function("document.querySelector('#homeScreen').hidden === true")
@@ -62,7 +89,48 @@ with sync_playwright() as p:
     hidden=page.locator('#emptyState').evaluate('(e)=>e.hidden')
     assert hidden, 'empty-state overlay is still visible when an overlay exists'
     print('PASS: empty-state panel stays hidden once an overlay exists')
-    page.evaluate("S.main.push({id:'test-video', mediaId:'missing-media', name:'Smoke test video.mp4', in:0, out:5, src:5}); drawTimeline();")
+    page.evaluate("""() => {
+      S.overlays.push({id:'blend-test-a', type:'image', mediaId:'missing-blend-a', name:'blend-a.png', start:0, dur:3, layer:2, left:10, top:10, scaleX:1, scaleY:1});
+      S.overlays.push({id:'blend-test-b', type:'image', mediaId:'missing-blend-b', name:'blend-b.png', start:0, dur:3, layer:3, left:20, top:20, scaleX:1, scaleY:1});
+      select('blend-test-a','overlay');
+    }""")
+    page.locator('#blendBtn').click()
+    page.locator('#blendModes [data-blend="multiply"]').click()
+    page.locator('#blendOpacity').evaluate("(e)=>{e.value='55';e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}")
+    page.locator('#blendApplyAll').click()
+    blend_result = page.evaluate("({a:S.overlays.find(o=>o.id==='blend-test-a'),b:S.overlays.find(o=>o.id==='blend-test-b')})")
+    assert blend_result['a']['blend'] == 'multiply' and blend_result['b']['blend'] == 'multiply', blend_result
+    assert abs(blend_result['a']['opacity'] - .55) < .001 and abs(blend_result['b']['opacity'] - .55) < .001, blend_result
+    page.evaluate("select(null); drawTimeline();")
+    print('PASS: blending mode and opacity apply to all overlay layers')
+    image_result = page.evaluate("""async () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 2; canvas.height = 2;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#f01925'; ctx.fillRect(0, 0, 2, 2);
+      const png = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+      const id = 'overlay-image-recovery-test';
+      const file = new File([png], 'overlay-test.png', {type:'image/png'});
+      await db.media.put({id, name:file.name, type:file.type, blob:file});
+      files[id] = file;
+      // Simulate a stale/broken object URL while the original bytes remain in IndexedDB.
+      const recovered = await loadOverlayImage('data:image/png;base64,not-a-valid-image', {id:'overlay', mediaId:id, name:file.name});
+      const stored = await db.media.get(id);
+      const ok = recovered.width === 2 && recovered.height === 2 && stored.type === 'image/png';
+      if (urls[id] && urls[id].startsWith('blob:')) URL.revokeObjectURL(urls[id]);
+      return {ok, width:recovered.width, height:recovered.height, storedType:stored.type};
+    }""")
+    assert image_result['ok'], image_result
+    print('PASS: template overlay image can recover from a broken preview URL')
+    page.evaluate("S.main.push({id:'test-video', mediaId:'missing-media', name:'Smoke test video.mp4', in:0, out:5, src:5}); t=7; select('test-video','main');")
+    copy_result = page.evaluate("""async () => {
+      await copyTillPlayhead();
+      return {count:S.main.length, duration:total(), selected:sel && sel.id, enabled:!$('copyTillBtn').disabled};
+    }""")
+    assert copy_result['count'] == 2, copy_result
+    assert abs(copy_result['duration'] - 7) < 0.01, copy_result
+    assert copy_result['selected'] != 'test-video' and not copy_result['enabled'], copy_result
+    print('PASS: Copy till here duplicates a clip up to the playhead')
     def handle_dialog(d): d.accept('Smoke test project')
     page.on('dialog',handle_dialog)
     page.locator('#saveBtn').click(); page.wait_for_timeout(100)
