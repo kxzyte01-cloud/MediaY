@@ -13,6 +13,46 @@ const FX = [
   { n: 'Fade', c: 'contrast(.85) brightness(1.1) saturate(.8)', f: 'eq=contrast=.85:brightness=.06:saturation=.8' },
   { n: 'Retro', c: 'sepia(.7) contrast(1.1)', f: 'colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131' },
   { n: 'Cinema', c: 'contrast(1.2) saturate(.9) brightness(.95)', f: 'eq=contrast=1.2:saturation=.9:brightness=-.03,vignette=PI/5' }];
+
+const DEFAULT_ADJUST = Object.freeze({ brightness: 0, contrast: 100, saturation: 100, sharpen: 0, highlights: 0, shadows: 0, grain: 0 });
+const BLEND_OPTIONS = [
+  ['Normal', 'normal', 'source-over'], ['Add', 'addition', 'lighter'], ['Average', 'average', 'source-over'],
+  ['Color burn', 'burn', 'color-burn'], ['Color dodge', 'dodge', 'color-dodge'], ['Darken', 'darken', 'darken'],
+  ['Lighten', 'lighten', 'lighten'], ['Multiply', 'multiply', 'multiply'], ['Screen', 'screen', 'screen'],
+  ['Overlay', 'overlay', 'overlay'], ['Hard light', 'hardlight', 'hard-light'], ['Soft light', 'softlight', 'soft-light']
+];
+const adjustOf = clip => ({ ...DEFAULT_ADJUST, ...(clip && clip.adjust || {}) });
+const bounded = (value, min, max) => Math.max(min, Math.min(max, Number(value) || 0));
+function adjustmentFilter(clip) {
+  const a = adjustOf(clip), filters = [];
+  if (a.brightness !== 0 || a.contrast !== 100 || a.saturation !== 100) {
+    filters.push('eq=brightness=' + (bounded(a.brightness, -100, 100) / 200).toFixed(3) +
+      ':contrast=' + Math.max(0.1, bounded(a.contrast, 0, 200) / 100).toFixed(3) +
+      ':saturation=' + (bounded(a.saturation, 0, 200) / 100).toFixed(3));
+  }
+  if (a.highlights !== 0 || a.shadows !== 0) {
+    const low = bounded(0.25 + bounded(a.shadows, -100, 100) / 100 * 0.12, 0.13, 0.37);
+    const high = bounded(0.75 + bounded(a.highlights, -100, 100) / 100 * 0.12, 0.63, 0.87);
+    filters.push("curves=all='0/0 0.25/" + low.toFixed(3) + " 0.5/0.5 0.75/" + high.toFixed(3) + " 1/1'");
+  }
+  if (a.sharpen > 0) filters.push('unsharp=5:5:' + (bounded(a.sharpen, 0, 100) / 50).toFixed(2) + ':5:5:0.00');
+  if (a.grain > 0) filters.push('noise=alls=' + (bounded(a.grain, 0, 100) * 0.18).toFixed(1) + ':allf=t+u');
+  return filters.join(',');
+}
+function previewFilter(clip) {
+  if (!clip) return '';
+  const a = adjustOf(clip), filters = [];
+  if (FX[clip.fx || 0] && FX[clip.fx || 0].c) filters.push(FX[clip.fx || 0].c);
+  if (a.brightness !== 0) filters.push('brightness(' + (1 + bounded(a.brightness, -100, 100) / 200).toFixed(2) + ')');
+  if (a.contrast !== 100) filters.push('contrast(' + Math.max(0, bounded(a.contrast, 0, 200) / 100).toFixed(2) + ')');
+  if (a.saturation !== 100) filters.push('saturate(' + (bounded(a.saturation, 0, 200) / 100).toFixed(2) + ')');
+  return filters.join(' ');
+}
+function canvasBlendMode(mode) {
+  const found = BLEND_OPTIONS.find(item => item[1] === mode);
+  return found ? found[2] : 'source-over';
+}
+
 const TS = [ // text styles
   () => ({ fill: '#fff', stroke: '#000', strokeWidth: 2 }),
   () => ({ fill: '#fff', strokeWidth: 0, shadow: new fabric.Shadow({ color: '#ff2d95', blur: 26 }) }),
@@ -222,7 +262,7 @@ async function buildObject(o) {
     if (o.scaleX == null) { o.scaleX = o.scaleY = (w * 0.4) / obj.width; }
   }
   Object.assign(obj, { pmId: o.id, layer: o.layer });
-  obj.set({ left: o.left ?? w * 0.1, top: o.top ?? h * 0.1, scaleX: o.scaleX ?? 1, scaleY: o.scaleY ?? 1, angle: o.angle || 0, cornerSize: 22, transparentCorners: false });
+  obj.set({ left: o.left ?? w * 0.1, top: o.top ?? h * 0.1, scaleX: o.scaleX ?? 1, scaleY: o.scaleY ?? 1, angle: o.angle || 0, opacity: bounded(o.opacity ?? 1, 0, 1), globalCompositeOperation: canvasBlendMode(o.blend || 'normal'), cornerSize: 22, transparentCorners: false });
   Object.assign(o, { left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY });
   if (o.key && obj.applyFilters) { obj.filters = [keyFilter(o.key)]; obj.applyFilters(); }
   canvas.add(obj); restack(); return obj;
@@ -523,6 +563,9 @@ function updateChrome() {
   let off = false; try { off = !!localStorage.getItem('pmy-tips-off'); } catch (e) {}
   $('tipBar').hidden = off;
   $('tip').textContent = pendingRep ? 'Tap the clip on the timeline that you want to replace.' : !S.main.length ? 'Tap “Import media” to add your first video.' : on ? 'Hold and drag a clip to move it. Drag the white ends to trim it.' : 'Swipe the timeline to move. Tap a clip to edit it.';
+  $('adjustBtn').hidden = !(on && sel.lane === 'main');
+  const blendItem = on && sel.lane === 'overlay' ? S.overlays.find(o => o.id === sel.id) : null;
+  $('blendBtn').hidden = !(blendItem && blendItem.type !== 'text');
   updateCopyTillButton();
 }
 function keyFilter(k) { return new fabric.Image.filters.RemoveColor({ color: k.color, distance: 0.1 + k.sim / 100 * 0.5 }); }
@@ -609,7 +652,7 @@ function refresh(time) {
     video.playbackRate = 1; video.volume = 1;
     if (video.dataset.mid) { delete video.dataset.mid; video.removeAttribute('src'); video.load(); }
   } else {
-    video.style.display = 'block'; video.style.filter = FX[hit.c.fx || 0].c || '';
+    video.style.display = 'block'; video.style.filter = previewFilter(hit.c);
     video.playbackRate = hit.c.speed || 1; video.volume = Math.min(1, hit.c.vol ?? 1);
   }
   if (Date.now() - lastScroll > 200) tl.scrollLeft = t * PX;
@@ -754,7 +797,10 @@ const run = async (args) => { const code = await ff.exec(args); if (code !== 0) 
 async function overlayPNG(o) { // render one overlay alone, full canvas size, transparent
   const obj = objOf(o.id), keep = canvas.getObjects().map(x => x.visible);
   canvas.discardActiveObject(); canvas.getObjects().forEach(x => (x.visible = x === obj));
+  const previousComposite = obj && obj.globalCompositeOperation;
+  if (obj) obj.globalCompositeOperation = 'source-over'; // render raw pixels and alpha; FFmpeg composites the chosen blend mode per frame
   const url = canvas.toDataURL({ format: 'png' });
+  if (obj) obj.globalCompositeOperation = previousComposite || 'source-over';
   canvas.getObjects().forEach((x, i) => (x.visible = keep[i])); canvas.requestRenderAll();
   return new Uint8Array(await (await fetch(url)).arrayBuffer());
 }
@@ -831,17 +877,38 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
           const n = `ovv${k}`, ob = objOf(o.id), bb = ob.getBoundingRect(true, true), rad = ((ob.angle || 0) * Math.PI / 180).toFixed(4);
           await ff.writeFile(n, new Uint8Array(await files[o.mediaId].arrayBuffer())); names.push(n);
           inputs.push('-ss', Math.max(0, offset - o.start).toFixed(2), '-i', n);
-          geo[k] = { ox: Math.round(bb.left * K), oy: Math.round(bb.top * K), chain: `${o.start > offset ? `tpad=start_mode=clone:start_duration=${(o.start - offset).toFixed(2)},` : ''}scale=${Math.max(2, Math.round(ob.getScaledWidth() * K))}:${Math.max(2, Math.round(ob.getScaledHeight() * K))}${o.key ? `,chromakey=color=0x${o.key.color.slice(1)}:similarity=${(0.08 + o.key.sim / 100 * 0.32).toFixed(3)}:blend=${((o.key.soft || 0) / 100 * 0.25).toFixed(3)}` : ''}${+rad ? `,format=rgba,rotate=${rad}:ow=rotw(${rad}):oh=roth(${rad}):c=none` : ''}` };
+          geo[k] = { ox: Math.round(bb.left * K), oy: Math.round(bb.top * K), chain: `${o.start > offset ? `tpad=start_mode=clone:start_duration=${(o.start - offset).toFixed(2)},` : ''}scale=${Math.max(2, Math.round(ob.getScaledWidth() * K))}:${Math.max(2, Math.round(ob.getScaledHeight() * K))}${o.key ? `,chromakey=color=0x${o.key.color.slice(1)}:similarity=${(0.08 + o.key.sim / 100 * 0.32).toFixed(3)}:blend=${((o.key.soft || 0) / 100 * 0.25).toFixed(3)}` : ''}${+rad ? `,format=rgba,rotate=${rad}:ow=rotw(${rad}):oh=roth(${rad}):c=none` : ''},format=rgba,colorchannelmixer=aa=${bounded(o.opacity ?? 1, 0, 1).toFixed(2)}` };
         } else { const n = `ov${k}.png`; await ff.writeFile(n, await overlayPNG(o)); names.push(n); inputs.push('-i', n); }
       }
-      let g = `[0:v]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:black,setsar=1${c.rev ? ',reverse' : ''}${sp !== 1 ? `,setpts=PTS/${sp}` : ''},fps=${EXP.fps}${FX[c.fx || 0].f ? ',' + FX[c.fx || 0].f : ''}${c.fade ? `,fade=t=in:d=.4,fade=t=out:st=${Math.max(0, td - .4).toFixed(2)}:d=.4` : ''}[b0]`, last = 'b0';
+      const fd = Math.min(0.4, Math.max(0.05, td / 2));
+      const videoFadeFilter = c.fade ? ',fade=type=in:duration=' + fd.toFixed(3) + ',fade=type=out:start_time=' + Math.max(0, td - fd).toFixed(3) + ':duration=' + fd.toFixed(3) : '';
+      const audioFadeFilter = c.fade ? 'afade=type=in:duration=' + fd.toFixed(3) + ',afade=type=out:start_time=' + Math.max(0, td - fd).toFixed(3) + ':duration=' + fd.toFixed(3) : '';
+      const adjFilter = adjustmentFilter(c);
+      let g = '[0:v]scale=' + W + ':' + H + ':force_original_aspect_ratio=decrease,pad=' + W + ':' + H + ':(ow-iw)/2:(oh-ih)/2:black,setsar=1' +
+        (c.rev ? ',reverse' : '') + (sp !== 1 ? ',setpts=PTS/' + sp : '') + ',fps=' + EXP.fps +
+        (FX[c.fx || 0].f ? ',' + FX[c.fx || 0].f : '') + (adjFilter ? ',' + adjFilter : '') + videoFadeFilter + '[b0]', last = 'b0';
       live.forEach((o, k) => { // lower layers first so stacking matches the preview
-        g += `;[${k + 1}:v]${geo[k] ? geo[k].chain : `scale=${W}:${H}`}[s${k}];[${last}][s${k}]overlay=${geo[k] ? geo[k].ox + ':' + geo[k].oy : '0:0'}:enable='between(t,${Math.max(0, o.start - offset).toFixed(2)},${(o.start + o.dur - offset).toFixed(2)})'[b${k + 1}]`; last = `b${k + 1}`;
+        const blend = o.type !== 'video' ? (o.blend || 'normal') : 'normal';
+        const enable = "enable='between(t," + Math.max(0, o.start - offset).toFixed(2) + ',' + (o.start + o.dur - offset).toFixed(2) + ")'";
+        const outTag = 'b' + (k + 1);
+        if (blend !== 'normal' && !geo[k]) {
+          // Full-canvas overlays use their alpha as a mask so pixels outside the overlay remain unchanged.
+          g += ';[' + last + ']format=yuv444p,split[baseKeep' + k + '][baseBlend' + k + '];' +
+            '[' + (k + 1) + ':v]scale=' + W + ':' + H + ',format=rgba,split[overlayColor' + k + '][overlayAlpha' + k + '];' +
+            '[overlayColor' + k + ']format=yuv444p[overlayYuv' + k + '];' +
+            '[baseBlend' + k + '][overlayYuv' + k + ']blend=all_mode=' + blend + ':all_opacity=1[blendFrame' + k + '];' +
+            "[overlayAlpha" + k + "]alphaextract,format=yuv444p,geq=lum='(lum(X,Y)-16)*255/219':cb='(lum(X,Y)-16)*255/219':cr='(lum(X,Y)-16)*255/219[blendMask" + k + "];" +
+            '[baseKeep' + k + '][blendFrame' + k + '][blendMask' + k + ']maskedmerge=' + enable + '[' + outTag + ']';
+        } else {
+          g += ';[' + (k + 1) + ':v]' + (geo[k] ? geo[k].chain : 'scale=' + W + ':' + H) + '[s' + k + '];' +
+            '[' + last + '][s' + k + ']overlay=' + (geo[k] ? geo[k].ox + ':' + geo[k].oy : '0:0') + ':' + enable + '[' + outTag + ']';
+        }
+        last = outTag;
       });
       const tx = TD[i + 1] || 0; // hold the last frame so the blend has something to fade from
       if (tx) { g += `;[${last}]tpad=stop_mode=clone:stop_duration=${tx.toFixed(2)}[bt]`; last = 'bt'; }
       const seg = `seg${i}.mp4`;
-      const af = [c.rev && 'areverse', sp !== 1 && `atempo=${sp}`, (c.vol ?? 1) !== 1 && `volume=${c.vol}`, c.fade && `afade=t=in:d=.4,afade=t=out:st=${Math.max(0, td - .4).toFixed(2)}:d=.4`, tx > 0 && `apad=pad_dur=${tx.toFixed(2)}`].filter(Boolean).join(','), enc = a => ['-ss', String(c.in), '-t', String(d), '-i', src, ...inputs, '-filter_complex', g, '-map', `[${last}]`, '-map', '0:a:0?', ...a, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-t', (td + tx).toFixed(3), seg]; // -t: a long overlay video must not stretch the clip
+      const af = [c.rev && 'areverse', sp !== 1 && `atempo=${sp}`, (c.vol ?? 1) !== 1 && `volume=${c.vol}`, c.fade && audioFadeFilter, tx > 0 && `apad=pad_dur=${tx.toFixed(2)}`].filter(Boolean).join(','), enc = a => ['-ss', String(c.in), '-t', String(d), '-i', src, ...inputs, '-filter_complex', g, '-map', `[${last}]`, '-map', '0:a:0?', ...a, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-t', (td + tx).toFixed(3), seg]; // -t: a long overlay video must not stretch the clip
       try { await run(enc(af ? ['-af', af] : [])); } catch (e) { if (!af) throw e; await run(enc(['-an'])); }
       for (const n of names) await ff.deleteFile(n);
       segs.push(seg); offset += td;
@@ -886,7 +953,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       const trk = [...S.audio.map(a => ({ m: a.mediaId, st: a.start, in: a.in, out: a.out, vol: a.vol, fade: a.fade, ov: false })), ...ovA.map(o => ({ m: o.mediaId, st: o.start, in: 0, out: o.dur, ov: true }))], ins = [];
       for (let k = 0; k < trk.length; k++) { await ff.writeFile(`aud${k}`, new Uint8Array(await files[trk[k].m].arrayBuffer())); ins.push('-i', `aud${k}`); }
       const tryMix = (idx, withOrig) => {
-        const parts = idx.map(k => { const a = trk[k], ms = Math.round(a.st * 1000); return `[${k + 1}:a]atrim=start=${a.in}:end=${a.out},asetpts=PTS-STARTPTS${(a.vol ?? 1) !== 1 ? `,volume=${a.vol}` : ''}${a.fade ? `,afade=t=in:d=1,afade=t=out:st=${Math.max(0, a.out - a.in - 1).toFixed(2)}:d=1` : ''},adelay=${ms}|${ms}[a${k}]`; });
+        const parts = idx.map(k => { const a = trk[k], ms = Math.round(a.st * 1000); return `[${k + 1}:a]atrim=start=${a.in}:end=${a.out},asetpts=PTS-STARTPTS${(a.vol ?? 1) !== 1 ? `,volume=${a.vol}` : ''}${a.fade ? ',afade=type=in:duration=1,afade=type=out:start_time=' + Math.max(0, a.out - a.in - 1).toFixed(2) + ':duration=1' : ''},adelay=${ms}|${ms}[a${k}]`; });
         return run(['-i', 'joined.mp4', ...ins, '-filter_complex', `${parts.join(';')};${withOrig ? '[0:a]' : ''}${idx.map(k => `[a${k}]`).join('')}amix=inputs=${idx.length + (withOrig ? 1 : 0)}:duration=first:normalize=0[m]`, '-map', '0:v', '-map', '[m]', '-c:v', 'copy', '-c:a', 'aac', 'final.mp4']);
       };
       const all = trk.map((_, k) => k), music = all.filter(k => !trk[k].ov); let done = false;
@@ -941,7 +1008,7 @@ function openSheet(name) {
   sheet.hidden = false; sheet.dataset.tab = name;
   document.querySelectorAll('[data-pane]').forEach(p => (p.hidden = p.dataset.pane !== name));
   document.querySelectorAll('.dock button').forEach(b => b.classList.toggle('on', b.dataset.sheet === name));
-  if (name === 'fx') markFx(); else if (name === 'speed') markSp(); else if (name === 'vol') markVol(); else if (name === 'tr') markTr(); else if (name === 'text') markText(); else if (name === 'tpl') markTpl(); else if (name === 'key') markKey(); else if (window.lucide) lucide.createIcons();
+  if (name === 'fx') markFx(); else if (name === 'adjust') markAdjust(); else if (name === 'blend') markBlend(); else if (name === 'speed') markSp(); else if (name === 'vol') markVol(); else if (name === 'tr') markTr(); else if (name === 'text') markText(); else if (name === 'tpl') markTpl(); else if (name === 'key') markKey(); else if (window.lucide) lucide.createIcons();
 }
 const closeSheet = () => { sheet.hidden = true; document.querySelectorAll('.dock button').forEach(b => b.classList.remove('on')); };
 $('sheetClose').onclick = closeSheet;
@@ -952,6 +1019,79 @@ $('fxList').onclick = e => {
   if (!c) return say('Import a video first.');
   c.fx = +b.dataset.fx; commit(); refresh(t); markFx(); say(`${FX[c.fx].n} applied to this clip.`);
 };
+
+/* ---------- Adjustments + blending ---------- */
+function markAdjust() {
+  const c = clipNow(), a = adjustOf(c);
+  document.querySelectorAll('[data-adjust]').forEach(input => {
+    const key = input.dataset.adjust;
+    input.value = String(a[key]);
+    const output = $('adjustVal' + key[0].toUpperCase() + key.slice(1));
+    if (output) output.textContent = (a[key] > 0 && (key === 'brightness' || key === 'highlights' || key === 'shadows') ? '+' : '') + a[key] + (key === 'contrast' || key === 'saturation' ? '%' : '');
+  });
+}
+function adjustInputChanged(input) {
+  const c = clipNow();
+  if (!c) return say('Select a video clip before adjusting it.');
+  c.adjust = adjustOf(c);
+  c.adjust[input.dataset.adjust] = Number(input.value);
+  const key = input.dataset.adjust, output = $('adjustVal' + key[0].toUpperCase() + key.slice(1));
+  if (output) output.textContent = (c.adjust[key] > 0 && (key === 'brightness' || key === 'highlights' || key === 'shadows') ? '+' : '') + c.adjust[key] + (key === 'contrast' || key === 'saturation' ? '%' : '');
+  refresh(t);
+}
+document.querySelectorAll('[data-adjust]').forEach(input => {
+  input.oninput = () => adjustInputChanged(input);
+  input.onchange = () => {
+    const c = clipNow();
+    if (c) { commit(); refresh(t); say('Adjustment saved. It will be included in the exported video.'); }
+  };
+});
+$('adjustBtn').onclick = () => (sheet.hidden || sheet.dataset.tab !== 'adjust' ? openSheet('adjust') : closeSheet());
+$('adjustApplyAll').onclick = () => {
+  const c = clipNow();
+  if (!c) return say('Select a video clip first.');
+  const settings = adjustOf(c);
+  S.main.forEach(item => { item.adjust = { ...settings }; });
+  commit(); markAdjust(); refresh(t); say('Adjustment settings applied to all video clips.');
+};
+
+function blendItem() { return sel && sel.lane === 'overlay' ? S.overlays.find(o => o.id === sel.id) : null; }
+function applyBlend(o) {
+  const obj = o && objOf(o.id);
+  if (!obj) return;
+  obj.set({ opacity: bounded(o.opacity ?? 1, 0, 1), globalCompositeOperation: canvasBlendMode(o.blend || 'normal') });
+  canvas.requestRenderAll();
+}
+function markBlend() {
+  const o = blendItem(), opacity = o ? Math.round(bounded(o.opacity ?? 1, 0, 1) * 100) : 100;
+  $('blendOpacity').value = opacity; $('blendOpacityLabel').textContent = opacity + '%';
+  [...$('blendModes').children].forEach(b => b.classList.toggle('on', b.dataset.blend === ((o && o.blend) || 'normal')));
+}
+$('blendBtn').onclick = () => (sheet.hidden || sheet.dataset.tab !== 'blend' ? openSheet('blend') : closeSheet());
+$('blendModes').innerHTML = BLEND_OPTIONS.map(([name, mode]) => '<button type="button" data-blend="' + mode + '">' + name + '</button>').join('');
+$('blendModes').onclick = e => {
+  const b = e.target.closest('[data-blend]'), o = blendItem();
+  if (!b) return;
+  if (!o || o.type === 'text') return say('Select a picture or video overlay first.');
+  o.blend = b.dataset.blend; applyBlend(o); markBlend(); commit(); refresh(t);
+  say((BLEND_OPTIONS.find(item => item[1] === o.blend) || BLEND_OPTIONS[0])[0] + ' blend applied.');
+};
+$('blendOpacity').oninput = e => {
+  const o = blendItem();
+  if (!o) return say('Select a picture or video overlay first.');
+  o.opacity = Number(e.target.value) / 100;
+  $('blendOpacityLabel').textContent = e.target.value + '%';
+  applyBlend(o); refresh(t);
+};
+$('blendOpacity').onchange = () => { if (blendItem()) { commit(); say('Overlay opacity saved.'); } };
+$('blendApplyAll').onclick = () => {
+  const o = blendItem();
+  if (!o) return say('Select a picture or video overlay first.');
+  const opacity = bounded(o.opacity ?? 1, 0, 1), mode = o.blend || 'normal';
+  S.overlays.forEach(item => { item.opacity = opacity; item.blend = mode; applyBlend(item); });
+  commit(); markBlend(); refresh(t); say('Blending settings applied to all overlay layers.');
+};
+
 $('fadeBtn').onclick = () => { const c = volClip(); if (!c) return say('Import a video first.'); c.fade = !c.fade; commit(); say(c.fade ? 'Fade in and out added.' : 'Fade removed.'); };
 let txtStyle = 0;
 $('styleList').innerHTML = ['Classic', 'Neon', 'Label', 'Pop', 'Headline', 'News blue'].map((n, i) => `<button data-ts="${i}" class="${i ? '' : 'on'}">${n}</button>`).join('');
