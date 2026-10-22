@@ -897,7 +897,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
             '[' + (k + 1) + ':v]scale=' + W + ':' + H + ',format=rgba,split[overlayColor' + k + '][overlayAlpha' + k + '];' +
             '[overlayColor' + k + ']format=yuv444p[overlayYuv' + k + '];' +
             '[baseBlend' + k + '][overlayYuv' + k + ']blend=all_mode=' + blend + ':all_opacity=1[blendFrame' + k + '];' +
-            "[overlayAlpha" + k + "]alphaextract,format=yuv444p,geq=lum='(lum(X,Y)-16)*255/219':cb='(lum(X,Y)-16)*255/219':cr='(lum(X,Y)-16)*255/219[blendMask" + k + "];" +
+            "[overlayAlpha" + k + "]alphaextract,format=yuv444p,geq=lum='(lum(X,Y)-16)*255/219':cb='(lum(X,Y)-16)*255/219':cr='(lum(X,Y)-16)*255/219'[blendMask" + k + "];" +
             '[baseKeep' + k + '][blendFrame' + k + '][blendMask' + k + ']maskedmerge=' + enable + '[' + outTag + ']';
         } else {
           g += ';[' + (k + 1) + ':v]' + (geo[k] ? geo[k].chain : 'scale=' + W + ':' + H) + '[s' + k + '];' +
@@ -1006,6 +1006,7 @@ const sheet = $('sheet'), clipNow = () => (sel && sel.lane === 'main' ? S.main.f
 function markFx() { const c = clipNow(); [...$('fxList').children].forEach((b, i) => b.classList.toggle('on', i === ((c && c.fx) || 0))); }
 function openSheet(name) {
   sheet.hidden = false; sheet.dataset.tab = name;
+  sheet.classList.toggle('sheet-tall', name === 'adjust' || name === 'blend');
   document.querySelectorAll('[data-pane]').forEach(p => (p.hidden = p.dataset.pane !== name));
   document.querySelectorAll('.dock button').forEach(b => b.classList.toggle('on', b.dataset.sheet === name));
   if (name === 'fx') markFx(); else if (name === 'adjust') markAdjust(); else if (name === 'blend') markBlend(); else if (name === 'speed') markSp(); else if (name === 'vol') markVol(); else if (name === 'tr') markTr(); else if (name === 'text') markText(); else if (name === 'tpl') markTpl(); else if (name === 'key') markKey(); else if (window.lucide) lucide.createIcons();
