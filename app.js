@@ -580,9 +580,29 @@ $('aspectRatio').onchange = async e => {
 let ff, ffLogs = [], exportProgressHandler = null, exportClipIndex = 0, exportGroupIndex = 0, ffAssetURLs = [];
 const CDN = 'https://cdn.jsdelivr.net/npm/';
 async function remoteBlobURL(url, mimeType) {
+  const assetName = url.split('/').pop() || 'FFmpeg asset';
+  updateBusy('Downloading video engine…', `Downloading ${assetName}. The first run may take a little longer.`, null, 'Engine download');
   const response = await fetch(url, { mode: 'cors', cache: 'force-cache' });
   if (!response.ok) throw new Error(`Could not download FFmpeg component (${response.status}): ${url}`);
-  const blob = await response.blob();
+  const total = Number(response.headers.get('content-length')) || 0;
+  let blob;
+  if (response.body && typeof response.body.getReader === 'function') {
+    const reader = response.body.getReader(), chunks = [];
+    let received = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.byteLength;
+      const detail = total
+        ? `${assetName}: ${(received / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(1)} MB`
+        : `${assetName}: ${(received / 1048576).toFixed(1)} MB downloaded`;
+      updateBusy('Downloading video engine…', detail, total ? received / total * 100 : null, 'Engine download');
+    }
+    blob = new Blob(chunks, { type: mimeType });
+  } else {
+    blob = await response.blob();
+  }
   const objectURL = URL.createObjectURL(new Blob([blob], { type: mimeType }));
   ffAssetURLs.push(objectURL);
   return objectURL;
@@ -610,6 +630,7 @@ async function getFFmpeg() {
   });
   ff.on('progress', event => { if (exportProgressHandler) exportProgressHandler(event || {}); });
   try {
+    updateBusy('Starting video engine…', 'The core files are downloaded. Initializing FFmpeg in its local worker.', null, 'Engine startup');
     // Do not pass classWorkerURL: the vendored UMD wrapper automatically resolves
     // 814.ffmpeg.js beside vendor/ffmpeg/ffmpeg.js, so Worker stays same-origin.
     await ff.load({
