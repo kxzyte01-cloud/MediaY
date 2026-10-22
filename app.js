@@ -505,12 +505,18 @@ async function getFFmpeg() {
     }
   });
   ff.on('progress', event => { if (exportProgressHandler) exportProgressHandler(event || {}); });
-  await ff.load({
-    classWorkerURL: await toBlobURL(CDN + '@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js', 'text/javascript'),
-    coreURL: await toBlobURL(core + 'ffmpeg-core.js', 'text/javascript'),
-    wasmURL: await toBlobURL(core + 'ffmpeg-core.wasm', 'application/wasm'),
-  });
-  return ff;
+  try {
+    await ff.load({
+      classWorkerURL: await toBlobURL(CDN + '@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js', 'text/javascript'),
+      coreURL: await toBlobURL(core + 'ffmpeg-core.js', 'text/javascript'),
+      wasmURL: await toBlobURL(core + 'ffmpeg-core.wasm', 'application/wasm'),
+    });
+    return ff;
+  } catch (error) {
+    try { ff.terminate(); } catch (_) { /* loader may not have completed */ }
+    ff = null;
+    throw error;
+  }
 }
 const run = async (args) => { const code = await ff.exec(args); if (code !== 0) throw new Error('FFmpeg failed (code ' + code + ')'); };
 async function overlayPNG(o) { // render one overlay alone, full canvas size, transparent
