@@ -878,7 +878,23 @@ document.querySelectorAll('#ratioPick button').forEach(b => (b.onclick = () => {
 const LANGS = [['Auto-detect', ''], ['English', 'english'], ['Hindi', 'hindi'], ['Bengali', 'bengali'], ['Urdu', 'urdu'], ['Spanish', 'spanish'], ['French', 'french'], ['Portuguese', 'portuguese'], ['Arabic', 'arabic'], ['Indonesian', 'indonesian']];
 $('capLang').innerHTML = LANGS.map(([n, v]) => `<option value="${v}">${n}</option>`).join('');
 $('capBtn').onclick = () => (sheet.hidden || sheet.dataset.tab !== 'cap' ? openSheet('cap') : closeSheet());
-let asr;
+let asr, asrBackend = 'wasm';
+async function createSpeechPipeline(useWebGPU) {
+  const packageName = useWebGPU ? '@huggingface/transformers@3.8.1' : '@xenova/transformers@2.17.2';
+  const { pipeline, env } = await import(`https://cdn.jsdelivr.net/npm/${packageName}`);
+  env.allowLocalModels = false;
+  const progress_callback = p => {
+    if (p.status !== 'progress') return;
+    const detail = `Downloading speech model… ${Math.round(p.progress || 0)}%`;
+    say(detail);
+    updateBusy('Downloading speech model…', detail, Number.isFinite(p.progress) ? p.progress : null, 'Model download');
+  };
+  const options = { progress_callback };
+  if (useWebGPU) options.device = 'webgpu';
+  const model = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny', options);
+  asrBackend = useWebGPU ? 'webgpu' : 'wasm';
+  return model;
+}
 async function pcmOf(src) { // 16 kHz mono sound of one clip; throws if it has no sound
   await loadMedia(src.m);
   const ac = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
@@ -912,18 +928,41 @@ $('capGo').onclick = async () => {
   updateBusy('Preparing captions…', 'Loading the selected audio and speech-recognition model.', 1, 'Captions');
   try {
     if (!asr) {
-      say('Loading the speech model (about 40 MB the first time)…');
-      updateBusy('Downloading speech model…', 'This download is cached for later captioning sessions.', null, 'Model download');
-      const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
-      env.allowLocalModels = false;
-      asr = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny', { progress_callback: p => { if (p.status === 'progress') { const detail = `Downloading speech model… ${Math.round(p.progress || 0)}%`; say(detail); updateBusy('Downloading speech model…', detail, Number.isFinite(p.progress) ? p.progress : null, 'Model download'); } } });
+      let gpuReady = false;
+      if (navigator.gpu && typeof navigator.gpu.requestAdapter === 'function') {
+        try {
+          updateBusy('Starting GPU captions…', 'Checking whether this browser can accelerate speech recognition.', null, 'GPU acceleration');
+          asr = await createSpeechPipeline(true);
+          gpuReady = true;
+        } catch (gpuError) {
+          asr = null;
+          updateBusy('Switching to compatibility mode…', 'GPU acceleration is unavailable on this device. Using the compatible speech engine instead.', null, 'Compatibility');
+        }
+      }
+      if (!asr) {
+        say('Loading the speech model (about 40 MB the first time)…');
+        updateBusy('Loading speech model…', 'The first download is cached for later sessions.', null, 'Model download');
+        asr = await createSpeechPipeline(false);
+      } else if (gpuReady) {
+        updateBusy('Speech model ready', 'Using browser GPU acceleration for transcription.', null, 'GPU accelerated');
+      }
     }
     let n = 0, used = '';
     for (const src of cands) { // the video first, then your audio tracks; a silent video is skipped automatically
       say(`Listening to ${src.label}…`);
       updateBusy('Transcribing speech…', `Listening to ${src.label}. This step can take time on slower phones.`, null, 'Transcription');
       let pcm; try { pcm = await pcmOf(src); } catch (e) { continue; }
-      n = await captionFrom(pcm, src); if (n) { used = src.label; break; }
+      try {
+        n = await captionFrom(pcm, src);
+      } catch (inferenceError) {
+        if (asrBackend !== 'webgpu') throw inferenceError;
+        // GPU model loading can succeed while inference fails on certain drivers.
+        asr = null;
+        updateBusy('Switching to compatible captions…', 'This device could not finish GPU inference. Retrying with the CPU engine.', null, 'Compatibility');
+        asr = await createSpeechPipeline(false);
+        n = await captionFrom(pcm, src);
+      }
+      if (n) { used = src.label; break; }
     }
     if (n) { restack(); commit(); refresh(t); closeSheet(); say(`Added ${n} captions from ${used}. Tap one to restyle or move it.`); }
     else say(S.audio.length || aSel ? 'No speech found.' : 'This video has no sound to caption. Add or record audio, then try again.');
