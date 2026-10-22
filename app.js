@@ -816,9 +816,17 @@ async function openTpl(p) { // load the template as an editable project; then ta
   if ((S.main.length || S.overlays.length || S.audio.length) && !confirm('This replaces your current project. Continue?')) return;
   const fresh = c => { const n = { ...c, id: uid() }; delete n.el; return n; };
   const main = [...p.pre.map(fresh), ...(p.slotClip ? [fresh(p.slotClip)] : []), ...p.post.map(fresh)];
-  t = 0; await restore(JSON.stringify({ ratio: p.ratio, main, audio: p.audio.map(fresh), overlays: p.overlays.map(fresh), nextLayer: Math.max(1, ...p.overlays.map(o => o.layer || 0)) + 1 }));
-  commit(); closeSheet(); await seek(0); refresh(0);
-  say(p.slotClip ? 'Template opened. Tap Replace, choose your news video, then tap the sample clip.' : 'Template opened.');
+  updateBusy('Opening template…', 'Restoring clips, audio, overlays, and timing.', 15, 'Template');
+  try {
+    t = 0; await restore(JSON.stringify({ ratio: p.ratio, main, audio: p.audio.map(fresh), overlays: p.overlays.map(fresh), nextLayer: Math.max(1, ...p.overlays.map(o => o.layer || 0)) + 1 }));
+    updateBusy('Finishing template…', 'Rebuilding the preview and timeline.', 85, 'Template');
+    commit(); closeSheet(); await seek(0); refresh(0);
+    say(p.slotClip ? 'Template opened. Tap Replace, choose your news video, then tap the sample clip.' : 'Template opened.');
+    hideBusy();
+  } catch (err) {
+    showBusyError('Could not open template', err.message || String(err));
+    say('Could not open template: ' + (err.message || err));
+  }
 }
 $('tplBtn').onclick = () => openSheet('tpl'); $('tplStart').onclick = () => openSheet('tpl');
 $('tplSave').onclick = () => {
