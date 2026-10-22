@@ -25,6 +25,40 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 const fmt = s => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 const say = m => ($('status').textContent = m);
 
+// Shared blocking progress UI for long-running media tasks.
+function updateBusy(title, detail, progress = null, stage = 'Working') {
+  const overlay = $('busyOverlay');
+  if (!overlay) return;
+  overlay.hidden = false;
+  overlay.dataset.state = 'busy';
+  document.body.setAttribute('aria-busy', 'true');
+  $('busyDismiss').hidden = true;
+  if (title != null) $('busyTitle').textContent = title;
+  if (detail != null) $('busyDetail').textContent = detail;
+  $('busyStage').textContent = stage;
+  const bar = $('busyProgress'), label = $('busyPercent');
+  if (typeof progress === 'number' && Number.isFinite(progress)) {
+    const value = Math.max(0, Math.min(100, progress));
+    bar.value = value;
+    label.textContent = Math.round(value) + '%';
+  } else {
+    bar.removeAttribute('value');
+    label.textContent = '';
+  }
+}
+function showBusyError(title, detail) {
+  updateBusy(title, detail, null, 'Needs attention');
+  const overlay = $('busyOverlay');
+  if (overlay) overlay.dataset.state = 'error';
+  $('busyDismiss').hidden = false;
+}
+function hideBusy() {
+  const overlay = $('busyOverlay');
+  if (overlay) { overlay.hidden = true; delete overlay.dataset.state; }
+  document.body.removeAttribute('aria-busy');
+}
+$('busyDismiss').onclick = hideBusy;
+
 /* ---------- Database (Dexie): media blobs + project state ---------- */
 const db = new Dexie('projectmedia-y');
 db.version(1).stores({ projects: 'id', media: 'id' });
@@ -451,7 +485,7 @@ $('aspectRatio').onchange = async e => {
 
 /* ---------- Export: FFmpeg.wasm, one clip at a time (chunked) ---------- */
 const loadScript = src => new Promise((ok, no) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = () => no(new Error('Could not load ' + src)); document.head.appendChild(s); });
-let ff;
+let ff, ffLogs = [], exportProgressHandler = null, exportClipIndex = 0, exportGroupIndex = 0;
 async function getFFmpeg() {
   if (ff) return ff;
   const CDN = 'https://cdn.jsdelivr.net/npm/';
@@ -459,6 +493,14 @@ async function getFFmpeg() {
   await loadScript(CDN + '@ffmpeg/util@0.12.1/dist/umd/index.js');
   const { toBlobURL } = FFmpegUtil, core = CDN + '@ffmpeg/core@0.12.6/dist/umd/';
   ff = new FFmpegWASM.FFmpeg();
+  ff.on('log', ({ message }) => {
+    const line = String(message || '');
+    if (/error|invalid|failed|not found|unsupported|could not|unable|aborted/i.test(line)) {
+      ffLogs.push(line);
+      if (ffLogs.length > 30) ffLogs.shift();
+    }
+  });
+  ff.on('progress', event => { if (exportProgressHandler) exportProgressHandler(event || {}); });
   await ff.load({
     classWorkerURL: await toBlobURL(CDN + '@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js', 'text/javascript'),
     coreURL: await toBlobURL(core + 'ffmpeg-core.js', 'text/javascript'),
@@ -491,7 +533,7 @@ async function saveVideo(data) {
     await Share.share({ title: 'ProjectMedia Y video', url: uri, dialogTitle: 'Save or share your video' });
     return;
   }
-  const url = URL.createObjectURL(new Blob([data.buffer], { type: 'video/mp4' }));
+  const url = URL.createObjectURL(new Blob([data], { type: 'video/mp4' }));
   Object.assign(document.createElement('a'), { href: url, download: name }).click();
 }
 
@@ -500,13 +542,41 @@ $('goExport').onclick = async () => {
   if (!S.main.length) return say('Nothing to export yet.');
   if (playing) stop();
   closeSheet(); const btn = $('goExport'); btn.disabled = true;
+  let exportFailed = false;
+  ffLogs = [];
+  updateBusy('Preparing your export…', 'Checking project media before rendering.', 1, 'Preparing');
   try {
-    for (const id of new Set([...S.main.map(c => c.mediaId), ...S.audio.map(a => a.mediaId), ...S.overlays.filter(o => o.mediaId).map(o => o.mediaId)])) await loadMedia(id); // media loads lazily; make sure all of it is ready
-    say('Loading video engine (first time only)…'); await getFFmpeg();
-    ff.on('progress', ({ progress }) => say(`Rendering… ${Math.round(Math.min(progress, 1) * 100)}%`));
+    if (!S.main.length) throw new Error('Add at least one video clip to the main timeline before exporting.');
+    for (const c of S.main) {
+      if (!Number.isFinite(c.in) || !Number.isFinite(c.out) || c.out <= c.in || !Number.isFinite(dur(c)) || dur(c) <= 0) {
+        throw new Error(`The clip “${c.name || 'Untitled clip'}” has an invalid trim range or duration. Re-import the clip and try again.`);
+      }
+    }
+    const mediaRefs = [...S.main, ...S.audio, ...S.overlays.filter(o => o.mediaId)];
+    const mediaIds = [...new Set(mediaRefs.map(x => x.mediaId))];
+    for (let m = 0; m < mediaIds.length; m++) {
+      const id = mediaIds[m], url = await loadMedia(id), file = files[id];
+      if (!url || !file || !file.size) {
+        const ref = mediaRefs.find(x => x.mediaId === id);
+        throw new Error(`Media “${(ref && ref.name) || id}” is missing from this browser’s local storage. Re-import that file, wait for it to finish, and export again.`);
+      }
+      updateBusy('Checking project media…', `Checking file ${m + 1} of ${mediaIds.length}.`, 2 + ((m + 1) / Math.max(1, mediaIds.length)) * 3, 'Preparing');
+    }
+    say('Loading video engine (first time only)…');
+    updateBusy('Loading video engine…', 'The first export needs to download the rendering engine.', 6, 'Loading encoder');
+    await getFFmpeg();
+    updateBusy('Rendering video…', 'Encoding each clip with its effects and overlays.', 8, 'Rendering');
+    exportProgressHandler = ({ progress }) => {
+      const fraction = Number.isFinite(progress) ? Math.max(0, Math.min(1, progress)) : 0;
+      const overall = 8 + ((exportClipIndex + fraction) / Math.max(1, S.main.length)) * 58;
+      updateBusy(`Rendering clip ${Math.min(exportClipIndex + 1, S.main.length)} of ${S.main.length}…`, 'Encoding video, effects, and overlays. Longer clips can take more time.', overall, 'Rendering');
+      say(`Rendering clip ${Math.min(exportClipIndex + 1, S.main.length)} of ${S.main.length}…`);
+    };
     const [bw, bh] = RATIOS[S.ratio], kk = EXP.res / Math.min(bw, bh), W = Math.round(bw * kk / 2) * 2, H = Math.round(bh * kk / 2) * 2, segs = []; let offset = 0, cached = null;
     const TD = S.main.map((c, i) => (i && c.tr ? Math.min(c.trDur || 0.5, dur(S.main[i - 1]) * 0.45, dur(c) * 0.45) : 0)); // overlap length at each clip's start
     for (let i = 0; i < S.main.length; i++) {
+      exportClipIndex = i;
+      updateBusy(`Rendering clip ${i + 1} of ${S.main.length}…`, 'Encoding video, effects, and overlays.', 8 + (i / Math.max(1, S.main.length)) * 58, 'Rendering');
       const c = S.main[i], d = c.out - c.in, sp = c.speed || 1, td = d / sp, ext = (files[c.mediaId].name || 'v.mp4').split('.').pop().toLowerCase();
       const src = `src_${c.mediaId}.${ext}`;
       say(`Clip ${i + 1} of ${S.main.length}…`);
@@ -535,9 +605,17 @@ $('goExport').onclick = async () => {
       segs.push(seg); offset += td;
     }
     if (cached) await ff.deleteFile(cached).catch(() => {});
+    exportProgressHandler = null;
+    updateBusy('Finishing transitions…', 'Preparing the final sequence of clips.', 68, 'Transitions');
     const groups = []; segs.forEach((sg, i) => (i && TD[i] ? groups[groups.length - 1].push(i) : groups.push([i])));
     const pieces = [];
+    exportProgressHandler = ({ progress }) => {
+      const fraction = Number.isFinite(progress) ? Math.max(0, Math.min(1, progress)) : 0;
+      updateBusy('Blending transitions…', `Processing transition group ${Math.min(exportGroupIndex + 1, groups.length)} of ${groups.length}.`, 70 + ((exportGroupIndex + fraction) / Math.max(1, groups.length)) * 12, 'Transitions');
+    };
     for (const [gi, grp] of groups.entries()) {
+      exportGroupIndex = gi;
+      updateBusy('Blending transitions…', `Preparing group ${gi + 1} of ${groups.length}.`, 70 + (gi / Math.max(1, groups.length)) * 12, 'Transitions');
       if (grp.length === 1) { pieces.push(segs[grp[0]]); continue; }
       say(`Blending clips (${gi + 1} of ${groups.length})…`);
       const ins = grp.flatMap(i => ['-i', segs[i]]), name = `grp${gi}.mp4`;
@@ -552,6 +630,8 @@ $('goExport').onclick = async () => {
       try { await enc2(fv + fa.slice(0, -1), ['-map', pv, '-map', pa]); } catch (e) { await enc2(fv.slice(0, -1), ['-map', pv, '-an']); }
       pieces.push(name);
     }
+    exportProgressHandler = null;
+    updateBusy('Joining clips…', 'Combining the rendered clips into one MP4.', 84, 'Final assembly');
     say('Joining clips…');
     await ff.writeFile('list.txt', new TextEncoder().encode(pieces.map(s => `file '${s}'`).join('\n')));
     await run(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', 'joined.mp4']);
@@ -559,6 +639,7 @@ $('goExport').onclick = async () => {
     let out = 'joined.mp4';
     const ovA = S.overlays.filter(o => o.type === 'video');
     if (S.audio.length || ovA.length) { // mix music, voice-over and overlay-video sound on top
+      updateBusy('Mixing audio tracks…', 'Combining the original sound, music, and voice-over.', 90, 'Audio');
       say('Mixing audio…');
       const trk = [...S.audio.map(a => ({ m: a.mediaId, st: a.start, in: a.in, out: a.out, vol: a.vol, fade: a.fade, ov: false })), ...ovA.map(o => ({ m: o.mediaId, st: o.start, in: 0, out: o.dur, ov: true }))], ins = [];
       for (let k = 0; k < trk.length; k++) { await ff.writeFile(`aud${k}`, new Uint8Array(await files[trk[k].m].arrayBuffer())); ins.push('-i', `aud${k}`); }
@@ -574,19 +655,27 @@ $('goExport').onclick = async () => {
       if (!done) throw new Error('Could not mix the audio tracks.');
       out = 'final.mp4';
     }
+    updateBusy('Preparing your MP4…', 'Writing the final video file.', 97, 'Finishing');
     const data = await ff.readFile(out);
     await saveVideo(data);
     ['joined.mp4', 'final.mp4', 'list.txt'].forEach(n => ff.deleteFile(n).catch(() => {}));
-    say('Done — your video was downloaded.');
+    say('Export complete — your MP4 is ready.');
   } catch (err) {
     console.error(err);
     if (EXP.res > 1080) { // 2K / 4K can run out of memory on a phone: drop to 1080p and try again
       EXP.res = 1080; [...$('resList').children].forEach(b => b.classList.toggle('on', +b.dataset.v === 1080));
-      try { ff.terminate(); } catch (e) { /* already gone */ } ff = null; say('That size ran out of memory. Trying again at 1080p…'); btn.disabled = false; return $('goExport').onclick();
+      exportProgressHandler = null; try { ff.terminate(); } catch (e) { /* already gone */ } ff = null; updateBusy('Retrying at 1080p…', 'The selected resolution used too much memory. Retrying at a lower resolution.', 3, 'Retry'); say('That size ran out of memory. Trying again at 1080p…'); btn.disabled = false; return $('goExport').onclick();
     }
-    say('Export problem: ' + (err.message || err) + '. Try 720p or a shorter video.');
+    exportFailed = true;
+    exportProgressHandler = null;
+    const diagnostics = ffLogs.length ? (' Encoder details: ' + ffLogs.slice(-4).join(' | ').slice(0, 650)) : '';
+    const message = 'Export problem: ' + (err && err.message || err) + '. Try 720p or a shorter clip.' + diagnostics;
+    say(message);
+    showBusyError('Export failed', message);
   }
+  exportProgressHandler = null;
   btn.disabled = false;
+  if (!exportFailed) hideBusy();
 };
 
 /* ---------- Effects sheet, fades, text styles ---------- */
