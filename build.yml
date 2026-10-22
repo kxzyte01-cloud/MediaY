@@ -29,7 +29,7 @@ jobs:
 
       - run: |
           mkdir -p www
-          cp index.html style.css app.js manifest.json sw.js legal.html favicon.svg icon-*.png www/
+          cp index.html style.css app.js setup.js setup.css manifest.json sw.js legal.html favicon.svg icon-*.png www/
 
       - run: |
           npm init -y
