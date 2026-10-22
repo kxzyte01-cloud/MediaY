@@ -222,3 +222,21 @@ main, .timeline, .dock, .stage { max-width:100%; overflow-x:hidden; }
   #tlZoomLabel { min-width:25px; }
   #copyTillBtn { padding:0 6px; font-size:9px; }
 }
+
+/* Adjustment and overlay-blending controls */
+.apply-all { display:block; width:100%; min-height:36px; margin:2px 0 8px; text-align:left; background:#25252d; border:1px solid var(--border); font-size:12px; }
+.adjust-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px 14px; max-height:34dvh; overflow-y:auto; padding:2px 2px 8px; }
+.adjust-control { display:flex; flex-direction:column; gap:7px; min-width:0; padding:6px 8px; border-radius:12px; background:#1c1c23; border:1px solid #292932; }
+.adjust-control > span { display:flex; align-items:center; justify-content:space-between; gap:8px; color:var(--text); font-size:11px; }
+.adjust-control output { color:#ff8b91; font-weight:700; font-variant-numeric:tabular-nums; }
+.adjust-control input[type=range] { width:100%; margin:0; accent-color:var(--red); touch-action:pan-y; }
+.blend-opacity { margin:4px 0 10px; }
+.blend-modes { flex-wrap:wrap; max-height:25dvh; overflow-y:auto; }
+.blend-modes button { flex:1 0 28%; min-height:38px; font-size:11px; }
+.blend-modes button.on { background:var(--red); }
+.sheet.sheet-tall { max-height:68dvh; }
+@media (max-width:380px) {
+  .adjust-grid { gap:7px; }
+  .adjust-control { padding:6px; }
+  .blend-modes button { flex-basis:44%; }
+}
