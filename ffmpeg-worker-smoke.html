@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MediaY FFmpeg Worker Smoke Test</title>
+  <script src="./vendor/ffmpeg/ffmpeg.js"></script>
+</head>
+<body>
+  <h1>MediaY FFmpeg worker integration test</h1>
+  <p id="stage">Starting…</p>
+  <pre id="log"></pre>
+  <script>
+  (async () => {
+    const stage = document.querySelector('#stage');
+    const log = document.querySelector('#log');
+    const write = (message) => { stage.textContent = message; log.textContent += message + '\n'; };
+    let ff;
+    try {
+      if (!window.FFmpegWASM || !FFmpegWASM.FFmpeg) throw new Error('Local FFmpeg wrapper did not expose FFmpegWASM.FFmpeg.');
+      const base = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd/';
+      const objectUrls = [];
+      const remoteBlobURL = async (url, mime) => {
+        write('Downloading ' + url.split('/').pop() + '…');
+        const response = await fetch(url, { mode: 'cors', cache: 'force-cache' });
+        if (!response.ok) throw new Error('HTTP ' + response.status + ' loading ' + url);
+        const objectURL = URL.createObjectURL(new Blob([await response.blob()], {type:mime}));
+        objectUrls.push(objectURL);
+        return objectURL;
+      };
+      ff = new FFmpegWASM.FFmpeg();
+      ff.on('log', ({message}) => { if (/error|failed|invalid/i.test(message || '')) log.textContent += String(message) + '\n'; });
+      const coreURL = await remoteBlobURL(base + 'ffmpeg-core.js', 'text/javascript');
+      const wasmURL = await remoteBlobURL(base + 'ffmpeg-core.wasm', 'application/wasm');
+      write('Starting local same-origin worker…');
+      await ff.load({coreURL, wasmURL});
+      if (!ff.loaded) throw new Error('FFmpeg load resolved but the worker is not marked loaded.');
+      write('Rendering a small test MP4…');
+      const code = await ff.exec(['-f','lavfi','-i','color=c=red:s=64x64:r=10:d=0.5','-frames:v','5','-c:v','libx264','-pix_fmt','yuv420p','smoke.mp4']);
+      if (code !== 0) throw new Error('FFmpeg exited with code ' + code);
+      const output = await ff.readFile('smoke.mp4');
+      if (!output || output.length < 100) throw new Error('FFmpeg returned an empty MP4.');
+      window.testResult = {ok:true, bytes:output.length, message:'same-origin worker loaded and encoded a test MP4'};
+      write('PASS — encoded ' + output.length + ' bytes.');
+      ff.terminate();
+      objectUrls.forEach(URL.revokeObjectURL);
+    } catch (error) {
+      window.testResult = {ok:false, error:String(error && error.message || error), stack:String(error && error.stack || '')};
+      write('FAIL — ' + window.testResult.error);
+      try { if (ff) ff.terminate(); } catch (_) {}
+    }
+  })();
+  </script>
+</body>
+</html>
