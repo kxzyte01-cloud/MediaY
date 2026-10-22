@@ -59,6 +59,17 @@
     </section>
     <div id="tipBar" class="tip"><span id="tip"></span><button id="tipOff">Got it</button></div>
     <section class="timeline">
+      <div class="timeline-tools" role="toolbar" aria-label="Timeline tools">
+        <span class="timeline-tools-title">TIMELINE</span>
+        <div class="timeline-zoom" aria-label="Timeline zoom controls">
+          <button id="tlZoomOut" type="button" aria-label="Zoom out timeline" title="Zoom out">−</button>
+          <input id="tlZoom" type="range" min="6" max="90" step="3" value="30" aria-label="Timeline zoom">
+          <button id="tlZoomIn" type="button" aria-label="Zoom in timeline" title="Zoom in">+</button>
+          <button id="tlZoomFit" type="button" aria-label="Fit timeline" title="Fit timeline">Fit</button>
+          <span id="tlZoomLabel" aria-live="polite">1.0×</span>
+        </div>
+        <button id="copyTillBtn" type="button" title="Repeat the selected item from its end to the playhead" aria-label="Copy the selected item until the playhead" disabled>Copy till here</button>
+      </div>
       <div id="tl"><div class="pad"></div><div id="tlInner"></div><div class="pad"></div></div>
       <i class="cursor"></i>
       <button id="addClip" aria-label="Add media">＋</button>
@@ -98,7 +109,7 @@
       <p class="lbl">Works on the selected clip and runs on your phone. The speech model (about 40 MB) downloads once. Accuracy is best for English; other languages can be rough.</p>
     </div>
     <div data-pane="tr" hidden>
-      <p class="lbl">Choose a transition for the cut before this clip.</p>
+      <p class="lbl">Choose a transition for the cut before this clip. Includes the full built-in FFmpeg transition set.</p>
       <div id="trList" class="pills"></div>
       <div class="tr-duration"><label for="trDuration">Duration <b id="trDurationLabel">0.5 s</b></label><input id="trDuration" class="rng" type="range" min="0.2" max="1.5" step="0.1" value="0.5"></div>
       <p class="lbl">Transitions are rendered into the exported video. Preview playback currently shows the cut without the transition effect.</p>
