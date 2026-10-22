@@ -72,3 +72,34 @@
 .tr-duration label b { color:#fff; }
 #trList button { border:1px solid var(--border); transition:background .18s, border-color .18s, transform .15s; }
 #trList button.on { background:#401b21; border:1px solid var(--red); color:#fff; }
+
+
+/* Saved-project library */
+.hm-library { margin-top:22px; padding:17px; border:1px solid var(--border); border-radius:20px; background:rgba(20,20,25,.82); }
+.hm-library-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; }
+.hm-library-head h2 { margin:0; font-size:17px; }
+.hm-library-head span { color:var(--muted); font-size:11px; }
+.hm-library-empty { color:var(--muted); font-size:12px; line-height:1.5; margin:0; }
+.hm-project-row { display:flex; align-items:center; gap:12px; padding:12px 0; border-top:1px solid var(--border); }
+.hm-project-info { flex:1; min-width:0; display:grid; gap:5px; }
+.hm-project-info strong { font-size:13px; overflow-wrap:anywhere; }
+.hm-project-info small { color:var(--muted); font-size:10px; line-height:1.4; }
+.hm-project-controls { display:flex; gap:6px; flex:0 0 auto; }
+.hm-project-controls button { min-height:34px; padding:0 10px; font-size:11px; border-radius:10px; }
+.hm-open-project { background:#f01925; color:#fff; font-weight:700; }
+.hm-delete-project { border:1px solid var(--border); background:transparent; color:var(--muted); }
+.hm-empty { padding:4px 0; }
+.hm-continue[hidden], .hm-export[hidden] { display:none !important; }
+#homeScreen, #setup { overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }
+#homeScreen button, #setup button { touch-action:manipulation; }
+@media (max-width:360px) {
+  #homeScreen { padding-left:12px; padding-right:12px; }
+  .hm-project-row { align-items:flex-start; flex-direction:column; }
+  .hm-project-controls { width:100%; }
+  .hm-project-controls button { flex:1; }
+}
+
+/* Always-visible route back to the project dashboard while editing */
+.home-nav { display:flex; align-items:center; gap:4px; min-height:36px; padding:0 9px; background:var(--panel2); font-size:12px; flex-shrink:0; }
+.home-nav span { font-size:11px; }
+@media (max-width:370px) { .home-nav span { display:none; } .home-nav { padding:0 8px; } }

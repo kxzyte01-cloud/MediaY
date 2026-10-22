@@ -1,9 +1,37 @@
-// Caches the app shell so ProjectMedia Y opens offline.
-const CACHE = 'pmy-v14';
+// ProjectMedia Y offline shell. Only cache app files that are part of this repository.
+const CACHE = 'pmy-v15';
 const SHELL = ['./', './index.html', './style.css', './setup.css', './app.js', './setup.js'];
-self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL))); self.skipWaiting(); });
-self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(k => Promise.all(k.filter(x => x !== CACHE).map(x => caches.delete(x))))); self.clients.claim(); });
-self.addEventListener('fetch', e => {
-  if (e.request.method !== 'GET') return;
-  e.respondWith(fetch(e.request).then(r => { const copy = r.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)).catch(() => {}); return r; }).catch(() => caches.match(e.request)));
+self.addEventListener('install', event => {
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE);
+    await Promise.all(SHELL.map(async path => {
+      try {
+        const response = await fetch(path, { cache: 'reload' });
+        if (response && response.ok) await cache.put(path, response);
+      } catch (_) { /* keep install alive if the host omits an optional route */ }
+    }));
+    await self.skipWaiting();
+  })());
+});
+self.addEventListener('activate', event => {
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.filter(key => key.startsWith('pmy-') && key !== CACHE).map(key => caches.delete(key)));
+    await self.clients.claim();
+  })());
+});
+self.addEventListener('fetch', event => {
+  if (event.request.method !== 'GET') return;
+  event.respondWith((async () => {
+    try {
+      const response = await fetch(event.request);
+      if (response && response.ok) {
+        const copy = response.clone();
+        caches.open(CACHE).then(cache => cache.put(event.request, copy)).catch(() => {});
+      }
+      return response;
+    } catch (_) {
+      return (await caches.match(event.request)) || Response.error();
+    }
+  })());
 });

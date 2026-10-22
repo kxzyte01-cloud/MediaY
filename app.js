@@ -46,13 +46,17 @@ async function loadMedia(id) {
 /* ---------- State (single source of truth) ---------- */
 let S = { ratio: '16:9', main: [], audio: [], overlays: [], nextLayer: 1 };
 let sel = null, t = 0, playing = false, undoStack = [], redoStack = [], saveTimer;
+// The current row is the crash-safe resume checkpoint. Named project rows live beside it.
+let activeProjectId = 'current', activeProjectName = 'Untitled project';
 const dur = c => (c.out - c.in) / (c.speed || 1);
 const total = () => S.main.reduce((a, c) => a + dur(c), 0);
 const video = $('sourceVideo');
 
 /* ---------- Fabric canvas ---------- */
 const canvas = new fabric.Canvas('overlayCanvas', { enableRetinaScaling: false, preserveObjectStacking: true, selection: false });
-Object.assign(canvas.wrapperEl.style, { position: 'absolute', inset: '0' });
+Object.assign(canvas.wrapperEl.style, { position: 'absolute', inset: '0', width: '100%', height: '100%', maxWidth: '100%', maxHeight: '100%' });
+// Fabric creates a fixed-pixel wrapper by default. Force it to follow the responsive preview frame.
+canvas.wrapperEl.style.zIndex = '2';
 function sizeCanvas() {
   const [w, h] = RATIOS[S.ratio];
   canvas.setDimensions({ width: w, height: h });
@@ -86,11 +90,11 @@ async function buildObject(o) {
     let el;
     if (o.type === 'video') {
       el = document.createElement('video'); el.src = url; el.muted = true; el.playsInline = true; o.el = el;
-      await new Promise(r => { el.onloadeddata = r; });
+      await new Promise((resolve, reject) => { el.onloadeddata = resolve; el.onerror = () => reject(new Error('Could not read this overlay video. Try converting it to MP4.')); });
       el.width = el.videoWidth; el.height = el.videoHeight;
       obj = new fabric.Image(el);
     } else {
-      el = await new Promise(r => { const i = new Image(); i.onload = () => r(i); i.src = url; });
+      el = await new Promise((resolve, reject) => { const i = new Image(); i.onload = () => resolve(i); i.onerror = () => reject(new Error('Could not read this overlay image. Try a JPG or PNG.')); i.src = url; });
       obj = new fabric.Image(el);
     }
     if (o.scaleX == null) { o.scaleX = o.scaleY = (w * 0.4) / obj.width; }
@@ -112,29 +116,71 @@ const objOf = id => canvas.getObjects().find(x => x.pmId === id);
 const snap = () => JSON.stringify(S, (k, v) => (k === 'el' ? undefined : v));
 function commit() {
   undoStack.push(snap()); if (undoStack.length > 50) undoStack.shift(); redoStack = [];
-  drawTimeline(); clearTimeout(saveTimer); saveTimer = setTimeout(saveProject, 800);
+  drawTimeline(); clearTimeout(saveTimer); saveTimer = setTimeout(() => saveProject().catch(err => { console.warn('Auto-save failed:', err); say('Auto-save failed. Check available storage on this device.'); }), 800);
 }
-async function restore(json) { S = JSON.parse(json); sel = null; await rebuildCanvas(); drawTimeline(); }
+function normalizeState(value) {
+  const raw = typeof value === 'string' ? JSON.parse(value) : value;
+  return {
+    ...raw,
+    ratio: RATIOS[raw && raw.ratio] ? raw.ratio : '16:9',
+    main: Array.isArray(raw && raw.main) ? raw.main : [],
+    audio: Array.isArray(raw && raw.audio) ? raw.audio : [],
+    overlays: Array.isArray(raw && raw.overlays) ? raw.overlays : [],
+    nextLayer: Number.isFinite(raw && raw.nextLayer) ? raw.nextLayer : 1
+  };
+}
+async function restore(json) { S = normalizeState(json); sel = null; await rebuildCanvas(); drawTimeline(); }
 $('undoBtn').onclick = async () => { if (undoStack.length < 2) return; redoStack.push(undoStack.pop()); await restore(undoStack[undoStack.length - 1]); };
 $('redoBtn').onclick = async () => { if (!redoStack.length) return; const s = redoStack.pop(); undoStack.push(s); await restore(s); };
-async function saveProject() { await db.projects.put({ id: 'current', state: snap(), updated: Date.now() }); say('Saved on this device.'); }
-$('saveBtn').onclick = saveProject;
+async function saveProject() {
+  const state = snap(), updated = Date.now();
+  // Keep one always-up-to-date resume checkpoint, even when editing a named project.
+  await db.projects.put({ id: 'current', state, updated, activeProjectId, activeProjectName });
+  if (activeProjectId !== 'current') {
+    await db.projects.put({ id: activeProjectId, name: activeProjectName || 'Untitled project', state, updated, kind: 'project' });
+  }
+  say(activeProjectId === 'current' ? 'Saved on this device.' : `Saved “${activeProjectName}”.`);
+}
+$('saveBtn').onclick = async () => {
+  const suggested = activeProjectName && activeProjectName !== 'Untitled project' ? activeProjectName :
+    ((S.main[0] && S.main[0].name) || (S.overlays[0] && S.overlays[0].name) || 'My video project').replace(/\.[^.]+$/, '');
+  const entered = window.prompt(activeProjectId === 'current' ? 'Name this project:' : 'Save project as:', suggested);
+  if (entered == null) return;
+  const name = entered.trim() || suggested;
+  if (activeProjectId === 'current') activeProjectId = `project-${uid()}`;
+  activeProjectName = name.slice(0, 80);
+  try { await saveProject(); } catch (err) { console.error(err); say('Could not save this project: ' + (err.message || err)); }
+};
 
 /* ---------- Import ---------- */
 $('importBtn').onclick = () => { $('mediaInput').accept = 'video/*,image/*,audio/*'; $('mediaInput').click(); };
 $('audioBtn').onclick = () => { $('mediaInput').accept = 'audio/*'; $('mediaInput').click(); };
 $('mediaInput').onchange = async e => {
-  say('Importing…');
-  for (const f of e.target.files) {
-    const mediaId = await storeMedia(f);
-    const dur = f.type.startsWith('image') ? 5 : await probe(urls[mediaId]);
-    if (f.type.startsWith('video')) S.main.push({ id: uid(), mediaId, name: f.name, in: 0, out: dur, src: dur });
-    else if (f.type.startsWith('audio')) S.audio.push({ id: uid(), mediaId, name: f.name, start: t, in: 0, out: dur, src: dur });
-    else await addOverlay({ type: 'image', mediaId, name: f.name, start: t, dur: 5 });
+  const selected = [...(e.target.files || [])]; e.target.value = '';
+  if (!selected.length) return;
+  say('Importing…'); let added = 0;
+  try {
+    for (const f of selected) {
+      const mediaId = await storeMedia(f);
+      const isImage = f.type.startsWith('image'), isAudio = f.type.startsWith('audio'), isVideo = f.type.startsWith('video');
+      if (isImage) { await addOverlay({ type: 'image', mediaId, name: f.name, start: t, dur: 5 }); added++; continue; }
+      if (!isAudio && !isVideo) throw new Error(`Unsupported file type: ${f.name}`);
+      const length = await probe(urls[mediaId], isAudio ? 'audio' : 'video');
+      if (!Number.isFinite(length) || length <= 0) throw new Error(`Could not read ${f.name}. Try a standard MP4/MOV video or MP3/M4A audio file.`);
+      if (isVideo) S.main.push({ id: uid(), mediaId, name: f.name, in: 0, out: length, src: length });
+      else S.audio.push({ id: uid(), mediaId, name: f.name, start: t, in: 0, out: length, src: length });
+      added++;
+    }
+    commit(); if (S.main.length) await seek(Math.min(t, total())); refresh(Math.min(t, total())); say(`${added} media file${added === 1 ? '' : 's'} added.`);
+  } catch (err) {
+    commit(); refresh(t); console.error(err); say('Import stopped: ' + (err.message || err));
   }
-  e.target.value = ''; commit(); refresh(t); say('Media added.');
 };
-const probe = url => new Promise(r => { const m = document.createElement('video'); m.preload = 'metadata'; m.onloadedmetadata = () => r(m.duration || 0); m.onerror = () => r(0); m.src = url; });
+const probe = (url, kind = 'video') => new Promise(resolve => {
+  const m = document.createElement(kind === 'audio' ? 'audio' : 'video'); m.preload = 'metadata';
+  const done = value => { m.onloadedmetadata = null; m.onerror = null; resolve(Number.isFinite(value) ? value : 0); };
+  m.onloadedmetadata = () => done(m.duration); m.onerror = () => done(0); m.src = url;
+});
 
 /* ---------- Overlays (PiP, stickers, text) ---------- */
 async function addOverlay(o) {
@@ -149,14 +195,24 @@ const pipInput = Object.assign(document.createElement('input'), { type: 'file', 
 document.body.appendChild(pipInput);
 $('pipBtn').onclick = () => { pipInput.dataset.replace = sel && sel.lane === 'overlay' ? sel.id : ''; pipInput.click(); };
 pipInput.onchange = async () => {
-  const f = pipInput.files[0]; if (!f) return;
-  const mediaId = await storeMedia(f), type = f.type.startsWith('video') ? 'video' : 'image', rid = pipInput.dataset.replace;
-  if (rid) { // Locked layering: replace the media but keep layer, position, size and timing
-    const o = S.overlays.find(x => x.id === rid); const old = objOf(rid); if (old) canvas.remove(old);
-    Object.assign(o, { mediaId, type, name: f.name }); delete o.el; delete o.scaleX; delete o.scaleY;
-    await buildObject(o); restack(); commit(); say('Replaced — layer kept.');
-  } else await addOverlay({ type, mediaId, name: f.name, dur: type === 'video' ? await probe(urls[mediaId]) : 5 });
+  const f = pipInput.files && pipInput.files[0]; if (!f) return;
   pipInput.value = '';
+  try {
+    const mediaId = await storeMedia(f), type = f.type.startsWith('video') ? 'video' : f.type.startsWith('image') ? 'image' : '';
+    if (!type) throw new Error('Choose a picture or video for an overlay.');
+    const rid = pipInput.dataset.replace;
+    if (rid) { // Keep the layer's position and timing when replacing an overlay.
+      const o = S.overlays.find(x => x.id === rid); if (!o) throw new Error('The selected overlay no longer exists.');
+      const old = objOf(rid); if (old) canvas.remove(old);
+      Object.assign(o, { mediaId, type, name: f.name }); delete o.el; delete o.scaleX; delete o.scaleY;
+      await buildObject(o); restack(); commit(); refresh(t); say('Overlay replaced.');
+    } else {
+      const length = type === 'video' ? await probe(urls[mediaId], 'video') : 5;
+      if (type === 'video' && (!Number.isFinite(length) || length <= 0)) throw new Error('Could not read this video. Try an MP4 or MOV file.');
+      await addOverlay({ type, mediaId, name: f.name, dur: length });
+      refresh(t); say('Overlay added. Drag it in the preview to position it.');
+    }
+  } catch (err) { console.error(err); say('Could not add overlay: ' + (err.message || err)); }
 };
 
 /* ---------- Timeline ---------- */
@@ -232,7 +288,7 @@ function hints(V, O, A) {
   if (!S.audio.length) h(A, '＋ Add music or voice-over', 'audioBtn');
 }
 function updateChrome() {
-  $('emptyState').hidden = !(S.main.length || S.overlays.length || S.audio.length);
+  $('emptyState').hidden = !!(S.main.length || S.overlays.length || S.audio.length);
   const on = !!sel; $('dockMain').hidden = on; $('dockEdit').hidden = !on;
   if (on) { document.querySelectorAll('#dockEdit [data-for]').forEach(b => (b.hidden = !b.dataset.for.split(' ').includes(sel.lane))); $('styleBtn').hidden = !textSel(); $('keyBtn').hidden = !keyOv(); }
   let off = false; try { off = !!localStorage.getItem('pmy-tips-off'); } catch (e) {}
@@ -293,9 +349,20 @@ function locate(time) {
 }
 async function seek(time) {
   const hit = locate(time); if (!hit) return;
-  video.style.display = 'block'; $('emptyState').hidden = true;
   const url = await loadMedia(hit.c.mediaId);
-  if (video.dataset.mid !== hit.c.mediaId) { video.dataset.mid = hit.c.mediaId; video.src = url; await new Promise(r => (video.onloadedmetadata = r)); }
+  if (!url) { video.pause(); video.style.display = 'none'; say(`Missing media for ${hit.c.name || 'this clip'}. Re-import the file to continue.`); return; }
+  video.style.display = 'block'; $('emptyState').hidden = true;
+  if (video.dataset.mid !== hit.c.mediaId) {
+    video.dataset.mid = hit.c.mediaId;
+    await new Promise((resolve, reject) => {
+      const clean = () => { video.removeEventListener('loadedmetadata', ready); video.removeEventListener('error', failed); };
+      const ready = () => { clean(); resolve(); };
+      const failed = () => { clean(); reject(new Error('The selected video could not be decoded on this device.')); };
+      video.addEventListener('loadedmetadata', ready, { once: true }); video.addEventListener('error', failed, { once: true });
+      video.src = url; video.load();
+    }).catch(err => { video.style.display = 'none'; say(err.message || 'Could not load video.'); });
+    if (video.style.display === 'none') return;
+  }
   const target = hit.c.in + hit.local * (hit.c.speed || 1);
   if (video.fastSeek) video.fastSeek(target); else video.currentTime = target;
 }
@@ -306,7 +373,15 @@ $('playhead').oninput = e => { // throttle: at most one seek per animation frame
 };
 function refresh(time) {
   t = time; const d = total() || 1; $('emptyState').hidden = !!(S.main.length || S.overlays.length || S.audio.length);
-  const hit = locate(t); video.style.filter = (hit && FX[hit.c.fx || 0].c) || ''; video.playbackRate = hit ? hit.c.speed || 1 : 1; video.volume = hit ? Math.min(1, hit.c.vol ?? 1) : 1;
+  const hit = locate(t);
+  if (!hit) {
+    if (!video.paused) video.pause(); video.style.display = 'none'; video.style.filter = '';
+    video.playbackRate = 1; video.volume = 1;
+    if (video.dataset.mid) { delete video.dataset.mid; video.removeAttribute('src'); video.load(); }
+  } else {
+    video.style.display = 'block'; video.style.filter = FX[hit.c.fx || 0].c || '';
+    video.playbackRate = hit.c.speed || 1; video.volume = Math.min(1, hit.c.vol ?? 1);
+  }
   if (Date.now() - lastScroll > 200) tl.scrollLeft = t * PX;
   $('playhead').value = (t / d) * 1000; $('timeDisplay').textContent = `${fmt(t)} / ${fmt(total())}`;
   S.overlays.forEach(o => {
@@ -332,11 +407,20 @@ function tick() {
   }
   refresh(t); S.audio.forEach(a => playAudio(a)); requestAnimationFrame(tick);
 }
-const audios = {};
+const audios = {}, audioLoads = {};
 function playAudio(a) {
+  const end = a.start + Math.max(0, a.out - a.in);
+  if (t < a.start || t >= end) { if (audios[a.id] && !audios[a.id].paused) audios[a.id].pause(); return; }
+  if (!urls[a.mediaId]) {
+    if (!audioLoads[a.id]) audioLoads[a.id] = loadMedia(a.mediaId).then(() => { delete audioLoads[a.id]; if (playing) playAudio(a); }).catch(err => { delete audioLoads[a.id]; console.warn('Could not load audio track:', err); });
+    return;
+  }
   const el = audios[a.id] || (audios[a.id] = Object.assign(new Audio(urls[a.mediaId]), { preload: 'auto' }));
   el.volume = Math.min(1, a.vol ?? 1);
-  if (t >= a.start && el.paused) { el.currentTime = a.in + t - a.start; el.play().catch(() => {}); }
+  const wanted = a.in + t - a.start;
+  if (el.paused || Math.abs(el.currentTime - wanted) > 0.35) {
+    el.currentTime = Math.max(a.in, wanted); el.play().catch(() => {});
+  }
 }
 function stop() { playing = false; video.pause(); Object.values(audios).forEach(a => a.pause()); S.overlays.forEach(o => o.el && o.el.pause()); $('playBtn').textContent = '▶'; }
 $('playBtn').onclick = async () => {
@@ -569,7 +653,7 @@ $('repMain').onclick = () => { if (pendingRep) { pendingRep = null; $('tl').clas
 $('repInput').onchange = async e => {
   const f = e.target.files[0], kind = e.target.dataset.kind; e.target.value = ''; if (!f) return;
   say('Loading your new file…');
-  const mediaId = await storeMedia(f), d = await probe(urls[mediaId]); pendingRep = { mediaId, name: f.name, dur: d, kind };
+  const mediaId = await storeMedia(f), d = await probe(urls[mediaId], kind === 'audio' ? 'audio' : 'video'); if (!d || !Number.isFinite(d)) return say(`Could not read ${f.name}. Try a standard ${kind === 'audio' ? 'audio' : 'MP4/MOV video'} file.`); pendingRep = { mediaId, name: f.name, dur: d, kind };
   if (sel && sel.lane === (kind === 'audio' ? 'audio' : 'main')) applyRep(sel.id, sel.lane); // a clip was already selected
   else { $('tl').classList.add('picking'); updateChrome(); say(`Now tap the ${kind === 'audio' ? 'music' : 'video'} clip you want to replace. (Tap Replace again to cancel.)`); }
 };
@@ -736,7 +820,8 @@ $('trList').onclick = e => {
   if (S.main.indexOf(c) < 1) return say('A transition goes between two clips. Select the second clip.');
   c.tr = b.dataset.tr || undefined; if (c.tr && !c.trDur) c.trDur = 0.5; commit(); markTr(); say(c.tr ? 'Transition added. Duration can be adjusted below; it is rendered on export.' : 'Transition removed.');
 };
-$('trDuration').oninput = e => { const c = clipNow(); if (!c || !c.tr) return; c.trDur = Number(e.target.value); $('trDurationLabel').textContent = c.trDur.toFixed(1) + ' s'; commit(); };
+$('trDuration').oninput = e => { const c = clipNow(); if (!c || !c.tr) return; c.trDur = Number(e.target.value); $('trDurationLabel').textContent = c.trDur.toFixed(1) + ' s'; };
+$('trDuration').onchange = () => { const c = clipNow(); if (c && c.tr) { commit(); say(`Transition duration set to ${c.trDur.toFixed(1)} seconds.`); } };
 const volClip = () => (sel && sel.lane === 'audio' ? S.audio.find(x => x.id === sel.id) : clipNow());
 function markVol() {
   const c = volClip(), v = c ? Math.round((c.vol ?? 1) * 100) : 100;
@@ -764,13 +849,30 @@ const opt = (id, vals, key) => { $(id).innerHTML = vals.map(v => `<button data-v
 opt('resList', [480, 720, 1080, 1440, 2160], 'res'); opt('fpsList', [24, 30, 60], 'fps');
 
 /* ---------- Start up ---------- */
-(async function init() {
+const projectMediaReady = (async function init() {
   sizeCanvas();
   const row = await db.projects.get('current').catch(() => null);
-  if (row) { try { S = JSON.parse(row.state); await rebuildCanvas(); if (S.main.length) await seek(0); say('Restored your last project.'); } catch (e) { console.warn(e); } }
+  if (row) {
+    try {
+      S = normalizeState(row.state);
+      activeProjectId = row.activeProjectId || 'current';
+      activeProjectName = row.activeProjectName || row.name || 'Untitled project';
+      await rebuildCanvas();
+      if (S.main.length) await seek(0);
+      say('Restored your last project.');
+    } catch (e) { console.warn('Could not restore the last project:', e); }
+  }
   undoStack = [snap()]; drawTimeline(); refresh(0);
   if (window.lucide) lucide.createIcons();
+  return true;
 })();
+// setup.js waits for this promise before showing the dashboard so startup cannot race IndexedDB restore.
+window.projectMediaReady = projectMediaReady;
+window.addEventListener('resize', () => requestAnimationFrame(() => { try { canvas.calcOffset(); } catch (_) {} }));
+if ('ResizeObserver' in window) {
+  const previewResizeObserver = new ResizeObserver(() => { try { canvas.calcOffset(); } catch (_) {} });
+  previewResizeObserver.observe($('previewFrame'));
+}
 
 /* ---------- First-run agreement (shown once per device) ---------- */
 (function consent() {
