@@ -911,6 +911,7 @@ async function openTpl(p) { // load the template as an editable project; then ta
   const main = [...p.pre.map(fresh), ...(p.slotClip ? [fresh(p.slotClip)] : []), ...p.post.map(fresh)];
   updateBusy('Opening template…', 'Restoring clips, audio, overlays, and timing.', 15, 'Template');
   try {
+    await validateTemplateAssets(p);
     t = 0; await restore(JSON.stringify({ ratio: p.ratio, main, audio: p.audio.map(fresh), overlays: p.overlays.map(fresh), nextLayer: Math.max(1, ...p.overlays.map(o => o.layer || 0)) + 1 }));
     updateBusy('Finishing template…', 'Rebuilding the preview and timeline.', 85, 'Template');
     commit(); closeSheet(); await seek(0); refresh(0);
@@ -936,6 +937,7 @@ $('tplInput').onchange = async e => {
   say('Building your video from the template…');
   updateBusy('Applying template…', 'Importing replacement clips and rebuilding the timeline.', 2, 'Template');
   try {
+    await validateTemplateAssets(tpl);
     const news = [];
     for (let fileIndex = 0; fileIndex < list.length; fileIndex++) { const file = list[fileIndex]; updateBusy('Applying template…', `Reading replacement video ${fileIndex + 1} of ${list.length}: ${file.name}.`, 5 + (fileIndex / Math.max(1, list.length)) * 60, 'Template'); const mediaId = await storeMedia(file), d = await probe(urls[mediaId]); if (!d || !Number.isFinite(d)) throw new Error('Could not read the duration of ' + file.name + '. Try a standard MP4 or MOV video.'); news.push({ ...tpl.proto, id: uid(), mediaId, name: file.name, in: 0, out: d, src: d, tr: news.length ? undefined : tpl.proto.tr }); }
     const fresh = c => ({ ...c, id: uid() }), N = news.reduce((a, c) => a + dur(c), 0), a0 = tpl.pre.reduce((a, c) => a + dur(c), 0), a1 = a0 + tpl.slotLen;
