@@ -175,3 +175,24 @@ main, .timeline, .dock, .stage { max-width:100%; overflow-x:hidden; }
   .topbar button, .topbar select { padding-left:7px; padding-right:7px; font-size:12px; }
   .topbar .primary { padding-left:9px; padding-right:9px; }
 }
+
+
+/* Shared blocking progress overlay for export, captions, imports, and templates */
+.busy-overlay { position:fixed; inset:0; z-index:1000; display:grid; place-items:center; padding:24px; background:rgba(5,5,8,.84); backdrop-filter:blur(12px); }
+.busy-overlay[hidden] { display:none !important; }
+.busy-card { width:min(100%, 380px); padding:28px 24px 22px; border:1px solid #37313a; border-radius:24px; text-align:center; background:linear-gradient(145deg,#211b22,#121216 72%); box-shadow:0 24px 80px #0009; }
+.busy-symbol { display:grid; place-items:center; width:64px; height:64px; margin:0 auto 18px; border-radius:20px; background:#3a1b21; }
+.busy-spinner { display:block; width:30px; height:30px; border:3px solid #ffffff30; border-top-color:var(--red); border-right-color:#ff747c; border-radius:50%; animation:busy-spin .8s linear infinite; }
+.busy-eyebrow { margin:0 0 8px; color:#ff737b; font-size:10px; font-weight:700; letter-spacing:1.8px; }
+.busy-card h2 { margin:0; font-size:21px; line-height:1.25; }
+.busy-card > p:not(.busy-eyebrow) { margin:10px 0 20px; color:var(--muted); font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+#busyProgress { display:block; width:100%; height:7px; overflow:hidden; border:0; border-radius:999px; background:#34323a; color:var(--red); accent-color:var(--red); }
+#busyProgress::-webkit-progress-bar { border-radius:999px; background:#34323a; }
+#busyProgress::-webkit-progress-value { border-radius:999px; background:linear-gradient(90deg,#ed1b2a,#ff737b); transition:width .18s ease; }
+#busyProgress::-moz-progress-bar { border-radius:999px; background:linear-gradient(90deg,#ed1b2a,#ff737b); }
+#busyProgress:not([value]) { background:linear-gradient(90deg,#29262e,#f01925,#29262e); background-size:200% 100%; animation:busy-sweep 1.3s ease-in-out infinite; }
+.busy-footer { display:flex; justify-content:space-between; gap:12px; margin-top:10px; color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; text-align:left; }
+#busyPercent { color:var(--text); font-weight:700; }
+@keyframes busy-spin { to { transform:rotate(360deg); } }
+@keyframes busy-sweep { from { background-position:100% 0; } to { background-position:-100% 0; } }
+@media (prefers-reduced-motion: reduce) { .busy-spinner, #busyProgress:not([value]) { animation:none; } }
