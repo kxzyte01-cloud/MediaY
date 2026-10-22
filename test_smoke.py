@@ -64,6 +64,25 @@ with sync_playwright() as p:
     hidden=page.locator('#emptyState').evaluate('(e)=>e.hidden')
     assert hidden, 'empty-state overlay is still visible when an overlay exists'
     print('PASS: empty-state panel stays hidden once an overlay exists')
+    image_result = page.evaluate("""async () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 2; canvas.height = 2;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#f01925'; ctx.fillRect(0, 0, 2, 2);
+      const png = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+      const id = 'overlay-image-recovery-test';
+      const file = new File([png], 'overlay-test.png', {type:'image/png'});
+      await db.media.put({id, name:file.name, type:file.type, blob:file});
+      files[id] = file;
+      // Simulate a stale/broken object URL while the original bytes remain in IndexedDB.
+      const recovered = await loadOverlayImage('data:image/png;base64,not-a-valid-image', {id:'overlay', mediaId:id, name:file.name});
+      const stored = await db.media.get(id);
+      const ok = recovered.width === 2 && recovered.height === 2 && stored.type === 'image/png';
+      if (urls[id] && urls[id].startsWith('blob:')) URL.revokeObjectURL(urls[id]);
+      return {ok, width:recovered.width, height:recovered.height, storedType:stored.type};
+    }""")
+    assert image_result['ok'], image_result
+    print('PASS: template overlay image can recover from a broken preview URL')
     page.evaluate("S.main.push({id:'test-video', mediaId:'missing-media', name:'Smoke test video.mp4', in:0, out:5, src:5}); drawTimeline();")
     def handle_dialog(d): d.accept('Smoke test project')
     page.on('dialog',handle_dialog)
