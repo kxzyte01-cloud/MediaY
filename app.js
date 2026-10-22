@@ -554,7 +554,7 @@ async function saveVideo(data) {
 }
 
 const EXP = { res: 720, fps: 30 };
-$('goExport').onclick = async () => {
+$('goExport').onclick = async (_event, recoveryAttempt = 0) => {
   if (!S.main.length) return say('Nothing to export yet.');
   if (playing) stop();
   closeSheet(); const btn = $('goExport'); btn.disabled = true;
@@ -678,7 +678,22 @@ $('goExport').onclick = async () => {
     say('Export complete — your MP4 is ready.');
   } catch (err) {
     console.error(err);
-    if (EXP.res > 1080) { // 2K / 4K can run out of memory on a phone: drop to 1080p and try again
+    const errText = String(err && err.message || err);
+    const encoderNotLoaded = /ffmpeg is not loaded|not loaded, call.*ffmpeg\.load|called FFmpeg\.terminate/i.test(errText);
+    if (encoderNotLoaded && recoveryAttempt < 1) {
+      // The browser/WebView can lose the FFmpeg worker. A truthy `ff` reference is not proof
+      // that its worker is still alive; throw it away and rebuild the full export once.
+      exportProgressHandler = null;
+      try { if (ff) ff.terminate(); } catch (_) { /* worker may already be gone */ }
+      ff = null;
+      ffLogs = [];
+      updateBusy('Restarting video engine…', 'The encoder worker stopped responding. MediaY is reloading it and retrying once.', 2, 'Recovery');
+      say('Video engine stopped responding; reloading it and retrying once…');
+      btn.disabled = false;
+      return $('goExport').onclick(null, recoveryAttempt + 1);
+    }
+    const memoryProblem = /out of memory|memory access out of bounds|failed to grow memory|cannot allocate|allocation failed|out of memory|oom/i.test(errText + ' ' + ffLogs.join(' '));
+    if (EXP.res > 1080 && memoryProblem) { // only downgrade resolution when there is evidence of a memory failure
       EXP.res = 1080; [...$('resList').children].forEach(b => b.classList.toggle('on', +b.dataset.v === 1080));
       exportProgressHandler = null; try { ff.terminate(); } catch (e) { /* already gone */ } ff = null; updateBusy('Retrying at 1080p…', 'The selected resolution used too much memory. Retrying at a lower resolution.', 3, 'Retry'); say('That size ran out of memory. Trying again at 1080p…'); btn.disabled = false; return $('goExport').onclick();
     }
