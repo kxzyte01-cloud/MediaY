@@ -584,7 +584,7 @@ async function getFFmpeg() {
   if (!window.FFmpegWASM || typeof FFmpegWASM.FFmpeg !== 'function') {
     throw new Error('The local FFmpeg wrapper did not load. Reload MediaY; if this persists, redeploy the vendor/ffmpeg files.');
   }
-  const core = CDN + '@ffmpeg/core@0.12.6/dist/umd/';
+  const core = CDN + '@ffmpeg/core@0.12.10/dist/umd/';
   ff = new FFmpegWASM.FFmpeg();
   ff.on('log', ({ message }) => {
     const line = String(message || '');
