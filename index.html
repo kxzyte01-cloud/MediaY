@@ -153,6 +153,17 @@
     <button id="consentBtn" class="primary">I agree and continue</button>
   </dialog>
 
+  <div id="busyOverlay" class="busy-overlay" role="dialog" aria-modal="true" aria-labelledby="busyTitle" aria-describedby="busyDetail" hidden>
+    <div class="busy-card">
+      <div class="busy-symbol" aria-hidden="true"><span class="busy-spinner"></span></div>
+      <p class="busy-eyebrow">MEDIAY WORKSPACE</p>
+      <h2 id="busyTitle">Working on your video…</h2>
+      <p id="busyDetail">Please keep this tab open while the task finishes.</p>
+      <progress id="busyProgress" max="100"></progress>
+      <div class="busy-footer"><span id="busyStage">Processing</span><span id="busyPercent"></span></div>
+    </div>
+  </div>
+
   <script src="./app.js"></script>
   <script src="./setup.js"></script>
 </body>
