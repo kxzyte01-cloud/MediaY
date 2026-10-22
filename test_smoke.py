@@ -57,6 +57,15 @@ with sync_playwright() as p:
     print('PASS: New project opens setup screen')
     page.locator('#suStart').click(); page.wait_for_function("document.querySelector('#homeScreen').hidden === true")
     print('PASS: Start editing closes home/setup and opens editor')
+    assert page.locator('#tlZoom').count() == 1, 'timeline zoom slider is missing'
+    assert page.locator('#copyTillBtn').count() == 1, 'Copy till here control is missing'
+    transition_count = page.locator('#trList button').count()
+    assert transition_count == 59, f'expected None plus 58 FFmpeg transitions, found {transition_count}'
+    old_zoom = page.evaluate('PX')
+    page.locator('#tlZoomIn').click()
+    assert page.evaluate('PX') == min(90, old_zoom + 6), 'timeline zoom-in control did not change scale'
+    page.locator('#tlZoomFit').click()
+    print('PASS: timeline zoom controls work and all 58 built-in transitions are offered')
     page.locator('#homeBtn').click(); page.wait_for_selector('#homeScreen:not([hidden])')
     print('PASS: Home button returns to dashboard')
     page.locator('#hmNew').click(); page.locator('#suStart').click(); page.wait_for_function("document.querySelector('#homeScreen').hidden === true")
@@ -83,7 +92,15 @@ with sync_playwright() as p:
     }""")
     assert image_result['ok'], image_result
     print('PASS: template overlay image can recover from a broken preview URL')
-    page.evaluate("S.main.push({id:'test-video', mediaId:'missing-media', name:'Smoke test video.mp4', in:0, out:5, src:5}); drawTimeline();")
+    page.evaluate("S.main.push({id:'test-video', mediaId:'missing-media', name:'Smoke test video.mp4', in:0, out:5, src:5}); t=7; select('test-video','main');")
+    copy_result = page.evaluate("""async () => {
+      await copyTillPlayhead();
+      return {count:S.main.length, duration:total(), selected:sel && sel.id, enabled:!$('copyTillBtn').disabled};
+    }""")
+    assert copy_result['count'] == 2, copy_result
+    assert abs(copy_result['duration'] - 7) < 0.01, copy_result
+    assert copy_result['selected'] != 'test-video' and not copy_result['enabled'], copy_result
+    print('PASS: Copy till here duplicates a clip up to the playhead')
     def handle_dialog(d): d.accept('Smoke test project')
     page.on('dialog',handle_dialog)
     page.locator('#saveBtn').click(); page.wait_for_timeout(100)
