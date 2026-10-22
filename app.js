@@ -193,8 +193,11 @@ $('mediaInput').onchange = async e => {
   const selected = [...(e.target.files || [])]; e.target.value = '';
   if (!selected.length) return;
   say('Importing…'); let added = 0;
+  updateBusy('Importing media…', 'Preparing the selected files.', 0, 'Import');
   try {
-    for (const f of selected) {
+    for (let fileIndex = 0; fileIndex < selected.length; fileIndex++) {
+      const f = selected[fileIndex];
+      updateBusy('Importing media…', `Reading ${f.name} (${fileIndex + 1} of ${selected.length}).`, (fileIndex / Math.max(1, selected.length)) * 100, 'Import');
       const mediaId = await storeMedia(f);
       const isImage = f.type.startsWith('image'), isAudio = f.type.startsWith('audio'), isVideo = f.type.startsWith('video');
       if (isImage) { await addOverlay({ type: 'image', mediaId, name: f.name, start: t, dur: 5 }); added++; continue; }
@@ -209,6 +212,7 @@ $('mediaInput').onchange = async e => {
   } catch (err) {
     commit(); refresh(t); console.error(err); say('Import stopped: ' + (err.message || err));
   }
+  hideBusy();
 };
 const probe = (url, kind = 'video') => new Promise(resolve => {
   const m = document.createElement(kind === 'audio' ? 'audio' : 'video'); m.preload = 'metadata';
@@ -829,17 +833,19 @@ $('tplInput').onchange = async e => {
   const tpl = loadTpls().find(x => x.id === pendingTpl), list = [...e.target.files]; e.target.value = ''; if (!tpl || !list.length) return;
   if ((S.main.length || S.overlays.length || S.audio.length) && !confirm('This replaces your current project. Continue?')) return;
   say('Building your video from the template…');
+  updateBusy('Applying template…', 'Importing replacement clips and rebuilding the timeline.', 2, 'Template');
   try {
     const news = [];
-    for (const file of list) { const mediaId = await storeMedia(file), d = await probe(urls[mediaId]); if (!d || !Number.isFinite(d)) throw new Error('Could not read the duration of ' + file.name + '. Try a standard MP4 or MOV video.'); news.push({ ...tpl.proto, id: uid(), mediaId, name: file.name, in: 0, out: d, src: d, tr: news.length ? undefined : tpl.proto.tr }); }
+    for (let fileIndex = 0; fileIndex < list.length; fileIndex++) { const file = list[fileIndex]; updateBusy('Applying template…', `Reading replacement video ${fileIndex + 1} of ${list.length}: ${file.name}.`, 5 + (fileIndex / Math.max(1, list.length)) * 60, 'Template'); const mediaId = await storeMedia(file), d = await probe(urls[mediaId]); if (!d || !Number.isFinite(d)) throw new Error('Could not read the duration of ' + file.name + '. Try a standard MP4 or MOV video.'); news.push({ ...tpl.proto, id: uid(), mediaId, name: file.name, in: 0, out: d, src: d, tr: news.length ? undefined : tpl.proto.tr }); }
     const fresh = c => ({ ...c, id: uid() }), N = news.reduce((a, c) => a + dur(c), 0), a0 = tpl.pre.reduce((a, c) => a + dur(c), 0), a1 = a0 + tpl.slotLen;
     const f = x => (x >= a1 - 0.01 ? x - tpl.slotLen + N : x <= a0 ? x : Math.min(x, a0 + N)), Tnew = a0 + N + tpl.post.reduce((a, c) => a + dur(c), 0);
     const fS = x => (tpl.slotLen === 0 ? (x > a0 + 0.01 ? x + N : x) : f(x)); // with no sample clip, a layer starting at 0 must stay at 0 // intro stays, outro shifts, "whole video" layers stretch
     const ov = tpl.overlays.map(o => { const s0 = fS(o.start), e0 = Math.min(f(o.start + o.dur), Tnew), c = fresh(o); delete c.el; return Object.assign(c, { start: s0, dur: Math.max(0.5, e0 - s0) }); });
     const au = tpl.audio.map(a => { const s0 = fS(a.start), len = Math.min(f(a.start + a.out - a.in), Tnew) - s0; return { ...fresh(a), start: s0, out: a.in + Math.max(0.3, Math.min(len, (a.src || a.out) - a.in)) }; });
     const S2 = { ratio: tpl.ratio, main: [...tpl.pre.map(fresh), ...news, ...tpl.post.map(fresh)], audio: au, overlays: ov, nextLayer: Math.max(1, ...ov.map(o => o.layer || 0)) + 1 };
-    t = 0; await restore(JSON.stringify(S2)); commit(); await seek(0); refresh(0); closeSheet(); say(`Done: ${list.length} video${list.length > 1 ? 's' : ''} placed in your template.`);
-  } catch (err) { say('Could not use the template: ' + (err.message || err)); }
+    t = 0; updateBusy('Rebuilding timeline…', 'Restoring overlays, timing, and audio tracks.', 75, 'Template'); await restore(JSON.stringify(S2)); commit(); await seek(0); refresh(0); closeSheet(); say(`Done: ${list.length} video${list.length > 1 ? 's' : ''} placed in your template.`);
+  } catch (err) { say('Could not use the template: ' + (err.message || err)); showBusyError('Could not apply template', err.message || String(err)); return; }
+  hideBusy();
 };
 $('doneBtn').onclick = () => { select(null); closeSheet(); };
 $('styleBtn').onclick = () => openSheet('text');
@@ -857,7 +863,7 @@ async function pcmOf(src) { // 16 kHz mono sound of one clip; throws if it has n
   await loadMedia(src.m);
   const ac = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
   try {
-    const buf = await ac.decodeAudioData(await files[src.m].arrayBuffer()), pcm = buf.getChannelData(0).slice(Math.floor(src.in * 16000), Math.ceil(src.out * 16000));
+    const buf = await ac.decodeAudioData(await files[src.m].arrayBuffer()), sampleRate = buf.sampleRate || 16000, pcm = buf.getChannelData(0).slice(Math.floor(src.in * sampleRate), Math.ceil(src.out * sampleRate));
     if (pcm.length < 1600) throw new Error('empty'); return pcm;
   } finally { ac.close(); }
 }
@@ -882,23 +888,28 @@ $('capGo').onclick = async () => {
   const cands = aSel ? [A(aSel)] : [...(vid ? [{ m: vid.mediaId, in: vid.in, out: vid.out, start: startOf(vid, 'main'), sp: vid.speed || 1, label: 'this video' }] : []), ...S.audio.map(A)];
   if (!cands.length) return say('Import a video or add audio first.');
   const btn = $('capGo'); btn.disabled = true;
+  let captionFailed = false;
+  updateBusy('Preparing captions…', 'Loading the selected audio and speech-recognition model.', 1, 'Captions');
   try {
     if (!asr) {
       say('Loading the speech model (about 40 MB the first time)…');
+      updateBusy('Downloading speech model…', 'This download is cached for later captioning sessions.', null, 'Model download');
       const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2');
       env.allowLocalModels = false;
-      asr = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny', { progress_callback: p => p.status === 'progress' && say(`Downloading speech model… ${Math.round(p.progress)}%`) });
+      asr = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny', { progress_callback: p => { if (p.status === 'progress') { const detail = `Downloading speech model… ${Math.round(p.progress || 0)}%`; say(detail); updateBusy('Downloading speech model…', detail, Number.isFinite(p.progress) ? p.progress : null, 'Model download'); } } });
     }
     let n = 0, used = '';
     for (const src of cands) { // the video first, then your audio tracks; a silent video is skipped automatically
       say(`Listening to ${src.label}…`);
+      updateBusy('Transcribing speech…', `Listening to ${src.label}. This step can take time on slower phones.`, null, 'Transcription');
       let pcm; try { pcm = await pcmOf(src); } catch (e) { continue; }
       n = await captionFrom(pcm, src); if (n) { used = src.label; break; }
     }
     if (n) { restack(); commit(); refresh(t); closeSheet(); say(`Added ${n} captions from ${used}. Tap one to restyle or move it.`); }
     else say(S.audio.length || aSel ? 'No speech found.' : 'This video has no sound to caption. Add or record audio, then try again.');
-  } catch (e) { say('Captions failed: ' + (e.message || e) + ' (the first run needs internet).'); }
+  } catch (e) { const message = 'Captions failed: ' + (e.message || e) + ' (the first run needs internet).'; say(message); captionFailed = true; showBusyError('Caption generation failed', message); }
   btn.disabled = false;
+  if (!captionFailed) hideBusy();
 };
 const TR = [['None', ''], ['Fade', 'fade'], ['Dip black', 'fadeblack'], ['Flash', 'fadewhite'], ['Slide', 'slideleft'], ['Wipe', 'wipeleft'], ['Circle', 'circleopen'], ['Dissolve', 'dissolve'], ['Pixelate', 'pixelize'], ['Radial', 'radial'], ['Slide right', 'slideright'], ['Wipe up', 'wipeup'], ['Diagonal', 'diagtl'], ['Iris in', 'circleclose'], ['Blinds', 'hlslice']];
 function markTr() { const c = clipNow(); [...$('trList').children].forEach((b, i) => b.classList.toggle('on', ((c && c.tr) || '') === TR[i][1])); const d = c && c.trDur || 0.5; $('trDuration').value = d; $('trDurationLabel').textContent = Number(d).toFixed(1) + ' s'; $('trDuration').disabled = !c || !c.tr; }
