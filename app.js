@@ -98,6 +98,7 @@ async function buildObject(o) {
   Object.assign(obj, { pmId: o.id, layer: o.layer });
   obj.set({ left: o.left ?? w * 0.1, top: o.top ?? h * 0.1, scaleX: o.scaleX ?? 1, scaleY: o.scaleY ?? 1, angle: o.angle || 0, cornerSize: 22, transparentCorners: false });
   Object.assign(o, { left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY });
+  if (o.key && obj.applyFilters) { obj.filters = [keyFilter(o.key)]; obj.applyFilters(); }
   canvas.add(obj); restack(); return obj;
 }
 async function rebuildCanvas() {
@@ -233,11 +234,12 @@ function hints(V, O, A) {
 function updateChrome() {
   $('emptyState').hidden = !(S.main.length || S.overlays.length || S.audio.length);
   const on = !!sel; $('dockMain').hidden = on; $('dockEdit').hidden = !on;
-  if (on) { document.querySelectorAll('#dockEdit [data-for]').forEach(b => (b.hidden = !b.dataset.for.split(' ').includes(sel.lane))); $('styleBtn').hidden = !textSel(); }
+  if (on) { document.querySelectorAll('#dockEdit [data-for]').forEach(b => (b.hidden = !b.dataset.for.split(' ').includes(sel.lane))); $('styleBtn').hidden = !textSel(); $('keyBtn').hidden = !keyOv(); }
   let off = false; try { off = !!localStorage.getItem('pmy-tips-off'); } catch (e) {}
   $('tipBar').hidden = off;
   $('tip').textContent = pendingRep ? 'Tap the clip on the timeline that you want to replace.' : !S.main.length ? 'Tap “Import media” to add your first video.' : on ? 'Hold and drag a clip to move it. Drag the white ends to trim it.' : 'Swipe the timeline to move. Tap a clip to edit it.';
 }
+function keyFilter(k) { return new fabric.Image.filters.RemoveColor({ color: k.color, distance: 0.1 + k.sim / 100 * 0.5 }); }
 function restackRows() { // higher row on screen = in front, like other editors
   pack(S.overlays, o => o.start, o => o.dur).sort((a, b) => b[1] - a[1] || a[0].layer - b[0].layer).forEach(([o], i) => { o.layer = i + 1; const ob = objOf(o.id); if (ob) ob.layer = o.layer; });
   S.nextLayer = S.overlays.length + 1; restack();
@@ -303,7 +305,7 @@ $('playhead').oninput = e => { // throttle: at most one seek per animation frame
   if (!raf) raf = requestAnimationFrame(async () => { raf = 0; if (video.seeking) return setTimeout(() => $('playhead').oninput({ target: { time: pending } }), 40); t = pending; await seek(t); refresh(t); });
 };
 function refresh(time) {
-  t = time; const d = total() || 1;
+  t = time; const d = total() || 1; $('emptyState').hidden = !!(S.main.length || S.overlays.length || S.audio.length);
   const hit = locate(t); video.style.filter = (hit && FX[hit.c.fx || 0].c) || ''; video.playbackRate = hit ? hit.c.speed || 1 : 1; video.volume = hit ? Math.min(1, hit.c.vol ?? 1) : 1;
   if (Date.now() - lastScroll > 200) tl.scrollLeft = t * PX;
   $('playhead').value = (t / d) * 1000; $('timeDisplay').textContent = `${fmt(t)} / ${fmt(total())}`;
@@ -311,7 +313,7 @@ function refresh(time) {
     const ob = objOf(o.id); if (!ob) return;
     const on = t >= o.start && t <= o.start + o.dur;
     if (on && !ob.visible && o.type === 'text') anime({ targets: ob, opacity: [0, 1], duration: 400, easing: 'easeOutCubic', update: () => canvas.requestRenderAll() });
-    ob.visible = on;
+    ob.visible = on; if (o.key && on && ob.applyFilters) ob.applyFilters();
     if (o.el && on) { const want = t - o.start; if (playing && o.el.paused) o.el.play().catch(() => {}); if (!playing && Math.abs(o.el.currentTime - want) > 0.1) o.el.currentTime = want; }
     else if (o.el && !o.el.paused) o.el.pause();
   });
@@ -415,6 +417,7 @@ $('goExport').onclick = async () => {
   if (playing) stop();
   closeSheet(); const btn = $('goExport'); btn.disabled = true;
   try {
+    for (const id of new Set([...S.main.map(c => c.mediaId), ...S.audio.map(a => a.mediaId), ...S.overlays.filter(o => o.mediaId).map(o => o.mediaId)])) await loadMedia(id); // media loads lazily; make sure all of it is ready
     say('Loading video engine (first time only)…'); await getFFmpeg();
     ff.on('progress', ({ progress }) => say(`Rendering… ${Math.round(Math.min(progress, 1) * 100)}%`));
     const [bw, bh] = RATIOS[S.ratio], kk = EXP.res / Math.min(bw, bh), W = Math.round(bw * kk / 2) * 2, H = Math.round(bh * kk / 2) * 2, segs = []; let offset = 0, cached = null;
@@ -432,7 +435,7 @@ $('goExport').onclick = async () => {
           const n = `ovv${k}`, ob = objOf(o.id), bb = ob.getBoundingRect(true, true), rad = ((ob.angle || 0) * Math.PI / 180).toFixed(4);
           await ff.writeFile(n, new Uint8Array(await files[o.mediaId].arrayBuffer())); names.push(n);
           inputs.push('-ss', Math.max(0, offset - o.start).toFixed(2), '-i', n);
-          geo[k] = { ox: Math.round(bb.left * K), oy: Math.round(bb.top * K), chain: `${o.start > offset ? `tpad=start_mode=clone:start_duration=${(o.start - offset).toFixed(2)},` : ''}scale=${Math.max(2, Math.round(ob.getScaledWidth() * K))}:${Math.max(2, Math.round(ob.getScaledHeight() * K))}${+rad ? `,format=rgba,rotate=${rad}:ow=rotw(${rad}):oh=roth(${rad}):c=none` : ''}` };
+          geo[k] = { ox: Math.round(bb.left * K), oy: Math.round(bb.top * K), chain: `${o.start > offset ? `tpad=start_mode=clone:start_duration=${(o.start - offset).toFixed(2)},` : ''}scale=${Math.max(2, Math.round(ob.getScaledWidth() * K))}:${Math.max(2, Math.round(ob.getScaledHeight() * K))}${o.key ? `,chromakey=color=0x${o.key.color.slice(1)}:similarity=${(0.08 + o.key.sim / 100 * 0.32).toFixed(3)}:blend=${((o.key.soft || 0) / 100 * 0.25).toFixed(3)}` : ''}${+rad ? `,format=rgba,rotate=${rad}:ow=rotw(${rad}):oh=roth(${rad}):c=none` : ''}` };
         } else { const n = `ov${k}.png`; await ff.writeFile(n, await overlayPNG(o)); names.push(n); inputs.push('-i', n); }
       }
       let g = `[0:v]scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:black,setsar=1${c.rev ? ',reverse' : ''}${sp !== 1 ? `,setpts=PTS/${sp}` : ''},fps=${EXP.fps}${FX[c.fx || 0].f ? ',' + FX[c.fx || 0].f : ''}${c.fade ? `,fade=t=in:d=.4,fade=t=out:st=${Math.max(0, td - .4).toFixed(2)}:d=.4` : ''}[b0]`, last = 'b0';
@@ -442,7 +445,7 @@ $('goExport').onclick = async () => {
       const tx = TD[i + 1] || 0; // hold the last frame so the blend has something to fade from
       if (tx) { g += `;[${last}]tpad=stop_mode=clone:stop_duration=${tx.toFixed(2)}[bt]`; last = 'bt'; }
       const seg = `seg${i}.mp4`;
-      const af = [c.rev && 'areverse', sp !== 1 && `atempo=${sp}`, (c.vol ?? 1) !== 1 && `volume=${c.vol}`, c.fade && `afade=t=in:d=.4,afade=t=out:st=${Math.max(0, td - .4).toFixed(2)}:d=.4`, tx > 0 && `apad=pad_dur=${tx.toFixed(2)}`].filter(Boolean).join(','), enc = a => ['-ss', String(c.in), '-t', String(d), '-i', src, ...inputs, '-filter_complex', g, '-map', `[${last}]`, '-map', '0:a:0?', ...a, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '44100', '-ac', '2', seg];
+      const af = [c.rev && 'areverse', sp !== 1 && `atempo=${sp}`, (c.vol ?? 1) !== 1 && `volume=${c.vol}`, c.fade && `afade=t=in:d=.4,afade=t=out:st=${Math.max(0, td - .4).toFixed(2)}:d=.4`, tx > 0 && `apad=pad_dur=${tx.toFixed(2)}`].filter(Boolean).join(','), enc = a => ['-ss', String(c.in), '-t', String(d), '-i', src, ...inputs, '-filter_complex', g, '-map', `[${last}]`, '-map', '0:a:0?', ...a, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-t', (td + tx).toFixed(3), seg]; // -t: a long overlay video must not stretch the clip
       try { await run(enc(af ? ['-af', af] : [])); } catch (e) { if (!af) throw e; await run(enc(['-an'])); }
       for (const n of names) await ff.deleteFile(n);
       segs.push(seg); offset += td;
@@ -491,7 +494,14 @@ $('goExport').onclick = async () => {
     await saveVideo(data);
     ['joined.mp4', 'final.mp4', 'list.txt'].forEach(n => ff.deleteFile(n).catch(() => {}));
     say('Done — your video was downloaded.');
-  } catch (err) { console.error(err); say('Export problem: ' + err.message); }
+  } catch (err) {
+    console.error(err);
+    if (EXP.res > 1080) { // 2K / 4K can run out of memory on a phone: drop to 1080p and try again
+      EXP.res = 1080; [...$('resList').children].forEach(b => b.classList.toggle('on', +b.dataset.v === 1080));
+      try { ff.terminate(); } catch (e) { /* already gone */ } ff = null; say('That size ran out of memory. Trying again at 1080p…'); btn.disabled = false; return $('goExport').onclick();
+    }
+    say('Export problem: ' + (err.message || err) + '. Try 720p or a shorter video.');
+  }
   btn.disabled = false;
 };
 
@@ -502,7 +512,7 @@ function openSheet(name) {
   sheet.hidden = false; sheet.dataset.tab = name;
   document.querySelectorAll('[data-pane]').forEach(p => (p.hidden = p.dataset.pane !== name));
   document.querySelectorAll('.dock button').forEach(b => b.classList.toggle('on', b.dataset.sheet === name));
-  if (name === 'fx') markFx(); else if (name === 'speed') markSp(); else if (name === 'vol') markVol(); else if (name === 'tr') markTr(); else if (name === 'text') markText(); else if (name === 'tpl') markTpl(); else if (window.lucide) lucide.createIcons();
+  if (name === 'fx') markFx(); else if (name === 'speed') markSp(); else if (name === 'vol') markVol(); else if (name === 'tr') markTr(); else if (name === 'text') markText(); else if (name === 'tpl') markTpl(); else if (name === 'key') markKey(); else if (window.lucide) lucide.createIcons();
 }
 const closeSheet = () => { sheet.hidden = true; document.querySelectorAll('.dock button').forEach(b => b.classList.remove('on')); };
 $('sheetClose').onclick = closeSheet;
@@ -532,6 +542,25 @@ $('addText').onclick = async () => {
 };
 
 $('exportBtn').onclick = () => openSheet('export');
+
+/* ---------- Chroma key: remove a green or blue background from a picture or video layer ---------- */
+const keyOv = () => { const o = sel && sel.lane === 'overlay' && S.overlays.find(x => x.id === sel.id); return o && o.type !== 'text' ? o : null; };
+function applyKey(o) { const ob = objOf(o.id); if (!ob) return; ob.filters = o.key ? [keyFilter(o.key)] : []; ob.applyFilters(); canvas.requestRenderAll(); }
+function markKey() {
+  const o = keyOv(), k = o && o.key; $('keySim').value = k ? k.sim : 50; $('keySoft').value = k ? k.soft : 20; $('keyCol').value = k ? k.color : '#00ff00';
+  [...$('keyColors').children].forEach(b => b.classList.toggle('on', k ? b.dataset.c === k.color : b.dataset.c === 'off'));
+}
+function setKey(color) {
+  const o = keyOv(); if (!o) return say('Select a video or picture layer first.');
+  o.key = color === 'off' ? undefined : { color, sim: o.key ? o.key.sim : 50, soft: o.key ? o.key.soft : 20 };
+  applyKey(o); refresh(t); commit(); markKey(); say(o.key ? 'Background removed. The exported video uses a sharper version.' : 'Chroma key is off.');
+}
+$('keyBtn').onclick = () => (sheet.hidden || sheet.dataset.tab !== 'key' ? openSheet('key') : closeSheet());
+$('keyColors').onclick = e => { const b = e.target.closest('[data-c]'); if (b) setKey(b.dataset.c); };
+$('keyCol').onchange = e => setKey(e.target.value);
+$('keySim').oninput = e => { const o = keyOv(); if (!o || !o.key) return; o.key.sim = +e.target.value; applyKey(o); refresh(t); };
+$('keySoft').oninput = e => { const o = keyOv(); if (o && o.key) o.key.soft = +e.target.value; };
+$('keySim').onchange = $('keySoft').onchange = () => { if (keyOv()) commit(); };
 
 /* ---------- Replace a video or music clip: keep its place, filter, speed, layers ---------- */
 let pendingRep = null;
@@ -651,8 +680,34 @@ const LANGS = [['Auto-detect', ''], ['English', 'english'], ['Hindi', 'hindi'], 
 $('capLang').innerHTML = LANGS.map(([n, v]) => `<option value="${v}">${n}</option>`).join('');
 $('capBtn').onclick = () => (sheet.hidden || sheet.dataset.tab !== 'cap' ? openSheet('cap') : closeSheet());
 let asr;
+async function pcmOf(src) { // 16 kHz mono sound of one clip; throws if it has no sound
+  await loadMedia(src.m);
+  const ac = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+  try {
+    const buf = await ac.decodeAudioData(await files[src.m].arrayBuffer()), pcm = buf.getChannelData(0).slice(Math.floor(src.in * 16000), Math.ceil(src.out * 16000));
+    if (pcm.length < 1600) throw new Error('empty'); return pcm;
+  } finally { ac.close(); }
+}
+async function captionFrom(pcm, src) {
+  const lang = $('capLang').value;
+  const r = await asr(pcm, { chunk_length_s: 30, stride_length_s: 5, return_timestamps: true, ...(lang ? { language: lang } : {}), task: $('capTr').checked ? 'translate' : 'transcribe' });
+  let n = 0;
+  for (const ch of r.chunks || []) {
+    const words = ch.text.trim().split(/\s+/).filter(Boolean); if (!words.length || /^[\[(].*[\])]$/.test(ch.text.trim())) continue; // skip [music] style tags
+    const s0 = ch.timestamp[0] || 0, e0 = ch.timestamp[1] != null ? ch.timestamp[1] : Math.min(s0 + 3, src.out - src.in), parts = Math.ceil(words.length / 4);
+    for (let p = 0; p < parts; p++) { // short captions, about 4 words each
+      const a = s0 + (e0 - s0) * p / parts, b = s0 + (e0 - s0) * (p + 1) / parts;
+      const o = { id: uid(), layer: S.nextLayer++, type: 'text', text: words.slice(p * 4, p * 4 + 4).join(' '), style: txtStyle, start: src.start + a / src.sp, dur: Math.max(0.4, (b - a) / src.sp), top: RATIOS[S.ratio][1] * 0.72 };
+      S.overlays.push(o); await buildObject(o); n++;
+    }
+  }
+  return n;
+}
 $('capGo').onclick = async () => {
-  const c = clipNow(); if (!c) return say('Import a video first.');
+  const aSel = sel && sel.lane === 'audio' ? S.audio.find(x => x.id === sel.id) : null, vid = aSel ? null : clipNow();
+  const A = a => ({ m: a.mediaId, in: a.in, out: a.out, start: a.start, sp: 1, label: 'your audio track' });
+  const cands = aSel ? [A(aSel)] : [...(vid ? [{ m: vid.mediaId, in: vid.in, out: vid.out, start: startOf(vid, 'main'), sp: vid.speed || 1, label: 'this video' }] : []), ...S.audio.map(A)];
+  if (!cands.length) return say('Import a video or add audio first.');
   const btn = $('capGo'); btn.disabled = true;
   try {
     if (!asr) {
@@ -661,22 +716,14 @@ $('capGo').onclick = async () => {
       env.allowLocalModels = false;
       asr = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny', { progress_callback: p => p.status === 'progress' && say(`Downloading speech model… ${Math.round(p.progress)}%`) });
     }
-    say('Listening to the clip…'); await loadMedia(c.mediaId);
-    const ac = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-    const buf = await ac.decodeAudioData(await files[c.mediaId].arrayBuffer()); ac.close();
-    const pcm = buf.getChannelData(0).slice(Math.floor(c.in * 16000), Math.ceil(c.out * 16000)), lang = $('capLang').value;
-    const r = await asr(pcm, { chunk_length_s: 30, stride_length_s: 5, return_timestamps: true, ...(lang ? { language: lang } : {}), task: $('capTr').checked ? 'translate' : 'transcribe' });
-    const start0 = startOf(c, 'main'), sp = c.speed || 1; let n = 0;
-    for (const ch of r.chunks || []) {
-      const words = ch.text.trim().split(/\s+/).filter(Boolean); if (!words.length || /^[\[(].*[\])]$/.test(ch.text.trim())) continue; // skip [music] style tags
-      const s = ch.timestamp[0] || 0, e = ch.timestamp[1] != null ? ch.timestamp[1] : Math.min(s + 3, c.out - c.in), parts = Math.ceil(words.length / 4);
-      for (let p = 0; p < parts; p++) { // short captions, about 4 words each
-        const a = s + (e - s) * p / parts, b = s + (e - s) * (p + 1) / parts;
-        const o = { id: uid(), layer: S.nextLayer++, type: 'text', text: words.slice(p * 4, p * 4 + 4).join(' '), style: txtStyle, start: start0 + a / sp, dur: Math.max(0.4, (b - a) / sp), top: RATIOS[S.ratio][1] * 0.72 };
-        S.overlays.push(o); await buildObject(o); n++;
-      }
+    let n = 0, used = '';
+    for (const src of cands) { // the video first, then your audio tracks; a silent video is skipped automatically
+      say(`Listening to ${src.label}…`);
+      let pcm; try { pcm = await pcmOf(src); } catch (e) { continue; }
+      n = await captionFrom(pcm, src); if (n) { used = src.label; break; }
     }
-    if (n) { restack(); commit(); refresh(t); closeSheet(); say(`Added ${n} captions. Tap one to restyle or move it.`); } else say('No speech found in this clip.');
+    if (n) { restack(); commit(); refresh(t); closeSheet(); say(`Added ${n} captions from ${used}. Tap one to restyle or move it.`); }
+    else say(S.audio.length || aSel ? 'No speech found.' : 'This video has no sound to caption. Add or record audio, then try again.');
   } catch (e) { say('Captions failed: ' + (e.message || e) + ' (the first run needs internet).'); }
   btn.disabled = false;
 };
@@ -712,8 +759,8 @@ $('speedList').onclick = e => {
 };
 $('revBtn').onclick = () => { const c = clipNow(); if (!c) return say('Import a video first.'); c.rev = !c.rev; commit(); markSp(); say(c.rev ? 'Reverse added. It plays backwards in the exported video.' : 'Reverse removed.'); };
 $('addClip').onclick = () => $('importBtn').click();
-const opt = (id, vals, key) => { $(id).innerHTML = vals.map(v => `<button data-v="${v}" class="${EXP[key] === v ? 'on' : ''}">${key === 'res' ? v + 'p' + (v === 720 ? ' · fast' : v === 1080 ? ' · HD' : '') : v}</button>`).join(''); $(id).onclick = e => { const b = e.target.closest('[data-v]'); if (!b) return; EXP[key] = +b.dataset.v; [...$(id).children].forEach(x => x.classList.toggle('on', x === b)); }; };
-opt('resList', [480, 720, 1080], 'res'); opt('fpsList', [24, 30, 60], 'fps');
+const opt = (id, vals, key) => { $(id).innerHTML = vals.map(v => `<button data-v="${v}" class="${EXP[key] === v ? 'on' : ''}">${key === 'res' ? (v === 1440 ? '2K' : v === 2160 ? '4K' : v + 'p' + (v === 720 ? ' · fast' : v === 1080 ? ' · HD' : '')) : v}</button>`).join(''); $(id).onclick = e => { const b = e.target.closest('[data-v]'); if (!b) return; EXP[key] = +b.dataset.v; [...$(id).children].forEach(x => x.classList.toggle('on', x === b)); }; };
+opt('resList', [480, 720, 1080, 1440, 2160], 'res'); opt('fpsList', [24, 30, 60], 'fps');
 
 /* ---------- Start up ---------- */
 (async function init() {

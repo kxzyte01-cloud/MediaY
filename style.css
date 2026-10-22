@@ -145,3 +145,17 @@ dialog button { width:100%; margin-top:8px; }
 @media (max-width:440px) { .brand-text { display:none; } }
 
 #tl.picking .clip { outline:2px dashed var(--red); outline-offset:1px; }
+
+/* layout fixes: nothing may be wider than the screen, so the page can never slide sideways */
+html, body { overflow:hidden; overscroll-behavior:none; max-width:100%; }
+body { position:fixed; inset:0; width:100%; }
+.topbar { gap:6px; padding:8px 10px; overflow:hidden; flex-wrap:nowrap; }
+.topbar > * { min-width:0; flex-shrink:1; }
+.topbar button, .topbar select { padding:0 10px; font-size:13px; min-height:38px; white-space:nowrap; }
+.topbar .primary { padding:0 14px; }
+main, .timeline, .dock, .stage { max-width:100%; overflow-x:hidden; }
+.dock { overflow-x:auto; }
+#emptyState { display:flex; flex-direction:column; align-items:center; justify-content:flex-start; overflow-x:hidden; }
+#emptyState > :first-child { margin-top:auto; }
+#emptyState > :last-child { margin-bottom:auto; }
+.rng { width:100%; height:32px; accent-color:var(--red); touch-action:pan-y; }

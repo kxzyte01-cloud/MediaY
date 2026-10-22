@@ -69,12 +69,21 @@
   </main>
 
   <div id="sheet" class="sheet" hidden>
-    <div class="sheet-head"><span data-pane="fx">Filters</span><span data-pane="text" hidden>Text</span><span data-pane="export" hidden>Export</span><span data-pane="speed" hidden>Speed</span><span data-pane="vol" hidden>Volume</span><span data-pane="tr" hidden>Transition</span><span data-pane="cap" hidden>Auto captions</span><span data-pane="tpl" hidden>Templates</span><button id="sheetClose" aria-label="Close">✕</button></div>
+    <div class="sheet-head"><span data-pane="fx">Filters</span><span data-pane="text" hidden>Text</span><span data-pane="export" hidden>Export</span><span data-pane="speed" hidden>Speed</span><span data-pane="vol" hidden>Volume</span><span data-pane="tr" hidden>Transition</span><span data-pane="cap" hidden>Auto captions</span><span data-pane="tpl" hidden>Templates</span><span data-pane="key" hidden>Chroma key</span><button id="sheetClose" aria-label="Close">✕</button></div>
     <div data-pane="fx"><div id="fxList" class="chips"></div></div>
     <div data-pane="export" hidden>
-      <p class="lbl">Quality: 1080p is best for YouTube but exports slower on phones</p><div id="resList" class="pills"></div>
+      <p class="lbl">Quality: 1080p is best for YouTube. 2K and 4K are very heavy for a phone, so the app drops to 1080p if it runs out of memory</p><div id="resList" class="pills"></div>
       <p class="lbl">Frames per second</p><div id="fpsList" class="pills"></div>
       <button id="goExport" class="primary wide">Export video</button>
+    </div>
+    <div data-pane="key" hidden>
+      <div id="keyColors" class="pills"><button data-c="#00ff00">Green</button><button data-c="#0000ff">Blue</button><button data-c="off">Off</button></div>
+      <label class="chk">Other color <input id="keyCol" type="color" value="#00ff00"></label>
+      <p class="lbl">Strength: how much of that color to remove</p>
+      <input id="keySim" class="rng" type="range" min="0" max="100" value="50">
+      <p class="lbl">Edge softness (used in the exported video)</p>
+      <input id="keySoft" class="rng" type="range" min="0" max="100" value="20">
+      <p class="lbl">Put your green-screen video on the Overlay layer, resize it, and it plays over the main video.</p>
     </div>
     <div data-pane="tpl" hidden>
       <div id="tplList"></div>
@@ -128,6 +137,7 @@
     <button id="fadeBtn" data-for="main audio"><i data-lucide="blend"></i>Fade</button>
     <button id="trBtn" data-sheet="tr" data-for="main"><i data-lucide="arrow-left-right"></i>Transition</button>
     <button id="styleBtn" data-sheet="text" data-for="overlay"><i data-lucide="type"></i>Edit text</button>
+    <button id="keyBtn" data-sheet="key" data-for="overlay"><i data-lucide="palette"></i>Chroma key</button>
     <button id="fitBtn" data-for="overlay audio"><i data-lucide="move-horizontal"></i>Whole video</button>
     <button id="replBtn" data-for="main audio overlay"><i data-lucide="replace"></i>Replace</button>
     <button id="deleteBtn" data-for="main audio overlay"><i data-lucide="trash-2"></i>Delete</button>
