@@ -440,7 +440,7 @@ async function copyTillPlayhead() {
   if (!Number.isFinite(length) || length < 0.2) return say('The selected item is too short to copy.');
   const previous = snap();
   const clones = [];
-  const cloneRecord = value => JSON.parse(JSON.stringify(value, (key, child) => key === 'el' ? undefined : child);
+  const cloneRecord = value => JSON.parse(JSON.stringify(value, (key, child) => key === 'el' ? undefined : child));
   try {
     if (lane === 'main') {
       let remaining = gap;
