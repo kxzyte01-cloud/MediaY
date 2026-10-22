@@ -20,7 +20,8 @@ const TS = [ // text styles
   () => ({ fill: '#ffe14a', stroke: '#000', strokeWidth: 5, fontStyle: 'italic', paintFirst: 'stroke' }),
   () => ({ fill: '#fff', strokeWidth: 0, backgroundColor: '#c8101e', fontSize: 44 }),
   () => ({ fill: '#fff', strokeWidth: 0, backgroundColor: '#0b2a5b', fontSize: 40 })];
-const PX = 30; // timeline pixels per second
+const BASE_PX = 30;
+let PX = BASE_PX; // timeline pixels per second; editable with timeline zoom controls
 const uid = () => Math.random().toString(36).slice(2, 10);
 const fmt = s => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 const say = m => ($('status').textContent = m);
@@ -395,6 +396,109 @@ function drawTimeline() {
   hints(V, O, A); updateChrome();
 }
 const snapT = v => { let a = 0; const e = [0, t, ...S.main.map(c => (a += dur(c)))].find(x => Math.abs(x - v) < 8 / PX); return e != null ? e : v; };
+
+const clampTimelineZoom = value => Math.max(6, Math.min(90, Math.round((Number(value) || BASE_PX) / 3) * 3));
+try {
+  const savedTimelineZoom = Number(localStorage.getItem('pmy-timeline-zoom'));
+  if (Number.isFinite(savedTimelineZoom) && savedTimelineZoom >= 6) PX = clampTimelineZoom(savedTimelineZoom);
+} catch (_) {}
+$('tlZoom').value = String(PX);
+$('tlZoomLabel').textContent = (PX / BASE_PX).toFixed(1) + '×';
+function setTimelineZoom(value, persist = false) {
+  PX = clampTimelineZoom(value);
+  $('tlZoom').value = String(PX);
+  $('tlZoomLabel').textContent = (PX / BASE_PX).toFixed(1) + '×';
+  drawTimeline();
+  tl.scrollLeft = Math.max(0, t * PX);
+  if (persist) { try { localStorage.setItem('pmy-timeline-zoom', String(PX)); } catch (_) {} }
+}
+$('tlZoomOut').onclick = () => setTimelineZoom(PX - 6, true);
+$('tlZoomIn').onclick = () => setTimelineZoom(PX + 6, true);
+$('tlZoom').oninput = e => setTimelineZoom(Number(e.target.value), false);
+$('tlZoom').onchange = e => setTimelineZoom(Number(e.target.value), true);
+$('tlZoomFit').onclick = () => {
+  const duration = Math.max(total(), 1);
+  const fitPx = (tl.clientWidth * 0.5) / duration;
+  setTimelineZoom(Math.max(6, Math.min(90, Math.floor(fitPx / 3) * 3)), true);
+  say('Timeline zoom adjusted to fit as much of the edit as possible.');
+};
+
+function updateCopyTillButton() {
+  const btn = $('copyTillBtn');
+  if (!btn) return;
+  const item = sel ? itemOf(sel.id, sel.lane) : null;
+  const end = item ? startOf(item, sel.lane) + lenOf(item, sel.lane) : Infinity;
+  btn.disabled = !item || t - end < 0.2;
+}
+async function copyTillPlayhead() {
+  if (!sel) return say('Select a timeline clip first.');
+  const lane = sel.lane, source = itemOf(sel.id, lane);
+  if (!source) return say('Select a clip that still exists on the timeline.');
+  const start = startOf(source, lane), length = lenOf(source, lane), end = start + length;
+  const gap = t - end;
+  if (gap < 0.2) return say('Move the playhead at least 0.2 seconds beyond the selected clip, then copy till here.');
+  if (!Number.isFinite(length) || length < 0.2) return say('The selected item is too short to copy.');
+  const previous = snap();
+  const clones = [];
+  const cloneRecord = value => JSON.parse(JSON.stringify(value, (key, child) => key === 'el' ? undefined : child);
+  try {
+    if (lane === 'main') {
+      let remaining = gap;
+      while (remaining >= 0.2) {
+        const part = Math.min(length, remaining);
+        if (part < 0.2) break;
+        const copy = cloneRecord(source);
+        copy.id = uid();
+        if (part < length - 0.001) copy.out = Math.min(source.out, source.in + part * (source.speed || 1));
+        clones.push(copy);
+        remaining -= part;
+      }
+      S.main.splice(S.main.indexOf(source) + 1, 0, ...clones);
+    } else if (lane === 'audio') {
+      let position = end, remaining = gap;
+      while (remaining >= 0.2) {
+        const part = Math.min(length, remaining);
+        if (part < 0.2) break;
+        const copy = cloneRecord(source);
+        copy.id = uid();
+        copy.start = position;
+        if (part < length - 0.001) copy.out = Math.min(source.out, source.in + part);
+        clones.push(copy);
+        position += part;
+        remaining -= part;
+      }
+      S.audio.push(...clones);
+    } else {
+      let position = end, remaining = gap;
+      while (remaining >= 0.2) {
+        const part = Math.min(length, remaining);
+        if (part < 0.2) break;
+        const copy = cloneRecord(source);
+        copy.id = uid();
+        copy.start = position;
+        copy.dur = part;
+        copy.layer = S.nextLayer++;
+        delete copy.el;
+        clones.push(copy);
+        position += part;
+        remaining -= part;
+      }
+      S.overlays.push(...clones);
+      for (const copy of clones) await buildObject(copy);
+      restackRows();
+    }
+    if (!clones.length) return say('There is not enough room before the playhead to make another copy.');
+    commit();
+    select(clones[clones.length - 1].id, lane);
+    refresh(t);
+    say('Copied ' + clones.length + ' repeat' + (clones.length === 1 ? '' : 's') + ' up to the playhead.');
+  } catch (err) {
+    await restore(previous);
+    showBusyError('Copy till here failed', err.message || String(err));
+  }
+}
+$('copyTillBtn').onclick = copyTillPlayhead;
+
 function clampTrim(c, lane, side, dt) {
   const sp = lane === 'main' ? c.speed || 1 : 1, len = lenOf(c, lane), max = lane === 'overlay' ? 36000 : ((c.src || c.out) - c.in) / sp;
   if (side === 'r') return Math.min(Math.max(dt, 0.2 - len), max - len);
@@ -419,6 +523,7 @@ function updateChrome() {
   let off = false; try { off = !!localStorage.getItem('pmy-tips-off'); } catch (e) {}
   $('tipBar').hidden = off;
   $('tip').textContent = pendingRep ? 'Tap the clip on the timeline that you want to replace.' : !S.main.length ? 'Tap “Import media” to add your first video.' : on ? 'Hold and drag a clip to move it. Drag the white ends to trim it.' : 'Swipe the timeline to move. Tap a clip to edit it.';
+  updateCopyTillButton();
 }
 function keyFilter(k) { return new fabric.Image.filters.RemoveColor({ color: k.color, distance: 0.1 + k.sim / 100 * 0.5 }); }
 function restackRows() { // higher row on screen = in front, like other editors
@@ -518,6 +623,7 @@ function refresh(time) {
     else if (o.el && !o.el.paused) o.el.pause();
   });
   canvas.requestRenderAll();
+  updateCopyTillButton();
 }
 function tick() {
   if (!playing) return;
@@ -1107,7 +1213,27 @@ $('capGo').onclick = async () => {
   btn.disabled = false;
   if (!captionFailed) hideBusy();
 };
-const TR = [['None', ''], ['Fade', 'fade'], ['Dip black', 'fadeblack'], ['Flash', 'fadewhite'], ['Slide', 'slideleft'], ['Wipe', 'wipeleft'], ['Circle', 'circleopen'], ['Dissolve', 'dissolve'], ['Pixelate', 'pixelize'], ['Radial', 'radial'], ['Slide right', 'slideright'], ['Wipe up', 'wipeup'], ['Diagonal', 'diagtl'], ['Iris in', 'circleclose'], ['Blinds', 'hlslice']];
+const TR = [
+  ['None', ''],
+  ['Fade', 'fade'], ['Fade black', 'fadeblack'], ['Fade white', 'fadewhite'],
+  ['Fade fast', 'fadefast'], ['Fade slow', 'fadeslow'], ['Fade grays', 'fadegrays'],
+  ['Dissolve', 'dissolve'], ['Pixelate', 'pixelize'], ['Blur', 'hblur'], ['Distance', 'distance'],
+  ['Circle crop', 'circlecrop'], ['Rectangle crop', 'rectcrop'], ['Radial', 'radial'],
+  ['Circle open', 'circleopen'], ['Circle close', 'circleclose'],
+  ['Vertical open', 'vertopen'], ['Vertical close', 'vertclose'],
+  ['Horizontal open', 'horzopen'], ['Horizontal close', 'horzclose'],
+  ['Smooth left', 'smoothleft'], ['Smooth right', 'smoothright'], ['Smooth up', 'smoothup'], ['Smooth down', 'smoothdown'],
+  ['Slide left', 'slideleft'], ['Slide right', 'slideright'], ['Slide up', 'slideup'], ['Slide down', 'slidedown'],
+  ['Wipe left', 'wipeleft'], ['Wipe right', 'wiperight'], ['Wipe up', 'wipeup'], ['Wipe down', 'wipedown'],
+  ['Wipe top-left', 'wipetl'], ['Wipe top-right', 'wipetr'], ['Wipe bottom-left', 'wipebl'], ['Wipe bottom-right', 'wipebr'],
+  ['Diagonal TL', 'diagtl'], ['Diagonal TR', 'diagtr'], ['Diagonal BL', 'diagbl'], ['Diagonal BR', 'diagbr'],
+  ['Horizontal slice', 'hlslice'], ['Horizontal reverse slice', 'hrslice'],
+  ['Vertical up-slice', 'vuslice'], ['Vertical down-slice', 'vdslice'],
+  ['Squeeze horizontal', 'squeezeh'], ['Squeeze vertical', 'squeezev'], ['Zoom in', 'zoomin'],
+  ['Wind left', 'hlwind'], ['Wind right', 'hrwind'], ['Wind up', 'vuwind'], ['Wind down', 'vdwind'],
+  ['Cover left', 'coverleft'], ['Cover right', 'coverright'], ['Cover up', 'coverup'], ['Cover down', 'coverdown'],
+  ['Reveal left', 'revealleft'], ['Reveal right', 'revealright'], ['Reveal up', 'revealup'], ['Reveal down', 'revealdown']
+];
 function markTr() { const c = clipNow(); [...$('trList').children].forEach((b, i) => b.classList.toggle('on', ((c && c.tr) || '') === TR[i][1])); const d = c && c.trDur || 0.5; $('trDuration').value = d; $('trDurationLabel').textContent = Number(d).toFixed(1) + ' s'; $('trDuration').disabled = !c || !c.tr; }
 $('trBtn').onclick = () => (sheet.hidden || sheet.dataset.tab !== 'tr' ? openSheet('tr') : closeSheet());
 $('trList').innerHTML = TR.map(([n, v]) => `<button data-tr="${v}">${n}</button>`).join('');
