@@ -560,14 +560,31 @@ $('aspectRatio').onchange = async e => {
 };
 
 /* ---------- Export: FFmpeg.wasm, one clip at a time (chunked) ---------- */
-const loadScript = src => new Promise((ok, no) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = () => no(new Error('Could not load ' + src)); document.head.appendChild(s); });
-let ff, ffLogs = [], exportProgressHandler = null, exportClipIndex = 0, exportGroupIndex = 0;
+// FFmpeg's small wrapper and class-worker chunk are hosted in this app's origin.
+// This avoids the cross-origin Worker path that produced "ffmpeg is not loaded" in WebView.
+let ff, ffLogs = [], exportProgressHandler = null, exportClipIndex = 0, exportGroupIndex = 0, ffAssetURLs = [];
+const CDN = 'https://cdn.jsdelivr.net/npm/';
+async function remoteBlobURL(url, mimeType) {
+  const response = await fetch(url, { mode: 'cors', cache: 'force-cache' });
+  if (!response.ok) throw new Error(`Could not download FFmpeg component (${response.status}): ${url}`);
+  const blob = await response.blob();
+  const objectURL = URL.createObjectURL(new Blob([blob], { type: mimeType }));
+  ffAssetURLs.push(objectURL);
+  return objectURL;
+}
+function disposeFFmpeg() {
+  try { if (ff) ff.terminate(); } catch (_) { /* engine may already be stopped */ }
+  ff = null;
+  for (const url of ffAssetURLs) URL.revokeObjectURL(url);
+  ffAssetURLs = [];
+}
 async function getFFmpeg() {
-  if (ff) return ff;
-  const CDN = 'https://cdn.jsdelivr.net/npm/';
-  await loadScript(CDN + '@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js');
-  await loadScript(CDN + '@ffmpeg/util@0.12.1/dist/umd/index.js');
-  const { toBlobURL } = FFmpegUtil, core = CDN + '@ffmpeg/core@0.12.6/dist/umd/';
+  if (ff && ff.loaded) return ff;
+  if (ff) disposeFFmpeg();
+  if (!window.FFmpegWASM || typeof FFmpegWASM.FFmpeg !== 'function') {
+    throw new Error('The local FFmpeg wrapper did not load. Reload MediaY; if this persists, redeploy the vendor/ffmpeg files.');
+  }
+  const core = CDN + '@ffmpeg/core@0.12.6/dist/umd/';
   ff = new FFmpegWASM.FFmpeg();
   ff.on('log', ({ message }) => {
     const line = String(message || '');
@@ -578,15 +595,16 @@ async function getFFmpeg() {
   });
   ff.on('progress', event => { if (exportProgressHandler) exportProgressHandler(event || {}); });
   try {
+    // Do not pass classWorkerURL: the vendored UMD wrapper automatically resolves
+    // 814.ffmpeg.js beside vendor/ffmpeg/ffmpeg.js, so Worker stays same-origin.
     await ff.load({
-      classWorkerURL: await toBlobURL(CDN + '@ffmpeg/ffmpeg@0.12.10/dist/umd/814.ffmpeg.js', 'text/javascript'),
-      coreURL: await toBlobURL(core + 'ffmpeg-core.js', 'text/javascript'),
-      wasmURL: await toBlobURL(core + 'ffmpeg-core.wasm', 'application/wasm'),
+      coreURL: await remoteBlobURL(core + 'ffmpeg-core.js', 'text/javascript'),
+      wasmURL: await remoteBlobURL(core + 'ffmpeg-core.wasm', 'application/wasm'),
     });
+    if (!ff.loaded) throw new Error('FFmpeg finished loading without becoming ready.');
     return ff;
   } catch (error) {
-    try { ff.terminate(); } catch (_) { /* loader may not have completed */ }
-    ff = null;
+    disposeFFmpeg();
     throw error;
   }
 }
