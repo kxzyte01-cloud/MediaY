@@ -891,7 +891,8 @@ async function createSpeechPipeline(useWebGPU) {
   };
   const options = { progress_callback };
   if (useWebGPU) options.device = 'webgpu';
-  const model = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny', options);
+  const modelId = useWebGPU ? 'onnx-community/whisper-tiny' : 'Xenova/whisper-tiny';
+  const model = await pipeline('automatic-speech-recognition', modelId, options);
   asrBackend = useWebGPU ? 'webgpu' : 'wasm';
   return model;
 }
