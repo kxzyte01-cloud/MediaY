@@ -40,8 +40,29 @@
       if (code !== 0) throw new Error('FFmpeg exited with code ' + code);
       const output = await ff.readFile('smoke.mp4');
       if (!output || output.length < 100) throw new Error('FFmpeg returned an empty MP4.');
-      window.testResult = {ok:true, bytes:output.length, message:'same-origin worker loaded and encoded a test MP4'};
-      write('PASS — encoded ' + output.length + ' bytes.');
+
+      // Regression test for the exact phone failure: shorthand d=.4 is rejected by this core.
+      write('Testing fade and Adjust filter chain…');
+      const filters = "fps=10,eq=brightness=0.12:contrast=1.2:saturation=1.35,curves=all='0/0 0.25/0.28 0.5/0.5 0.75/0.78 1/1',unsharp=5:5:1.0:5:5:0.0,noise=alls=5:allf=t+u,fade=type=in:duration=0.2,fade=type=out:start_time=0.3:duration=0.2";
+      const effectCode = await ff.exec(['-f','lavfi','-i','color=c=red:s=64x64:r=10:d=0.5','-vf',filters,'-frames:v','5','-c:v','libx264','-pix_fmt','yuv420p','effects-smoke.mp4']);
+      if (effectCode !== 0) throw new Error('FFmpeg could not encode fade + Adjust filter chain (code ' + effectCode + ').');
+      const effects = await ff.readFile('effects-smoke.mp4');
+      if (!effects || effects.length < 100) throw new Error('FFmpeg returned an empty adjusted/faded MP4.');
+
+      write('Testing alpha-masked blend mode…');
+      const canvas = document.createElement('canvas');
+      canvas.width = 64; canvas.height = 64;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = 'rgba(0,255,0,0.5)'; ctx.fillRect(16,16,32,32);
+      const png = await new Promise(resolve => canvas.toBlob(resolve,'image/png'));
+      await ff.writeFile('blend-overlay.png', new Uint8Array(await png.arrayBuffer()));
+      const blendGraph = "[0:v]format=yuv444p,split[baseKeep][baseBlend];[1:v]scale=64:64,format=rgba,split[overlayColor][overlayAlpha];[overlayColor]format=yuv444p[overlayYuv];[baseBlend][overlayYuv]blend=all_mode=multiply:all_opacity=1[blendFrame];[overlayAlpha]alphaextract,format=yuv444p,geq=lum='(lum(X,Y)-16)*255/219':cb='(lum(X,Y)-16)*255/219':cr='(lum(X,Y)-16)*255/219'[blendMask];[baseKeep][blendFrame][blendMask]maskedmerge=enable='between(t,0,0.5)'[out]";
+      const blendCode = await ff.exec(['-f','lavfi','-i','color=c=red:s=64x64:r=10:d=0.5','-i','blend-overlay.png','-filter_complex',blendGraph,'-map','[out]','-c:v','libx264','-pix_fmt','yuv420p','-t','0.5','blend-smoke.mp4']);
+      if (blendCode !== 0) throw new Error('FFmpeg could not render the masked overlay blend mode (code ' + blendCode + ').');
+      const blendOut = await ff.readFile('blend-smoke.mp4');
+      if (!blendOut || blendOut.length < 100) throw new Error('FFmpeg returned an empty blended MP4.');
+      window.testResult = {ok:true, bytes:output.length, adjustedBytes:effects.length, blendedBytes:blendOut.length, message:'same-origin worker encoded MP4, fade/Adjust effects, and alpha-masked blend'};
+      write('PASS — encoded base, fade/Adjust, and blend test videos.');
       ff.terminate();
       objectUrls.forEach(URL.revokeObjectURL);
     } catch (error) {
