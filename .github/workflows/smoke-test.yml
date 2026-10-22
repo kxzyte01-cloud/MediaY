@@ -31,3 +31,5 @@ jobs:
         run: python -m playwright install --with-deps chromium
       - name: Run browser smoke tests
         run: python test_smoke.py
+      - name: Run FFmpeg worker integration test
+        run: python test_ffmpeg_worker.py
