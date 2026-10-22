@@ -130,6 +130,25 @@ async function loadOverlayImage(url, overlay) {
   }
 }
 async function validateTemplateAssets(template) {
+  // A template can contain original intro/outro clips, a replaceable slot, and audio
+  // as well as visual overlays. Check every stored reference before changing the edit.
+  const mainClips = [
+    ...(template.pre || []),
+    ...(template.slotClip ? [template.slotClip] : []),
+    ...(template.post || [])
+  ];
+  for (const clip of mainClips) {
+    const url = clip.mediaId && await loadMedia(clip.mediaId);
+    if (!url) throw new Error(`Template video “${clip.name || 'unnamed clip'}” is missing from this browser's local storage. Re-import it, save the template again, and retry.`);
+    const length = await probe(url, 'video');
+    if (!Number.isFinite(length) || length <= 0) throw new Error(`Template video “${clip.name || 'unnamed clip'}” cannot be decoded by this browser. Convert it to a standard MP4 or MOV and save the template again.`);
+  }
+  for (const track of template.audio || []) {
+    const url = track.mediaId && await loadMedia(track.mediaId);
+    if (!url) throw new Error(`Template audio “${track.name || 'unnamed track'}” is missing from local storage. Re-import it and save the template again.`);
+    const length = await probe(url, 'audio');
+    if (!Number.isFinite(length) || length <= 0) throw new Error(`Template audio “${track.name || 'unnamed track'}” cannot be decoded by this browser. Re-import it as a supported audio file and save the template again.`);
+  }
   for (const overlay of template.overlays || []) {
     if (overlay.type === 'text' || !overlay.mediaId) continue;
     const url = await loadMedia(overlay.mediaId);
@@ -137,14 +156,10 @@ async function validateTemplateAssets(template) {
     if (overlay.type === 'image') {
       await loadOverlayImage(url, overlay);
     } else if (overlay.type === 'video') {
-      const element = document.createElement('video');
-      element.preload = 'metadata';
-      element.muted = true;
-      await new Promise((resolve, reject) => {
-        element.onloadedmetadata = () => resolve();
-        element.onerror = () => reject(new Error(`Template overlay video “${overlay.name || 'unnamed video'}” cannot be decoded in this browser. Convert it to MP4 and save the template again.`));
-        element.src = url;
-      });
+      const length = await probe(url, 'video');
+      if (!Number.isFinite(length) || length <= 0) {
+        throw new Error(`Template overlay video “${overlay.name || 'unnamed video'}” cannot be decoded in this browser. Convert it to MP4 and save the template again.`);
+      }
     }
   }
 }
