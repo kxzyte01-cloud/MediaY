@@ -1,7 +1,7 @@
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
-root=Path('/mnt/data/MediaY-fixed')
+root=Path(__file__).resolve().parent
 html=(root/'index.html').read_text()
 style=(root/'style.css').read_text()
 setup_style=(root/'setup.css').read_text()
@@ -44,7 +44,7 @@ html=html.replace('<script src="./setup.js"></script>', '<script>'+setup+'</scri
 html=html.replace('<script>'+app+'</script>', '<script>try{localStorage.setItem("pmy-consent-v1","yes")}catch(e){}</script><script>'+app+'</script>')
 
 with sync_playwright() as p:
-    browser=p.chromium.launch(executable_path='/usr/bin/chromium',headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
+    browser=p.chromium.launch(headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
     context=browser.new_context(viewport={'width':390,'height':844}, is_mobile=True, has_touch=True)
     page=context.new_page(); errors=[]; page.on('pageerror', lambda e: errors.append(str(e)))
     page.set_content(html, wait_until='domcontentloaded')
