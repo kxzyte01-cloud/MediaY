@@ -1,5 +1,5 @@
 // ProjectMedia Y offline shell. Only cache app files that are part of this repository.
-const CACHE = 'pmy-v15';
+const CACHE = 'pmy-v16';
 const SHELL = ['./', './index.html', './style.css', './setup.css', './app.js', './setup.js'];
 self.addEventListener('install', event => {
   event.waitUntil((async () => {
