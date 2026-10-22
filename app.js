@@ -83,6 +83,72 @@ async function loadMedia(id) {
   return (urls[id] = URL.createObjectURL(files[id]));
 }
 
+// Decode template image media before changing the active project. Some mobile pickers
+// supply images in a browser-supported-but-not-HTMLImageElement-friendly format, or with
+// a MIME type/extension that does not match the actual encoding. Fall back to bitmap decode
+// and normalize it to PNG so the template can reuse the same durable media ID.
+const decodeImageElement = (src, label) => new Promise((resolve, reject) => {
+  const image = new Image();
+  image.onload = () => resolve(image);
+  image.onerror = () => reject(new Error(`Could not decode overlay image “${label}”.`));
+  image.src = src;
+});
+async function loadOverlayImage(url, overlay) {
+  const label = overlay.name || 'unnamed image';
+  try {
+    return await decodeImageElement(url, label);
+  } catch (firstError) {
+    const row = await db.media.get(overlay.mediaId).catch(() => null);
+    const source = files[overlay.mediaId] || (row && row.blob);
+    if (!source || typeof createImageBitmap !== 'function') {
+      throw new Error(`Could not read overlay image “${label}”. Re-import it as a standard JPG or PNG and save the template again.`);
+    }
+    let bitmap;
+    try {
+      bitmap = await createImageBitmap(source);
+    } catch (_) {
+      throw new Error(`Overlay image “${label}” is missing, damaged, or in a format this browser cannot decode. Re-import a standard JPG or PNG and save the template again.`);
+    }
+    try {
+      const normalized = document.createElement('canvas');
+      normalized.width = bitmap.width;
+      normalized.height = bitmap.height;
+      const ctx = normalized.getContext('2d');
+      if (!ctx) throw new Error('Could not create an image conversion canvas.');
+      ctx.drawImage(bitmap, 0, 0);
+      const png = await new Promise((resolve, reject) => normalized.toBlob(blob => blob ? resolve(blob) : reject(new Error('Could not convert the overlay image to PNG.')), 'image/png'));
+      const name = `${label.replace(/\\.[^.]+$/, '') || 'overlay'}.png`;
+      const file = new File([png], name, { type: 'image/png', lastModified: Date.now() });
+      await db.media.put({ id: overlay.mediaId, name, type: 'image/png', blob: file });
+      files[overlay.mediaId] = file;
+      if (urls[overlay.mediaId]) URL.revokeObjectURL(urls[overlay.mediaId]);
+      urls[overlay.mediaId] = URL.createObjectURL(file);
+      return await decodeImageElement(urls[overlay.mediaId], name);
+    } finally {
+      if (bitmap && typeof bitmap.close === 'function') bitmap.close();
+    }
+  }
+}
+async function validateTemplateAssets(template) {
+  for (const overlay of template.overlays || []) {
+    if (overlay.type === 'text' || !overlay.mediaId) continue;
+    const url = await loadMedia(overlay.mediaId);
+    if (!url) throw new Error(`Template media for “${overlay.name || overlay.type}” is missing from local storage. Re-import the original image/video and save the template again.`);
+    if (overlay.type === 'image') {
+      await loadOverlayImage(url, overlay);
+    } else if (overlay.type === 'video') {
+      const element = document.createElement('video');
+      element.preload = 'metadata';
+      element.muted = true;
+      await new Promise((resolve, reject) => {
+        element.onloadedmetadata = () => resolve();
+        element.onerror = () => reject(new Error(`Template overlay video “${overlay.name || 'unnamed video'}” cannot be decoded in this browser. Convert it to MP4 and save the template again.`));
+        element.src = url;
+      });
+    }
+  }
+}
+
 /* ---------- State (single source of truth) ---------- */
 let S = { ratio: '16:9', main: [], audio: [], overlays: [], nextLayer: 1 };
 let sel = null, t = 0, playing = false, undoStack = [], redoStack = [], saveTimer;
@@ -134,7 +200,7 @@ async function buildObject(o) {
       el.width = el.videoWidth; el.height = el.videoHeight;
       obj = new fabric.Image(el);
     } else {
-      el = await new Promise((resolve, reject) => { const i = new Image(); i.onload = () => resolve(i); i.onerror = () => reject(new Error('Could not read this overlay image. Try a JPG or PNG.')); i.src = url; });
+      el = await loadOverlayImage(url, o);
       obj = new fabric.Image(el);
     }
     if (o.scaleX == null) { o.scaleX = o.scaleY = (w * 0.4) / obj.width; }
