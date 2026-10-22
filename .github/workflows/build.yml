@@ -32,6 +32,8 @@ jobs:
       - run: |
           mkdir -p www
           cp index.html style.css app.js setup.js setup.css manifest.json sw.js legal.html favicon.svg icon-*.png www/
+          mkdir -p www/vendor/ffmpeg
+          cp vendor/ffmpeg/ffmpeg.js vendor/ffmpeg/814.ffmpeg.js vendor/ffmpeg/LICENSE www/vendor/ffmpeg/
 
       - run: |
           npm init -y
