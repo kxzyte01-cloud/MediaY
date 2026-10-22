@@ -3,6 +3,8 @@ from playwright.sync_api import sync_playwright
 
 root=Path(__file__).resolve().parent
 html=(root/'index.html').read_text()
+# FFmpeg is covered by a real-origin integration test; stub the vendored script in this DOM-only smoke test.
+html=html.replace('<script src="./vendor/ffmpeg/ffmpeg.js"></script>', '<script>window.FFmpegWASM={};</script>')
 style=(root/'style.css').read_text()
 setup_style=(root/'setup.css').read_text()
 app=(root/'app.js').read_text()
