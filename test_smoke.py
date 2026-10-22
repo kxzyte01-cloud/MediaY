@@ -59,6 +59,8 @@ with sync_playwright() as p:
     print('PASS: Start editing closes home/setup and opens editor')
     assert page.locator('#tlZoom').count() == 1, 'timeline zoom slider is missing'
     assert page.locator('#copyTillBtn').count() == 1, 'Copy till here control is missing'
+    assert page.locator('#adjustBtn').count() == 1, 'Adjust control is missing'
+    assert page.locator('#blendBtn').count() == 1, 'Blending control is missing'
     transition_count = page.locator('#trList button').count()
     assert transition_count == 59, f'expected None plus 58 FFmpeg transitions, found {transition_count}'
     old_zoom = page.evaluate('PX')
@@ -66,6 +68,20 @@ with sync_playwright() as p:
     assert page.evaluate('PX') == min(90, old_zoom + 6), 'timeline zoom-in control did not change scale'
     page.locator('#tlZoomFit').click()
     print('PASS: timeline zoom controls work and all 58 built-in transitions are offered')
+    page.evaluate("""() => {
+      S.main.push({id:'adjust-test-a', mediaId:'missing-adjust-a', name:'adjust-a.mp4', in:0, out:5, src:5});
+      S.main.push({id:'adjust-test-b', mediaId:'missing-adjust-b', name:'adjust-b.mp4', in:0, out:5, src:5});
+      select('adjust-test-a','main');
+    }""")
+    page.locator('#adjustBtn').click()
+    page.locator('[data-adjust="brightness"]').evaluate("(e)=>{e.value='24';e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}")
+    page.locator('#adjustApplyAll').click()
+    adjust_result = page.evaluate("({a:S.main[0].adjust,b:S.main[1].adjust,filter:adjustmentFilter(S.main[0])})")
+    assert adjust_result['a']['brightness'] == 24 and adjust_result['b']['brightness'] == 24, adjust_result
+    assert 'eq=brightness=0.120' in adjust_result['filter'], adjust_result
+    assert 'fade=type=in:duration=' not in adjust_result['filter'], adjust_result
+    page.evaluate("S.main=[]; select(null); drawTimeline(); refresh(0);")
+    print('PASS: Adjust sliders and Apply to all copy valid export settings to every video clip')
     page.locator('#homeBtn').click(); page.wait_for_selector('#homeScreen:not([hidden])')
     print('PASS: Home button returns to dashboard')
     page.locator('#hmNew').click(); page.locator('#suStart').click(); page.wait_for_function("document.querySelector('#homeScreen').hidden === true")
@@ -73,6 +89,20 @@ with sync_playwright() as p:
     hidden=page.locator('#emptyState').evaluate('(e)=>e.hidden')
     assert hidden, 'empty-state overlay is still visible when an overlay exists'
     print('PASS: empty-state panel stays hidden once an overlay exists')
+    page.evaluate("""() => {
+      S.overlays.push({id:'blend-test-a', type:'image', mediaId:'missing-blend-a', name:'blend-a.png', start:0, dur:3, layer:2, left:10, top:10, scaleX:1, scaleY:1});
+      S.overlays.push({id:'blend-test-b', type:'image', mediaId:'missing-blend-b', name:'blend-b.png', start:0, dur:3, layer:3, left:20, top:20, scaleX:1, scaleY:1});
+      select('blend-test-a','overlay');
+    }""")
+    page.locator('#blendBtn').click()
+    page.locator('#blendModes [data-blend="multiply"]').click()
+    page.locator('#blendOpacity').evaluate("(e)=>{e.value='55';e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}")
+    page.locator('#blendApplyAll').click()
+    blend_result = page.evaluate("({a:S.overlays.find(o=>o.id==='blend-test-a'),b:S.overlays.find(o=>o.id==='blend-test-b')})")
+    assert blend_result['a']['blend'] == 'multiply' and blend_result['b']['blend'] == 'multiply', blend_result
+    assert abs(blend_result['a']['opacity'] - .55) < .001 and abs(blend_result['b']['opacity'] - .55) < .001, blend_result
+    page.evaluate("select(null); drawTimeline();")
+    print('PASS: blending mode and opacity apply to all overlay layers')
     image_result = page.evaluate("""async () => {
       const canvas = document.createElement('canvas');
       canvas.width = 2; canvas.height = 2;
