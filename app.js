@@ -129,12 +129,12 @@ async function loadOverlayImage(url, overlay) {
     }
   }
 }
-async function validateTemplateAssets(template) {
+async function validateTemplateAssets(template, options = {}) {
   // A template can contain original intro/outro clips, a replaceable slot, and audio
   // as well as visual overlays. Check every stored reference before changing the edit.
   const mainClips = [
     ...(template.pre || []),
-    ...(template.slotClip ? [template.slotClip] : []),
+    ...(template.slotClip && !options.skipSlotClip ? [template.slotClip] : []),
     ...(template.post || [])
   ];
   for (const clip of mainClips) {
@@ -970,7 +970,7 @@ $('tplInput').onchange = async e => {
   say('Building your video from the template…');
   updateBusy('Applying template…', 'Importing replacement clips and rebuilding the timeline.', 2, 'Template');
   try {
-    await validateTemplateAssets(tpl);
+    await validateTemplateAssets(tpl, { skipSlotClip: true });
     const news = [];
     for (let fileIndex = 0; fileIndex < list.length; fileIndex++) { const file = list[fileIndex]; updateBusy('Applying template…', `Reading replacement video ${fileIndex + 1} of ${list.length}: ${file.name}.`, 5 + (fileIndex / Math.max(1, list.length)) * 60, 'Template'); const mediaId = await storeMedia(file), d = await probe(urls[mediaId]); if (!d || !Number.isFinite(d)) throw new Error('Could not read the duration of ' + file.name + '. Try a standard MP4 or MOV video.'); news.push({ ...tpl.proto, id: uid(), mediaId, name: file.name, in: 0, out: d, src: d, tr: news.length ? undefined : tpl.proto.tr }); }
     const fresh = c => ({ ...c, id: uid() }), N = news.reduce((a, c) => a + dur(c), 0), a0 = tpl.pre.reduce((a, c) => a + dur(c), 0), a1 = a0 + tpl.slotLen;
