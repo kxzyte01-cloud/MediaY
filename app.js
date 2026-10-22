@@ -421,7 +421,7 @@ $('goExport').onclick = async () => {
     say('Loading video engine (first time only)…'); await getFFmpeg();
     ff.on('progress', ({ progress }) => say(`Rendering… ${Math.round(Math.min(progress, 1) * 100)}%`));
     const [bw, bh] = RATIOS[S.ratio], kk = EXP.res / Math.min(bw, bh), W = Math.round(bw * kk / 2) * 2, H = Math.round(bh * kk / 2) * 2, segs = []; let offset = 0, cached = null;
-    const TD = S.main.map((c, i) => (i && c.tr ? Math.min(0.5, dur(S.main[i - 1]) * 0.45, dur(c) * 0.45) : 0)); // overlap length at each clip's start
+    const TD = S.main.map((c, i) => (i && c.tr ? Math.min(c.trDur || 0.5, dur(S.main[i - 1]) * 0.45, dur(c) * 0.45) : 0)); // overlap length at each clip's start
     for (let i = 0; i < S.main.length; i++) {
       const c = S.main[i], d = c.out - c.in, sp = c.speed || 1, td = d / sp, ext = (files[c.mediaId].name || 'v.mp4').split('.').pop().toLowerCase();
       const src = `src_${c.mediaId}.${ext}`;
@@ -636,7 +636,7 @@ function markTpl() {
   if (S.main.length) $('tplSlot').value = S.main.reduce((b, c, i) => (dur(c) > dur(S.main[b]) ? i : b), 0);
 }
 async function openTpl(p) { // load the template as an editable project; then tap Replace to swap in the new video
-  if ((S.main.length || S.overlays.length) && !confirm('This replaces your current project. You can still undo it. Continue?')) return;
+  if ((S.main.length || S.overlays.length || S.audio.length) && !confirm('This replaces your current project. Continue?')) return;
   const fresh = c => { const n = { ...c, id: uid() }; delete n.el; return n; };
   const main = [...p.pre.map(fresh), ...(p.slotClip ? [fresh(p.slotClip)] : []), ...p.post.map(fresh)];
   t = 0; await restore(JSON.stringify({ ratio: p.ratio, main, audio: p.audio.map(fresh), overlays: p.overlays.map(fresh), nextLayer: Math.max(1, ...p.overlays.map(o => o.layer || 0)) + 1 }));
@@ -645,7 +645,7 @@ async function openTpl(p) { // load the template as an editable project; then ta
 }
 $('tplBtn').onclick = () => openSheet('tpl'); $('tplStart').onclick = () => openSheet('tpl');
 $('tplSave').onclick = () => {
-  if (!S.main.length && !S.overlays.length) return say('Build your template first: intro, logo, outro.');
+  if (!S.main.length && !S.overlays.length && !S.audio.length) return say('Add at least one video, overlay or audio track before saving a template.');
   const st = JSON.parse(snap()), i = +$('tplSlot').value, slot = i >= 0 ? st.main[i] : null;
   st.overlays.forEach(o => delete o.el);
   const tpl = { id: uid(), name: $('tplName').value.trim() || 'My template', ratio: st.ratio, pre: st.main.slice(0, i >= 0 ? i : st.main.length), post: i >= 0 ? st.main.slice(i + 1) : [],
@@ -654,11 +654,11 @@ $('tplSave').onclick = () => {
 };
 $('tplInput').onchange = async e => {
   const tpl = loadTpls().find(x => x.id === pendingTpl), list = [...e.target.files]; e.target.value = ''; if (!tpl || !list.length) return;
-  if ((S.main.length || S.overlays.length) && !confirm('This replaces your current project. You can still undo it. Continue?')) return;
+  if ((S.main.length || S.overlays.length || S.audio.length) && !confirm('This replaces your current project. Continue?')) return;
   say('Building your video from the template…');
   try {
     const news = [];
-    for (const file of list) { const mediaId = await storeMedia(file), d = await probe(urls[mediaId]); news.push({ ...tpl.proto, id: uid(), mediaId, name: file.name, in: 0, out: d, src: d, tr: news.length ? undefined : tpl.proto.tr }); }
+    for (const file of list) { const mediaId = await storeMedia(file), d = await probe(urls[mediaId]); if (!d || !Number.isFinite(d)) throw new Error('Could not read the duration of ' + file.name + '. Try a standard MP4 or MOV video.'); news.push({ ...tpl.proto, id: uid(), mediaId, name: file.name, in: 0, out: d, src: d, tr: news.length ? undefined : tpl.proto.tr }); }
     const fresh = c => ({ ...c, id: uid() }), N = news.reduce((a, c) => a + dur(c), 0), a0 = tpl.pre.reduce((a, c) => a + dur(c), 0), a1 = a0 + tpl.slotLen;
     const f = x => (x >= a1 - 0.01 ? x - tpl.slotLen + N : x <= a0 ? x : Math.min(x, a0 + N)), Tnew = a0 + N + tpl.post.reduce((a, c) => a + dur(c), 0);
     const fS = x => (tpl.slotLen === 0 ? (x > a0 + 0.01 ? x + N : x) : f(x)); // with no sample clip, a layer starting at 0 must stay at 0 // intro stays, outro shifts, "whole video" layers stretch
@@ -728,14 +728,15 @@ $('capGo').onclick = async () => {
   btn.disabled = false;
 };
 const TR = [['None', ''], ['Fade', 'fade'], ['Dip black', 'fadeblack'], ['Flash', 'fadewhite'], ['Slide', 'slideleft'], ['Wipe', 'wipeleft'], ['Circle', 'circleopen'], ['Dissolve', 'dissolve'], ['Pixelate', 'pixelize'], ['Radial', 'radial'], ['Slide right', 'slideright'], ['Wipe up', 'wipeup'], ['Diagonal', 'diagtl'], ['Iris in', 'circleclose'], ['Blinds', 'hlslice']];
-function markTr() { const c = clipNow(); [...$('trList').children].forEach((b, i) => b.classList.toggle('on', ((c && c.tr) || '') === TR[i][1])); }
+function markTr() { const c = clipNow(); [...$('trList').children].forEach((b, i) => b.classList.toggle('on', ((c && c.tr) || '') === TR[i][1])); const d = c && c.trDur || 0.5; $('trDuration').value = d; $('trDurationLabel').textContent = Number(d).toFixed(1) + ' s'; $('trDuration').disabled = !c || !c.tr; }
 $('trBtn').onclick = () => (sheet.hidden || sheet.dataset.tab !== 'tr' ? openSheet('tr') : closeSheet());
 $('trList').innerHTML = TR.map(([n, v]) => `<button data-tr="${v}">${n}</button>`).join('');
 $('trList').onclick = e => {
   const b = e.target.closest('[data-tr]'), c = clipNow(); if (!b) return; if (!c) return say('Import a video first.');
   if (S.main.indexOf(c) < 1) return say('A transition goes between two clips. Select the second clip.');
-  c.tr = b.dataset.tr || undefined; commit(); markTr(); say(c.tr ? 'Transition added. You will see it in the exported video.' : 'Transition removed.');
+  c.tr = b.dataset.tr || undefined; if (c.tr && !c.trDur) c.trDur = 0.5; commit(); markTr(); say(c.tr ? 'Transition added. Duration can be adjusted below; it is rendered on export.' : 'Transition removed.');
 };
+$('trDuration').oninput = e => { const c = clipNow(); if (!c || !c.tr) return; c.trDur = Number(e.target.value); $('trDurationLabel').textContent = c.trDur.toFixed(1) + ' s'; commit(); };
 const volClip = () => (sel && sel.lane === 'audio' ? S.audio.find(x => x.id === sel.id) : clipNow());
 function markVol() {
   const c = volClip(), v = c ? Math.round((c.vol ?? 1) * 100) : 100;

@@ -1,6 +1,6 @@
-// Caches the app shell so ProjectMedia Y opens offline. Video libraries are cached after first load.
-const CACHE = 'pmy-v12';
-const SHELL = ['./', './index.html', './style.css', './app.js', './manifest.json', './legal.html', './favicon.svg', './icon-192.png', './icon-512.png'];
+// Caches the app shell so ProjectMedia Y opens offline.
+const CACHE = 'pmy-v14';
+const SHELL = ['./', './index.html', './style.css', './setup.css', './app.js', './setup.js'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(k => Promise.all(k.filter(x => x !== CACHE).map(x => caches.delete(x))))); self.clients.claim(); });
 self.addEventListener('fetch', e => {

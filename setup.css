@@ -25,3 +25,50 @@
 #suStart { min-height: 52px; font-size: 16px; }
 #suClose { position: absolute; top: calc(10px + env(safe-area-inset-top)); right: 12px; width: 40px; padding: 0; background: var(--panel2); }
 #suClose[hidden] { display: none !important; }
+
+
+/* Home dashboard: mobile-first, project-library style */
+#homeScreen { position:fixed; inset:0; z-index:60; overflow-y:auto; background:radial-gradient(ellipse at 85% 0%, #33171b 0, transparent 42%), var(--bg); padding:calc(20px + env(safe-area-inset-top)) 18px calc(24px + env(safe-area-inset-bottom)); }
+#homeScreen[hidden] { display:none !important; }
+.hm-wrap { width:100%; max-width:560px; margin:0 auto; }
+.hm-brand { display:flex; align-items:center; gap:9px; font-size:15px; font-weight:700; }
+.hm-brand .brand-icon { flex:0 0 34px; width:34px; height:34px; }
+.hm-brand b { color:#ff6b73; }
+.hm-pill { margin-left:auto; padding:6px 9px; border:1px solid var(--border); border-radius:999px; color:var(--muted); font-size:9px; letter-spacing:1px; }
+.hm-hero { padding:38px 0 26px; }
+.hm-eyebrow { margin:0 0 10px; color:#ff737b; font-size:10px; font-weight:700; letter-spacing:1.8px; }
+.hm-hero h1 { margin:0; font-size:clamp(34px, 9vw, 48px); line-height:1.04; letter-spacing:-1.8px; }
+.hm-hero h1 span { color:#ff4c58; }
+.hm-sub { color:var(--muted); font-size:13px; margin:13px 0 0; }
+.hm-recent { padding:17px; border:1px solid #37313a; border-radius:22px; background:linear-gradient(135deg,#211b22,#15151a 72%); box-shadow:0 18px 40px #0003; }
+.hm-section-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.hm-section-head .hm-eyebrow { margin-bottom:5px; }
+.hm-section-head h2 { margin:0; font-size:18px; overflow-wrap:anywhere; }
+.hm-project-icon { display:grid; place-items:center; width:42px; height:42px; flex:0 0 42px; border-radius:14px; background:#3a1b21; color:#ff5964; }
+.hm-meta { margin:9px 0 15px; color:var(--muted); font-size:11px; line-height:1.5; }
+.hm-continue { display:flex; align-items:center; gap:12px; width:100%; min-height:68px; padding:10px 13px; text-align:left; background:#f01925; border-radius:15px; }
+.hm-play { display:grid; place-items:center; width:38px; height:38px; border-radius:12px; background:#ffffff25; }
+.hm-continue b,.hm-action b,.hm-new b { display:block; font-size:13px; }
+.hm-continue small,.hm-action small,.hm-new small { display:block; margin-top:4px; font-size:11px; opacity:.78; }
+.hm-arrow { margin-left:auto; font-size:20px; opacity:.8; }
+.hm-empty { margin:0; color:var(--muted); font-size:12px; line-height:1.5; }
+.hm-actions { display:grid; gap:10px; margin-top:13px; }
+.hm-new,.hm-action { display:flex; align-items:center; gap:12px; min-height:72px; width:100%; padding:12px 15px; text-align:left; border:1px solid var(--border); border-radius:17px; background:var(--panel); }
+.hm-action { background:#141419; }
+.hm-action-icon { display:grid; place-items:center; width:39px; height:39px; flex:0 0 39px; border-radius:13px; background:#29252d; color:#fff; font-size:24px; }
+.hm-new .hm-action-icon { background:#3a1b21; color:#ff6972; }
+.hm-new small,.hm-action small { color:var(--muted); }
+.hm-export { display:flex; align-items:center; justify-content:space-between; min-height:58px; width:100%; padding:0 18px; margin-top:3px; border-radius:16px; background:#f01925; font-size:15px; font-weight:700; }
+.hm-export span:last-child { display:grid; place-items:center; width:31px; height:31px; border-radius:10px; background:#ffffff25; font-size:21px; }
+.hm-footer { padding:21px 0 4px; text-align:center; color:#777782; font-size:10px; }
+.su-back { display:block; margin:0 0 22px; background:var(--panel2); }
+#setup { z-index:61; }
+#overlayCanvas, .canvas-container, .canvas-container .upper-canvas { pointer-events:auto; touch-action:none; }
+.canvas-container { max-width:100%; }
+@media (min-width:700px) { #homeScreen { padding-top:38px; } .hm-hero { padding-top:52px; } }
+
+.tr-duration { margin:14px 2px 4px; padding:13px; border:1px solid var(--border); border-radius:14px; background:#101014; }
+.tr-duration label { display:flex; justify-content:space-between; color:var(--muted); font-size:12px; margin-bottom:8px; }
+.tr-duration label b { color:#fff; }
+#trList button { border:1px solid var(--border); transition:background .18s, border-color .18s, transform .15s; }
+#trList button.on { background:#401b21; border:1px solid var(--red); color:#fff; }
