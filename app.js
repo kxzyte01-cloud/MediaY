@@ -117,7 +117,7 @@ async function loadOverlayImage(url, overlay) {
       if (!ctx) throw new Error('Could not create an image conversion canvas.');
       ctx.drawImage(bitmap, 0, 0);
       const png = await new Promise((resolve, reject) => normalized.toBlob(blob => blob ? resolve(blob) : reject(new Error('Could not convert the overlay image to PNG.')), 'image/png'));
-      const name = `${label.replace(/\\.[^.]+$/, '') || 'overlay'}.png`;
+      const name = `${label.replace(/\.[^.]+$/, '') || 'overlay'}.png`;
       const file = new File([png], name, { type: 'image/png', lastModified: Date.now() });
       await db.media.put({ id: overlay.mediaId, name, type: 'image/png', blob: file });
       files[overlay.mediaId] = file;
