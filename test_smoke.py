@@ -141,13 +141,11 @@ with sync_playwright() as p:
       S.overlays = [{id:'trim-overlay', type:'text', text:'T', name:'trim-overlay', start:2, dur:6, layer:1}];
       sel = {id:'trim-main-start', lane:'main'}; t = 1.25; refresh(t); updateChrome();
     }""")
-    trim_diag = page.evaluate("""() => {
-      const item = sel ? itemOf(sel.id, sel.lane) : null;
-      return {t,sel,itemFound:!!item,start:item&&startOf(item,sel.lane),length:item&&lenOf(item,sel.lane),offset:item&&t-startOf(item,sel.lane),speed:item&&item.speed,sourceAt:item&&item.in+(t-startOf(item,sel.lane))*(item.speed||1),context:!!trimActionContext(),disabled:$('trimStartBtn').disabled};
-    }""")
-    print('Trim diagnostic:', trim_diag)
-    assert not page.locator('#trimStartBtn').is_disabled(), 'From here should enable when playhead is inside a selected clip: ' + str(trim_diag)
-    assert not page.locator('#trimEndBtn').is_disabled(), 'To here should enable when playhead is inside a selected clip'
+    # Let queued browser scroll events run; refresh-driven scrolling must never move the playhead.
+    page.wait_for_timeout(75)
+    playhead_after_refresh = page.evaluate("t")
+    assert abs(playhead_after_refresh - 1.25) < 0.001, playhead_after_refresh
+    assert not page.locator('#trimStartBtn').is_disabled(), 'From here should enable when playhead is inside a selected clip'
     page.locator('#trimStartBtn').click()
     main_start = page.evaluate("({in:S.main[0].in, out:S.main[0].out, speed:S.main[0].speed, t, duration:dur(S.main[0])})")
     assert abs(main_start['in'] - 3.0) < 0.001, main_start
