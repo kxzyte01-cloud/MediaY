@@ -247,6 +247,84 @@ with sync_playwright() as p:
     boundary = page.evaluate("({in:S.main[0].in,out:S.main[0].out})")
     assert boundary == {'in':0,'out':5}, boundary
     print('PASS: trim buttons reject boundary positions that would create zero-length clips')
+
+    # Fast draft is an explicit quality/speed trade-off and must update both export controls.
+    draft_settings = page.evaluate("""() => {
+      const old = {res:EXP.res, fps:EXP.fps};
+      applyExportPreset('draft');
+      const chosen = {
+        res:EXP.res, fps:EXP.fps,
+        resSelected:[...$('resList').children].some(b => +b.dataset.v === 480 && b.classList.contains('on')),
+        fpsSelected:[...$('fpsList').children].some(b => +b.dataset.v === 24 && b.classList.contains('on'))
+      };
+      EXP.res = old.res; EXP.fps = old.fps;
+      for (const b of $('resList').children) b.classList.toggle('on', +b.dataset.v === EXP.res);
+      for (const b of $('fpsList').children) b.classList.toggle('on', +b.dataset.v === EXP.fps);
+      return chosen;
+    }""")
+    assert draft_settings == {'res':480,'fps':24,'resSelected':True,'fpsSelected':True}, draft_settings
+    print('PASS: Fast draft preset switches both resolution and frame rate together')
+
+    caption_chunks = page.evaluate("""async () => {
+      const oldAsr = asr, oldCancel = captionCancelRequested;
+      const oldLang = $('capLang').value, oldTranslate = $('capTr').checked;
+      const sizes = [], progress = [];
+      asr = async (pcm, options) => {
+        sizes.push(pcm.length);
+        return {chunks:[{text:'alpha beta gamma delta', timestamp:[0,1]}]};
+      };
+      captionCancelRequested = false;
+      try {
+        const drafts = await captionFrom(
+          new Float32Array(CAPTION_SAMPLE_RATE * 61),
+          {start:5, in:0, out:61, sp:2, label:'test media'},
+          p => progress.push(p.percent)
+        );
+        return {
+          sizes, count:drafts.length,
+          starts:drafts.map(x => x.start),
+          durations:drafts.map(x => x.dur),
+          progress
+        };
+      } finally {
+        asr = oldAsr; captionCancelRequested = oldCancel;
+        $('capLang').value = oldLang; $('capTr').checked = oldTranslate;
+      }
+    }""")
+    assert caption_chunks['sizes'] == [30*16000,30*16000,16000], caption_chunks
+    assert caption_chunks['count'] == 3, caption_chunks
+    assert all(abs(a-b) < 0.001 for a,b in zip(caption_chunks['starts'],[5,20,35])), caption_chunks
+    assert all(abs(d-.5) < 0.001 for d in caption_chunks['durations']), caption_chunks
+    assert caption_chunks['progress'] == [1/3,2/3,1], caption_chunks
+    print('PASS: auto captions stream 30-second inference chunks with correct source-time offsets and progress')
+
+    caption_cancel = page.evaluate("""async () => {
+      const oldAsr = asr, oldCancel = captionCancelRequested;
+      const before = {overlays:S.overlays.length, nextLayer:S.nextLayer};
+      asr = async () => {
+        captionCancelRequested = true;
+        return {chunks:[{text:'should never be committed',timestamp:[0,1]}]};
+      };
+      captionCancelRequested = false;
+      let name = '';
+      try {
+        await captionFrom(new Float32Array(CAPTION_SAMPLE_RATE*30), {start:0,in:0,out:30,sp:1,label:'test'}, () => {});
+      } catch (error) { name = error.name; }
+      finally { asr = oldAsr; captionCancelRequested = oldCancel; }
+      return {name, before, after:{overlays:S.overlays.length,nextLayer:S.nextLayer}};
+    }""")
+    assert caption_cancel['name'] == 'AbortError', caption_cancel
+    assert caption_cancel['before'] == caption_cancel['after'], caption_cancel
+    print('PASS: cancelling caption inference discards uncommitted caption drafts')
+
+    signal_checks = page.evaluate("""() => {
+      const silent = new Float32Array(16000 * 2);
+      const speechLike = new Float32Array(16000);
+      for (let i=0;i<speechLike.length;i++) speechLike[i]=0.08*Math.sin(i*0.1);
+      return {silent:hasAudibleSignal(silent), speech:hasAudibleSignal(speechLike)};
+    }""")
+    assert signal_checks == {'silent':False,'speech':True}, signal_checks
+    print('PASS: silent tracks are skipped before running speech inference')
     def handle_dialog(d): d.accept('Smoke test project')
     page.on('dialog',handle_dialog)
     page.locator('#saveBtn').click(); page.wait_for_timeout(100)
