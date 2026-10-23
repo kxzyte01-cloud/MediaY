@@ -1637,7 +1637,7 @@ $('tplSave').onclick = () => {
   const st = JSON.parse(snap()), i = +$('tplSlot').value, slot = i >= 0 ? st.main[i] : null;
   st.overlays.forEach(o => delete o.el);
   const tpl = { id: uid(), name: $('tplName').value.trim() || 'My template', ratio: st.ratio, pre: st.main.slice(0, i >= 0 ? i : st.main.length), post: i >= 0 ? st.main.slice(i + 1) : [],
-    slotLen: slot ? dur(slot) : 0, slotClip: slot, proto: slot ? { fx: slot.fx, fade: slot.fade, vol: slot.vol, speed: slot.speed, tr: slot.tr } : {}, overlays: st.overlays, audio: st.audio };
+    slotLen: slot ? dur(slot) : 0, slotClip: slot, proto: slot ? { fx: slot.fx, fade: slot.fade, vol: slot.vol, speed: slot.speed, tr: slot.tr, trDur: slot.trDur } : {}, overlays: st.overlays, audio: st.audio };
   saveTpls([...loadTpls(), tpl]); $('tplName').value = ''; markTpl(); say('Template saved. Next time, tap Use and pick your news videos.');
 };
 $('tplInput').onchange = async e => {
@@ -1648,7 +1648,7 @@ $('tplInput').onchange = async e => {
   try {
     await validateTemplateAssets(tpl, { skipSlotClip: true });
     const news = [];
-    for (let fileIndex = 0; fileIndex < list.length; fileIndex++) { const file = list[fileIndex]; updateBusy('Applying template…', `Reading replacement video ${fileIndex + 1} of ${list.length}: ${file.name}.`, 5 + (fileIndex / Math.max(1, list.length)) * 60, 'Template'); const mediaId = await storeMedia(file), d = await probe(urls[mediaId]); if (!d || !Number.isFinite(d)) throw new Error('Could not read the duration of ' + file.name + '. Try a standard MP4 or MOV video.'); news.push({ ...tpl.proto, id: uid(), mediaId, name: file.name, in: 0, out: d, src: d, tr: news.length ? undefined : tpl.proto.tr }); }
+    for (let fileIndex = 0; fileIndex < list.length; fileIndex++) { const file = list[fileIndex]; updateBusy('Applying template…', `Reading replacement video ${fileIndex + 1} of ${list.length}: ${file.name}.`, 5 + (fileIndex / Math.max(1, list.length)) * 60, 'Template'); const mediaId = await storeMedia(file), d = await probe(urls[mediaId]); if (!d || !Number.isFinite(d)) throw new Error('Could not read the duration of ' + file.name + '. Try a standard MP4 or MOV video.'); news.push({ ...tpl.proto, id: uid(), mediaId, name: file.name, in: 0, out: d, src: d, tr: (news.length > 0 || (tpl.pre || []).length > 0) ? tpl.proto.tr : undefined, trDur: tpl.proto.trDur || 0.5 }); }
     const fresh = c => ({ ...c, id: uid() }), N = news.reduce((a, c) => a + dur(c), 0), a0 = tpl.pre.reduce((a, c) => a + dur(c), 0), a1 = a0 + tpl.slotLen;
     const f = x => (x >= a1 - 0.01 ? x - tpl.slotLen + N : x <= a0 ? x : Math.min(x, a0 + N)), Tnew = a0 + N + tpl.post.reduce((a, c) => a + dur(c), 0);
     const fS = x => (tpl.slotLen === 0 ? (x > a0 + 0.01 ? x + N : x) : f(x)); // with no sample clip, a layer starting at 0 must stay at 0 // intro stays, outro shifts, "whole video" layers stretch
