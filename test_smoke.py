@@ -324,7 +324,91 @@ with sync_playwright() as p:
       return {silent:hasAudibleSignal(silent), speech:hasAudibleSignal(speechLike)};
     }""")
     assert signal_checks == {'silent':False,'speech':True}, signal_checks
+
     print('PASS: silent tracks are skipped before running speech inference')
+
+    export_metrics = page.evaluate("""async () => {
+      const before = {
+        session: exportSession, last: lastExportPerformance, ff,
+        buttonHidden: $('exportTimingBtn').hidden,
+        detailsHidden: $('exportTimingDetails').hidden,
+        detailsText: $('exportTimingDetails').textContent
+      };
+      try {
+        beginExportTelemetry(999);
+        enterExportPhase('Synthetic encode stage');
+        exportSession.counters.sourceCacheHits = 2;
+        exportSession.counters.sourceCacheMisses = 1;
+        exportSession.counters.overlayPngCacheHits = 3;
+        exportSession.counters.overlayPngCacheMisses = 1;
+        exportSession.counters.bytesStaged = 1024 * 1024;
+        exportSession.counters.encodeAttempts = 1;
+        exportSession.clips.push({index:1,name:'fixture.mp4',sourceDuration:3,ms:1250});
+        const realFF = ff;
+        ff = {loaded:true,exec:async args => 0};
+        await run(['-f','null','synthetic-output.mp4']);
+        ff = realFF;
+        exportSession.status = 'Completed';
+        const status = finishExportTelemetry();
+        return {
+          status, report:$('exportTimingDetails').textContent,
+          shown:!$('exportTimingBtn').hidden,
+          commandRecorded:!!lastExportPerformance && lastExportPerformance.report.includes('synthetic-output.mp4'),
+          clipRecorded:lastExportPerformance.clips ? lastExportPerformance.clips.length : null
+        };
+      } finally {
+        ff = before.ff;
+        exportSession = before.session;
+        lastExportPerformance = before.last;
+        $('exportTimingBtn').hidden = before.buttonHidden;
+        $('exportTimingDetails').hidden = before.detailsHidden;
+        $('exportTimingDetails').textContent = before.detailsText;
+      }
+    }""")
+    assert export_metrics['status'] == 'Completed', export_metrics
+    assert export_metrics['shown'], export_metrics
+    assert 'Total elapsed:' in export_metrics['report'], export_metrics
+    assert 'Synthetic encode stage' in export_metrics['report'], export_metrics
+    assert 'Source cache hits/misses: 2/1' in export_metrics['report'], export_metrics
+    assert export_metrics['commandRecorded'], export_metrics
+    print('PASS: export timing report records stages, cache metrics, clip costs, and FFmpeg commands')
+
+    cancellation_test = page.evaluate("""() => {
+      const originalDispose = disposeFFmpeg;
+      const originalRunning = exportRunning, originalCancelled = exportCancelRequested;
+      const originalButton = {
+        hidden:$('busyCancelExport').hidden,
+        disabled:$('busyCancelExport').disabled,
+        text:$('busyCancelExport').textContent
+      };
+      let disposeCalls = 0;
+      try {
+        disposeFFmpeg = () => { disposeCalls++; };
+        exportRunning = true;
+        exportCancelRequested = false;
+        $('busyCancelExport').hidden = false;
+        $('busyCancelExport').disabled = false;
+        requestExportCancellation();
+        return {
+          requested:exportCancelRequested,
+          disposeCalls,
+          disabled:$('busyCancelExport').disabled,
+          text:$('busyCancelExport').textContent
+        };
+      } finally {
+        disposeFFmpeg = originalDispose;
+        exportRunning = originalRunning;
+        exportCancelRequested = originalCancelled;
+        $('busyCancelExport').hidden = originalButton.hidden;
+        $('busyCancelExport').disabled = originalButton.disabled;
+        $('busyCancelExport').textContent = originalButton.text;
+        hideBusy();
+      }
+    }""")
+    assert cancellation_test == {
+      'requested':True,'disposeCalls':1,'disabled':True,'text':'Cancelling…'
+    }, cancellation_test
+    print('PASS: export cancellation immediately terminates the worker and prevents repeat cancellation clicks')
     def handle_dialog(d): d.accept('Smoke test project')
     page.on('dialog',handle_dialog)
     page.locator('#saveBtn').click(); page.wait_for_timeout(100)
