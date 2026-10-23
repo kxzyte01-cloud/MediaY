@@ -1194,7 +1194,9 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0, sessionId = null) =>
     say('Loading video engine…');
     ffQuiet = false;
     updateBusy('Loading video engine…', 'Getting the rendering engine ready.', 6, 'Loading encoder');
+    throwIfExportCancelled();
     await getFFmpeg();
+    throwIfExportCancelled();
     updateBusy('Rendering video…', 'Encoding each clip with its effects and overlays.', 8, 'Rendering');
     exportProgressHandler = ({ progress }) => {
       const fraction = Number.isFinite(progress) ? Math.max(0, Math.min(1, progress)) : 0;
@@ -1416,6 +1418,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0, sessionId = null) =>
       };
       const all = trk.map((_, k) => k), music = all.filter(k => !trk[k].ov); let done = false;
       for (const [idx, wo] of [[all, true], [all, false], [music, true], [music, false]]) { // a video with no sound falls back to the next combination
+        throwIfExportCancelled();
         if (!idx.length || (idx === music && music.length === all.length)) continue;
         try { await tryMix(idx, wo); done = true; break; } catch (e) { /* try the next one */ }
       }
@@ -1426,6 +1429,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0, sessionId = null) =>
     throwIfExportCancelled();
     updateBusy('Preparing your MP4…', 'Writing the final video file.', 97, 'Finishing');
     const data = await ff.readFile(out);
+    throwIfExportCancelled();
     $('busyCancelExport').hidden = true;
     await saveVideo(data);
     ['joined.mp4', 'final.mp4', 'list.txt'].forEach(n => ff.deleteFile(n).catch(() => {}));
@@ -1912,7 +1916,7 @@ $('capCancelBtn').onclick = () => {
   if (!captionRunning || captionCancelRequested) return;
   captionCancelRequested = true;
   $('capCancelBtn').disabled = true;
-  $('capCancelBtn').textContent = 'Cancelling after this chunk…';
+  $('capCancelBtn').textContent = 'Cancelling after current step…';
   say('Cancelling captions after the current inference chunk. No partial caption set will be applied.');
 };
 $('capGo').onclick = async () => {
@@ -1930,7 +1934,7 @@ $('capGo').onclick = async () => {
   btn.disabled = true;
   cancelBtn.hidden = false;
   cancelBtn.disabled = false;
-  cancelBtn.textContent = 'Cancel after current chunk';
+  cancelBtn.textContent = 'Cancel after current step';
   captionRunning = true;
   captionCancelRequested = false;
   let captionFailed = false, audioContext = null;
