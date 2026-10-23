@@ -851,6 +851,156 @@ $('aspectRatio').onchange = async e => {
 // FFmpeg's small wrapper and class-worker chunk are hosted in this app's origin.
 // This avoids the cross-origin Worker path that produced "ffmpeg is not loaded" in WebView.
 let ff, ffLogs = [], exportProgressHandler = null, exportClipIndex = 0, exportGroupIndex = 0, ffAssetURLs = [], ffLoading = null, ffQuiet = false;
+let exportRunning = false, exportCancelRequested = false, exportSequence = 0, exportSession = null, lastExportPerformance = null;
+let captionPerformanceSession = null, lastCaptionPerformance = null;
+function beginExportTelemetry(id) {
+  const now = performance.now();
+  exportSession = {
+    id, startedAt: now, stageStartedAt: now, stageName: 'Preflight and media validation',
+    stages: [], clips: [], commands: [],
+    counters: { sourceCacheHits: 0, sourceCacheMisses: 0, overlayPngCacheHits: 0, overlayPngCacheMisses: 0, bytesStaged: 0, encodeAttempts: 0 },
+    status: 'Running'
+  };
+}
+function endExportPhase() {
+  if (!exportSession || !exportSession.stageName) return;
+  const now = performance.now();
+  exportSession.stages.push({ name: exportSession.stageName, ms: Math.max(0, now - exportSession.stageStartedAt) });
+  exportSession.stageName = null;
+}
+function enterExportPhase(name) {
+  if (!exportSession) return;
+  endExportPhase();
+  exportSession.stageName = name;
+  exportSession.stageStartedAt = performance.now();
+}
+function recordExportCommand(args, elapsedMs, success) {
+  if (!exportSession) return;
+  const output = String(args && args.length ? args[args.length - 1] : 'unknown');
+  exportSession.commands.push({ output, ms: Math.max(0, elapsedMs), success });
+  if (exportSession.commands.length > 600) exportSession.commands.shift();
+}
+function exportAbortError() {
+  return Object.assign(new Error('Export cancelled by the user.'), { name: 'AbortError' });
+}
+function throwIfExportCancelled() {
+  if (exportCancelRequested) throw exportAbortError();
+}
+function requestExportCancellation() {
+  if (!exportRunning || exportCancelRequested) return;
+  exportCancelRequested = true;
+  const button = $('busyCancelExport');
+  if (button) { button.disabled = true; button.textContent = 'Cancelling…'; }
+  say('Cancelling export and stopping the video engine…');
+  updateBusy('Cancelling export…', 'MediaY is stopping the current encoder worker. The partial output will not be saved.', null, 'Cancelling');
+  // FFmpeg.wasm has no reliable per-command abort API. Terminate its worker instead of
+  // leaving the UI blocked until a long encode finishes; the next export reloads the engine.
+  disposeFFmpeg();
+}
+function finishExportTelemetry() {
+  if (!exportSession) return null;
+  endExportPhase();
+  const status = exportSession.status || 'Completed';
+  const totalMs = Math.max(0, performance.now() - exportSession.startedAt);
+  const aggregate = new Map();
+  exportSession.stages.forEach(stage => aggregate.set(stage.name, (aggregate.get(stage.name) || 0) + stage.ms));
+  const fmtMs = ms => ms >= 60000
+    ? (ms / 60000).toFixed(1) + ' min'
+    : ms >= 1000 ? (ms / 1000).toFixed(1) + ' s' : Math.round(ms) + ' ms';
+  const lines = [
+    'Status: ' + status,
+    'Total elapsed: ' + fmtMs(totalMs),
+    '',
+    'Stages:'
+  ];
+  [...aggregate.entries()].sort((a, b) => b[1] - a[1]).forEach(([name, ms]) => lines.push('  ' + fmtMs(ms) + '  ' + name));
+  lines.push('', 'Assets:', '  Source cache hits/misses: ' + exportSession.counters.sourceCacheHits + '/' + exportSession.counters.sourceCacheMisses,
+    '  Overlay PNG cache hits/misses: ' + exportSession.counters.overlayPngCacheHits + '/' + exportSession.counters.overlayPngCacheMisses,
+    '  Source bytes staged: ' + (exportSession.counters.bytesStaged / 1048576).toFixed(1) + ' MiB',
+    '  FFmpeg encode attempts: ' + exportSession.counters.encodeAttempts);
+  if (exportSession.clips.length) {
+    lines.push('', 'Slowest clips:');
+    [...exportSession.clips].sort((a, b) => b.ms - a.ms).slice(0, 5).forEach(clip =>
+      lines.push('  ' + fmtMs(clip.ms) + '  clip ' + clip.index + ': ' + clip.name + ' (' + fmtMs(clip.sourceDuration * 1000) + ' media)'));
+  }
+  const failedOrSlow = [...exportSession.commands].sort((a, b) => b.ms - a.ms).slice(0, 5);
+  if (failedOrSlow.length) {
+    lines.push('', 'Slowest FFmpeg commands:');
+    failedOrSlow.forEach(command => lines.push('  ' + fmtMs(command.ms) + (command.success ? '' : ' [failed]') + '  ' + command.output));
+  }
+  lastExportPerformance = { status, totalMs, stages: exportSession.stages.slice(), counters: { ...exportSession.counters }, report: lines.join('\n') };
+  const details = $('exportTimingDetails'), button = $('exportTimingBtn');
+  if (details) details.textContent = lastExportPerformance.report;
+  if (button) { button.hidden = false; button.textContent = 'View last export timings'; }
+  exportSession = null;
+  return status;
+}
+function beginCaptionTelemetry() {
+  const now = performance.now();
+  captionPerformanceSession = { startedAt: now, stageStartedAt: now, stageName: 'Model initialization / download', stages: [], chunks: [], sources: [], status: 'Running' };
+}
+function endCaptionPhase() {
+  if (!captionPerformanceSession || !captionPerformanceSession.stageName) return;
+  const session = captionPerformanceSession;
+  session.stages.push({ name: session.stageName, ms: Math.max(0, performance.now() - session.stageStartedAt) });
+  session.stageName = null;
+}
+function enterCaptionPhase(name) {
+  if (!captionPerformanceSession) return;
+  endCaptionPhase();
+  captionPerformanceSession.stageName = name;
+  captionPerformanceSession.stageStartedAt = performance.now();
+}
+function recordCaptionSource(name, ms, samples, status) {
+  if (!captionPerformanceSession) return;
+  captionPerformanceSession.sources.push({ name, ms: Math.max(0, ms), samples: Math.max(0, samples || 0), status });
+}
+function recordCaptionChunk(name, progress) {
+  if (!captionPerformanceSession) return;
+  captionPerformanceSession.chunks.push({
+    name, index: progress.chunkIndex + 1, count: progress.chunkCount,
+    ms: Math.max(0, progress.ms || 0), seconds: Math.max(0, progress.pcmSeconds || 0)
+  });
+}
+function finishCaptionTelemetry(status) {
+  if (!captionPerformanceSession) return null;
+  endCaptionPhase();
+  const session = captionPerformanceSession;
+  const fmtMs = ms => ms >= 60000 ? (ms / 60000).toFixed(1) + ' min' : ms >= 1000 ? (ms / 1000).toFixed(1) + ' s' : Math.round(ms) + ' ms';
+  const aggregate = new Map();
+  session.stages.forEach(stage => aggregate.set(stage.name, (aggregate.get(stage.name) || 0) + stage.ms));
+  const lines = ['Status: ' + status, 'Total elapsed: ' + fmtMs(performance.now() - session.startedAt), '', 'Stages:'];
+  [...aggregate.entries()].sort((a, b) => b[1] - a[1]).forEach(([name, ms]) => lines.push('  ' + fmtMs(ms) + '  ' + name));
+  if (session.sources.length) {
+    lines.push('', 'Audio sources:');
+    session.sources.forEach(source => lines.push('  ' + fmtMs(source.ms) + '  ' + source.name + ' — ' + source.status + ', ' + (source.samples / 16000).toFixed(1) + ' s PCM'));
+  }
+  if (session.chunks.length) {
+    lines.push('', 'Slowest inference chunks:');
+    [...session.chunks].sort((a, b) => b.ms - a.ms).slice(0, 8).forEach(chunk =>
+      lines.push('  ' + fmtMs(chunk.ms) + '  ' + chunk.name + ', chunk ' + chunk.index + '/' + chunk.count + ' (' + chunk.seconds.toFixed(1) + ' s audio)'));
+  }
+  lastCaptionPerformance = { status, totalMs: performance.now() - session.startedAt, report: lines.join('\n'), stages: session.stages.slice(), chunks: session.chunks.slice() };
+  const details = $('captionTimingDetails'), button = $('captionTimingBtn');
+  if (details) details.textContent = lastCaptionPerformance.report;
+  if (button) { button.hidden = false; button.textContent = 'View last caption timings'; }
+  captionPerformanceSession = null;
+  return status;
+}
+$('captionTimingBtn').onclick = () => {
+  const details = $('captionTimingDetails');
+  if (!details) return;
+  details.hidden = !details.hidden;
+  $('captionTimingBtn').textContent = details.hidden ? 'View last caption timings' : 'Hide caption timings';
+};
+$('busyCancelExport').onclick = requestExportCancellation;
+$('exportTimingBtn').onclick = () => {
+  const details = $('exportTimingDetails');
+  if (!details) return;
+  details.hidden = !details.hidden;
+  $('exportTimingBtn').textContent = details.hidden ? 'View last export timings' : 'Hide export timings';
+};
+
 const CDN = 'https://cdn.jsdelivr.net/npm/';
 // The engine (~31 MB) is kept in Cache Storage so it is downloaded once, not on every app launch.
 // The cache name deliberately does not start with "pmy-", so sw.js cleanup never deletes it.
@@ -947,7 +1097,20 @@ function preloadEngine() {
   ffQuiet = true;
   getFFmpeg().catch(() => { /* Export will retry and report any real error */ }).finally(() => { ffQuiet = false; });
 }
-const run = async (args) => { const code = await ff.exec(args); if (code !== 0) throw new Error('FFmpeg failed (code ' + code + ')'); };
+const run = async args => {
+  throwIfExportCancelled();
+  const engine = ff;
+  if (!engine || !engine.loaded) throw new Error('FFmpeg is not loaded.');
+  const started = performance.now();
+  let success = false;
+  try {
+    const code = await engine.exec(args);
+    if (code !== 0) throw new Error('FFmpeg failed (code ' + code + ')');
+    success = true;
+  } finally {
+    recordExportCommand(args, performance.now() - started, success);
+  }
+};
 async function overlayPNG(o) { // render one overlay alone, full canvas size, transparent
   const obj = objOf(o.id), keep = canvas.getObjects().map(x => x.visible);
   canvas.discardActiveObject(); canvas.getObjects().forEach(x => (x.visible = x === obj));
@@ -980,10 +1143,21 @@ async function saveVideo(data) {
 }
 
 const EXP = { res: 720, fps: TIMELINE_FPS };
-$('goExport').onclick = async (_event, recoveryAttempt = 0) => {
+$('goExport').onclick = async (_event, recoveryAttempt = 0, sessionId = null) => {
   if (!S.main.length) return say('Nothing to export yet.');
+  const isRootInvocation = sessionId == null;
+  if (isRootInvocation) {
+    if (exportRunning) return;
+    exportRunning = true;
+    exportCancelRequested = false;
+    sessionId = ++exportSequence;
+    beginExportTelemetry(sessionId);
+  }
   if (playing) stop();
   closeSheet(); const btn = $('goExport'); btn.disabled = true;
+  $('busyCancelExport').hidden = false;
+  $('busyCancelExport').disabled = false;
+  $('busyCancelExport').textContent = 'Cancel export';
   let exportFailed = false;
   ffLogs = [];
   const exportWorkspaceFiles = new Set();
@@ -998,6 +1172,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
   };
   updateBusy('Preparing your export…', 'Checking project media before rendering.', 1, 'Preparing');
   try {
+    throwIfExportCancelled();
     if (!S.main.length) throw new Error('Add at least one video clip to the main timeline before exporting.');
     for (const c of S.main) {
       if (!Number.isFinite(c.in) || !Number.isFinite(c.out) || c.out <= c.in || !Number.isFinite(dur(c)) || dur(c) <= 0) {
@@ -1007,6 +1182,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
     const mediaRefs = [...S.main, ...S.audio, ...S.overlays.filter(o => o.mediaId)];
     const mediaIds = [...new Set(mediaRefs.map(x => x.mediaId))];
     for (let m = 0; m < mediaIds.length; m++) {
+      throwIfExportCancelled();
       const id = mediaIds[m], url = await loadMedia(id), file = files[id];
       if (!url || !file || !file.size) {
         const ref = mediaRefs.find(x => x.mediaId === id);
@@ -1014,10 +1190,13 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       }
       updateBusy('Checking project media…', `Checking file ${m + 1} of ${mediaIds.length}.`, 2 + ((m + 1) / Math.max(1, mediaIds.length)) * 3, 'Preparing');
     }
+    enterExportPhase('FFmpeg engine startup');
     say('Loading video engine…');
     ffQuiet = false;
     updateBusy('Loading video engine…', 'Getting the rendering engine ready.', 6, 'Loading encoder');
+    throwIfExportCancelled();
     await getFFmpeg();
+    throwIfExportCancelled();
     updateBusy('Rendering video…', 'Encoding each clip with its effects and overlays.', 8, 'Rendering');
     exportProgressHandler = ({ progress }) => {
       const fraction = Number.isFinite(progress) ? Math.max(0, Math.min(1, progress)) : 0;
@@ -1031,6 +1210,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       if (clipSources.has(mediaId)) return clipSources.get(mediaId);
       const cached = exportSourceCache.get(mediaId);
       if (cached) {
+        if (exportSession) exportSession.counters.sourceCacheHits++;
         touchLru(exportSourceCache, mediaId, cached);
         clipSources.set(mediaId, cached);
         return cached;
@@ -1059,7 +1239,9 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
         }
       }
       updateBusy('Preparing source media…', `Loading ${file.name || 'media'} for the next encode pass.`, 5 + (segs.length / Math.max(1, S.main.length)) * 5, 'Source preparation');
+      throwIfExportCancelled();
       await ff.writeFile(name, new Uint8Array(await file.arrayBuffer()));
+      if (exportSession) { exportSession.counters.sourceCacheMisses++; exportSession.counters.bytesStaged += size; }
       exportWorkspaceFiles.add(name);
       const entry = { name, size, cached: cacheable };
       if (cacheable) {
@@ -1073,6 +1255,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       if (clipPngs.has(overlay.id)) return clipPngs.get(overlay.id);
       const cached = exportOverlayPngCache.get(overlay.id);
       if (cached) {
+        if (exportSession) exportSession.counters.overlayPngCacheHits++;
         touchLru(exportOverlayPngCache, overlay.id, cached);
         clipPngs.set(overlay.id, cached);
         return cached;
@@ -1089,7 +1272,9 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
         exportOverlayPngCacheBytes -= victimEntry.size;
       }
       const name = cacheable ? `overlay_${overlay.id}.png` : `ovtemp_${clipIndex}_${overlay.id}.png`;
+      throwIfExportCancelled();
       await ff.writeFile(name, png);
+      if (exportSession) { exportSession.counters.overlayPngCacheMisses++; exportSession.counters.bytesStaged += size; }
       exportWorkspaceFiles.add(name);
       const entry = { name, size, cached: cacheable };
       if (cacheable) {
@@ -1099,8 +1284,11 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       clipPngs.set(overlay.id, entry);
       return entry;
     };
+    enterExportPhase('Clip staging and rendering');
     const TD = S.main.map((c, i) => (i && c.tr ? Math.min(c.trDur || 0.5, dur(S.main[i - 1]) * 0.45, dur(c) * 0.45) : 0)); // overlap length at each clip's start
     for (let i = 0; i < S.main.length; i++) {
+      throwIfExportCancelled();
+      const clipStartedAt = performance.now();
       exportClipIndex = i;
       updateBusy(`Rendering clip ${i + 1} of ${S.main.length}…`, 'Encoding video, effects, and overlays.', 8 + (i / Math.max(1, S.main.length)) * 58, 'Rendering');
       const c = S.main[i], d = c.out - c.in, sp = c.speed || 1, td = d / sp;
@@ -1161,19 +1349,24 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       if (af) tries.push([['-an'], false]);
       let encErr = null;
       for (const [a, fast] of tries) {
-        try { await run(enc(a, fast)); encErr = null; break; } catch (e) { encErr = e; await ff.deleteFile(seg).catch(() => {}); }
+        throwIfExportCancelled();
+        if (exportSession) exportSession.counters.encodeAttempts++;
+        try { await run(enc(a, fast)); encErr = null; break; } catch (e) { encErr = e; if (ff) await ff.deleteFile(seg).catch(() => {}); }
       }
       if (encErr) throw encErr;
       for (const n of names) await removeExportFile(n);
       for (const [mediaId, entry] of clipSources) {
         if (!entry.cached) await removeExportFile(entry.name);
       }
-      segs.push(seg); offset += td;
+      segs.push(seg);
+      if (exportSession) exportSession.clips.push({ index: i + 1, name: c.name || 'Untitled clip', sourceDuration: d, ms: performance.now() - clipStartedAt });
+      offset += td;
     }
     for (const entry of exportSourceCache.values()) await removeExportFile(entry.name);
     exportSourceCache.clear(); exportSourceCacheBytes = 0;
     for (const entry of exportOverlayPngCache.values()) await removeExportFile(entry.name);
     exportOverlayPngCache.clear(); exportOverlayPngCacheBytes = 0;
+    enterExportPhase('Transition rendering');
     exportProgressHandler = null;
     updateBusy('Finishing transitions…', 'Preparing the final sequence of clips.', 68, 'Transitions');
     const groups = []; segs.forEach((sg, i) => (i && TD[i] ? groups[groups.length - 1].push(i) : groups.push([i])));
@@ -1183,6 +1376,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       updateBusy('Blending transitions…', `Processing transition group ${Math.min(exportGroupIndex + 1, groups.length)} of ${groups.length}.`, 70 + ((exportGroupIndex + fraction) / Math.max(1, groups.length)) * 12, 'Transitions');
     };
     for (const [gi, grp] of groups.entries()) {
+      throwIfExportCancelled();
       exportGroupIndex = gi;
       updateBusy('Blending transitions…', `Preparing group ${gi + 1} of ${groups.length}.`, 70 + (gi / Math.max(1, groups.length)) * 12, 'Transitions');
       if (grp.length === 1) { pieces.push(segs[grp[0]]); continue; }
@@ -1200,6 +1394,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       try { await enc2(fv + fa.slice(0, -1), ['-map', pv, '-map', pa]); } catch (e) { await enc2(fv.slice(0, -1), ['-map', pv, '-an']); }
       pieces.push(name);
     }
+    enterExportPhase('Final concatenation');
     exportProgressHandler = null;
     updateBusy('Joining clips…', 'Combining the rendered clips into one MP4.', 84, 'Final assembly');
     say('Joining clips…');
@@ -1211,28 +1406,45 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
     let out = 'joined.mp4';
     const ovA = S.overlays.filter(o => o.type === 'video');
     if (S.audio.length || ovA.length) { // mix music, voice-over and overlay-video sound on top
+      enterExportPhase('Audio mixing');
+      throwIfExportCancelled();
       updateBusy('Mixing audio tracks…', 'Combining the original sound, music, and voice-over.', 90, 'Audio');
       say('Mixing audio…');
       const trk = [...S.audio.map(a => ({ m: a.mediaId, st: a.start, in: a.in, out: a.out, vol: a.vol, fade: a.fade, ov: false })), ...ovA.map(o => ({ m: o.mediaId, st: o.start, in: Number(o.sourceIn) || 0, out: (Number(o.sourceIn) || 0) + o.dur, ov: true }))], ins = [];
-      for (let k = 0; k < trk.length; k++) { const audioFile = `aud${k}`; exportWorkspaceFiles.add(audioFile); await ff.writeFile(audioFile, new Uint8Array(await files[trk[k].m].arrayBuffer())); ins.push('-i', audioFile); }
+      for (let k = 0; k < trk.length; k++) { throwIfExportCancelled(); const audioFile = `aud${k}`; exportWorkspaceFiles.add(audioFile); await ff.writeFile(audioFile, new Uint8Array(await files[trk[k].m].arrayBuffer())); ins.push('-i', audioFile); }
       const tryMix = (idx, withOrig) => {
         const parts = idx.map(k => { const a = trk[k], ms = Math.round(a.st * 1000); return `[${k + 1}:a]atrim=start=${a.in}:end=${a.out},asetpts=PTS-STARTPTS${(a.vol ?? 1) !== 1 ? `,volume=${a.vol}` : ''}${a.fade ? ',afade=type=in:duration=1,afade=type=out:start_time=' + Math.max(0, a.out - a.in - 1).toFixed(2) + ':duration=1' : ''},adelay=${ms}|${ms}[a${k}]`; });
         exportWorkspaceFiles.add('final.mp4'); return run(['-i', 'joined.mp4', ...ins, '-filter_complex', `${parts.join(';')};${withOrig ? '[0:a]' : ''}${idx.map(k => `[a${k}]`).join('')}amix=inputs=${idx.length + (withOrig ? 1 : 0)}:duration=first:normalize=0[m]`, '-map', '0:v', '-map', '[m]', '-c:v', 'copy', '-c:a', 'aac', 'final.mp4']);
       };
       const all = trk.map((_, k) => k), music = all.filter(k => !trk[k].ov); let done = false;
       for (const [idx, wo] of [[all, true], [all, false], [music, true], [music, false]]) { // a video with no sound falls back to the next combination
+        throwIfExportCancelled();
         if (!idx.length || (idx === music && music.length === all.length)) continue;
         try { await tryMix(idx, wo); done = true; break; } catch (e) { /* try the next one */ }
       }
       if (!done) throw new Error('Could not mix the audio tracks.');
       out = 'final.mp4';
     }
+    enterExportPhase('Reading and saving MP4');
+    throwIfExportCancelled();
     updateBusy('Preparing your MP4…', 'Writing the final video file.', 97, 'Finishing');
     const data = await ff.readFile(out);
+    throwIfExportCancelled();
+    $('busyCancelExport').hidden = true;
     await saveVideo(data);
     ['joined.mp4', 'final.mp4', 'list.txt'].forEach(n => ff.deleteFile(n).catch(() => {}));
+    if (exportSession && exportSession.id === sessionId) exportSession.status = 'Completed';
     say('Export complete — your MP4 is ready.');
   } catch (err) {
+    if (exportCancelRequested || (err && err.name === 'AbortError')) {
+      exportFailed = false;
+      exportProgressHandler = null;
+      if (exportSession && exportSession.id === sessionId) exportSession.status = 'Cancelled';
+      if (ff) disposeFFmpeg();
+      say('Export cancelled. The partial video was not saved; the next export will restart the encoder.');
+      updateBusy('Export cancelled', 'The partial video was discarded. You can start another export when ready.', null, 'Cancelled');
+    } else {
+    if (exportSession && exportSession.id === sessionId) exportSession.status = 'Failed';
     console.error(err);
     const errText = String(err && err.message || err);
     const encoderNotLoaded = /ffmpeg is not loaded|not loaded, call.*ffmpeg\.load|called FFmpeg\.terminate/i.test(errText);
@@ -1245,32 +1457,44 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       updateBusy('Restarting video engine…', 'The encoder worker stopped responding. MediaY is reloading it and retrying once.', 2, 'Recovery');
       say('Video engine stopped responding; reloading it and retrying once…');
       btn.disabled = false;
-      return $('goExport').onclick(null, recoveryAttempt + 1);
+      await $('goExport').onclick(null, recoveryAttempt + 1, sessionId);
+      return;
     }
     const memoryProblem = /out of memory|memory access out of bounds|failed to grow memory|cannot allocate|allocation failed|out of memory|oom/i.test(errText + ' ' + ffLogs.join(' '));
     if (EXP.res > 1080 && memoryProblem) { // only downgrade resolution when there is evidence of a memory failure
       EXP.res = 1080; [...$('resList').children].forEach(b => b.classList.toggle('on', +b.dataset.v === 1080));
-      exportProgressHandler = null; disposeFFmpeg(); updateBusy('Retrying at 1080p…', 'The selected resolution used too much memory. Retrying at a lower resolution.', 3, 'Retry'); say('That size ran out of memory. Trying again at 1080p…'); btn.disabled = false; return $('goExport').onclick();
+      exportProgressHandler = null; disposeFFmpeg(); updateBusy('Retrying at 1080p…', 'The selected resolution used too much memory. Retrying at a lower resolution.', 3, 'Retry'); say('That size ran out of memory. Trying again at 1080p…'); btn.disabled = false; await $('goExport').onclick(null, recoveryAttempt + 1, sessionId);
+      return;
     }
     exportFailed = true;
+    $('busyCancelExport').hidden = true;
     exportProgressHandler = null;
     const diagnostics = ffLogs.length ? (' Encoder details: ' + ffLogs.slice(-4).join(' | ').slice(0, 650)) : '';
     const message = 'Export problem: ' + (err && err.message || err) + '. Try 720p or a shorter clip.' + diagnostics;
     say(message);
     showBusyError('Export failed', message);
+    }
   } finally {
-    // All virtual filesystem inputs and outputs created by this export are session-owned.
-    // Clean them on every exit, including encoder recovery and a failed audio mix.
+    enterExportPhase('Virtual filesystem cleanup');
     if (ff) {
       for (const name of exportWorkspaceFiles) {
         try { await ff.deleteFile(name); } catch (_) {}
       }
     }
     exportWorkspaceFiles.clear();
+    exportProgressHandler = null;
+    if (isRootInvocation) {
+      const finalStatus = finishExportTelemetry();
+      exportRunning = false;
+      exportCancelRequested = false;
+      const cancelButton = $('busyCancelExport');
+      cancelButton.hidden = true;
+      cancelButton.disabled = false;
+      cancelButton.textContent = 'Cancel export';
+      btn.disabled = false;
+      if (finalStatus === 'Completed' || finalStatus === 'Cancelled') hideBusy();
+    }
   }
-  exportProgressHandler = null;
-  btn.disabled = false;
-  if (!exportFailed) hideBusy();
 };
 
 /* ---------- Effects sheet, fades, text styles ---------- */
@@ -1616,6 +1840,7 @@ async function captionFrom(pcm, src, onProgress = () => {}) {
   const drafts = [];
   for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++) {
     if (captionCancelRequested) throw abortCaption();
+    const chunkStartedAt = performance.now();
     const sampleStart = chunkIndex * chunkSamples;
     const audioChunk = pcm.subarray(sampleStart, Math.min(pcm.length, sampleStart + chunkSamples));
     if (!audioChunk.length) continue;
@@ -1656,7 +1881,7 @@ async function captionFrom(pcm, src, onProgress = () => {}) {
         });
       }
     }
-    onProgress({ chunkIndex, chunkCount, percent: (chunkIndex + 1) / chunkCount });
+    onProgress({ chunkIndex, chunkCount, percent: (chunkIndex + 1) / chunkCount, ms: performance.now() - chunkStartedAt, pcmSeconds: chunkDuration });
   }
   if (captionCancelRequested) throw abortCaption();
   return drafts;
@@ -1690,13 +1915,18 @@ async function commitCaptionDrafts(drafts) {
     throw error;
   }
 }
-$('capCancelBtn').onclick = () => {
+function requestCaptionCancellation() {
   if (!captionRunning || captionCancelRequested) return;
   captionCancelRequested = true;
-  $('capCancelBtn').disabled = true;
-  $('capCancelBtn').textContent = 'Cancelling after this chunk…';
-  say('Cancelling captions after the current inference chunk. No partial caption set will be applied.');
-};
+  ['capCancelBtn', 'busyCancelCaption'].forEach(id => {
+    const button = $(id);
+    if (button) { button.disabled = true; button.textContent = 'Cancelling after current step…'; }
+  });
+  say('Cancelling captions after the current safe point. Model downloads and source decoding may need to finish first.');
+  updateBusy('Cancelling captions…', 'MediaY will stop at the next safe point and discard uncommitted captions.', null, 'Cancelling');
+}
+$('capCancelBtn').onclick = requestCaptionCancellation;
+$('busyCancelCaption').onclick = requestCaptionCancellation;
 $('capGo').onclick = async () => {
   const audioSelection = sel && sel.lane === 'audio' ? S.audio.find(x => x.id === sel.id) : null;
   const selectedVideo = audioSelection ? null : clipNow();
@@ -1707,17 +1937,23 @@ $('capGo').onclick = async () => {
        ...S.audio.map(audioCandidate)];
   if (!candidates.length) return say('Import a video or add audio first.');
   if (captionRunning) return;
+  beginCaptionTelemetry();
   const btn = $('capGo'), cancelBtn = $('capCancelBtn');
   btn.disabled = true;
   cancelBtn.hidden = false;
   cancelBtn.disabled = false;
-  cancelBtn.textContent = 'Cancel after current chunk';
+  cancelBtn.textContent = 'Cancel after current step';
+  $('busyCancelExport').hidden = true;
+  $('busyCancelCaption').hidden = false;
+  $('busyCancelCaption').disabled = false;
+  $('busyCancelCaption').textContent = 'Cancel captions';
   captionRunning = true;
   captionCancelRequested = false;
   let captionFailed = false, audioContext = null;
   const decodeCache = new Map();
   updateBusy('Preparing captions…', 'Loading the speech model and preparing audio.', 1, 'Captions');
   try {
+    enterCaptionPhase('Speech model initialization / download');
     if (!asr) {
       let gpuReady = false;
       if (navigator.gpu && typeof navigator.gpu.requestAdapter === 'function') {
@@ -1739,6 +1975,7 @@ $('capGo').onclick = async () => {
       }
     }
     if (captionCancelRequested) throw abortCaption();
+    enterCaptionPhase('Audio decode and PCM preparation');
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
     if (!AudioContextClass) throw new Error('This browser does not support audio decoding for captions.');
     try { audioContext = new AudioContextClass({ sampleRate: CAPTION_SAMPLE_RATE }); }
@@ -1750,16 +1987,24 @@ $('capGo').onclick = async () => {
       say(`Preparing ${source.label} for captions…`);
       updateBusy('Decoding audio…', `Preparing the audio from ${source.label}. Large source files can take time to decode.`, 10 + candidateIndex / candidates.length * 5, 'Audio decode');
       let pcm;
-      try { pcm = await pcmOf(source, audioContext, decodeCache); }
-      catch (_) { continue; }
+      const decodeStartedAt = performance.now();
+      try {
+        pcm = await pcmOf(source, audioContext, decodeCache);
+        recordCaptionSource(source.label, performance.now() - decodeStartedAt, pcm.length, 'decoded');
+      } catch (decodeError) {
+        recordCaptionSource(source.label, performance.now() - decodeStartedAt, 0, 'decode failed: ' + String(decodeError && decodeError.message || decodeError).slice(0, 90));
+        continue;
+      }
       if (!hasAudibleSignal(pcm)) {
         updateBusy('Skipping silent audio…', `No useful audio signal was detected in ${source.label}.`, 15 + (candidateIndex + 1) / candidates.length * 5, 'Audio check');
         continue;
       }
       try {
+        enterCaptionPhase('Whisper inference');
         const candidateBase = 20 + candidateIndex / candidates.length * 70;
         const candidateSpan = 70 / candidates.length;
         chosenDrafts = await captionFrom(pcm, source, p => {
+          recordCaptionChunk(source.label, p);
           const percent = candidateBase + candidateSpan * p.percent;
           const detail = `${source.label}: audio chunk ${p.chunkIndex + 1} of ${p.chunkCount}. You can cancel between chunks.`;
           say(detail);
@@ -1770,8 +2015,10 @@ $('capGo').onclick = async () => {
         if (asrBackend !== 'webgpu') throw inferenceError;
         asr = null;
         updateBusy('Switching to compatible captions…', 'GPU inference failed on this device. Retrying with the CPU engine.', null, 'Compatibility');
+        enterCaptionPhase('CPU inference fallback');
         asr = await createSpeechPipeline(false);
         chosenDrafts = await captionFrom(pcm, source, p => {
+          recordCaptionChunk(source.label + ' (CPU fallback)', p);
           const percent = 20 + 70 * p.percent / candidates.length;
           updateBusy('Transcribing speech…', `${source.label}: audio chunk ${p.chunkIndex + 1} of ${p.chunkCount}.`, percent, 'Transcription');
         });
@@ -1780,34 +2027,44 @@ $('capGo').onclick = async () => {
     }
     if (captionCancelRequested) throw abortCaption();
     if (chosenDrafts.length) {
+      enterCaptionPhase('Caption object creation and commit');
       updateBusy('Adding captions…', `Adding ${chosenDrafts.length} captions to the timeline.`, 95, 'Finishing captions');
       const count = await commitCaptionDrafts(chosenDrafts);
       refresh(t);
       closeSheet();
       say(`Added ${count} captions from ${used}. Tap a caption to restyle or move it.`);
+      if (captionPerformanceSession) captionPerformanceSession.status = 'Completed';
     } else {
       say(S.audio.length || audioSelection ? 'No speech was detected in the selected media.' : 'No audible speech was detected. Add or record audio, then try again.');
+      if (captionPerformanceSession) captionPerformanceSession.status = 'No speech detected';
     }
   } catch (error) {
     if (error && error.name === 'AbortError') {
+      if (captionPerformanceSession) captionPerformanceSession.status = 'Cancelled';
       say('Caption generation cancelled. No partial captions were added.');
     } else {
+      if (captionPerformanceSession) captionPerformanceSession.status = 'Failed';
       const message = 'Captions failed: ' + (error && error.message || error) + ' (the first run needs internet access).';
       say(message);
       captionFailed = true;
       showBusyError('Caption generation failed', message);
     }
   } finally {
+    enterCaptionPhase('Audio-context and buffer cleanup');
     decodeCache.clear();
     if (audioContext && audioContext.state !== 'closed') {
       try { await audioContext.close(); } catch (_) {}
     }
+    finishCaptionTelemetry(captionPerformanceSession && captionPerformanceSession.status || (captionFailed ? 'Failed' : 'Completed'));
     captionRunning = false;
     captionCancelRequested = false;
     btn.disabled = false;
     cancelBtn.hidden = true;
     cancelBtn.disabled = false;
-    cancelBtn.textContent = 'Cancel after current chunk';
+    cancelBtn.textContent = 'Cancel after current step';
+    $('busyCancelCaption').hidden = true;
+    $('busyCancelCaption').disabled = false;
+    $('busyCancelCaption').textContent = 'Cancel captions';
     if (!captionFailed) hideBusy();
   }
 };

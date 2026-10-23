@@ -106,6 +106,8 @@
       <button id="fastExportBtn" class="wide" type="button">⚡ Fast draft — 480p / 24 fps</button>
       <p class="lbl">Fast draft prioritizes speed for review copies. Choose a higher resolution or frame rate for your final export.</p>
       <button id="goExport" class="primary wide">Export video</button>
+      <button id="exportTimingBtn" class="wide" type="button" hidden>View last export timings</button>
+      <pre id="exportTimingDetails" class="export-timing-summary" hidden aria-live="polite"></pre>
     </div>
     <div data-pane="key" hidden>
       <div id="keyColors" class="pills"><button data-c="#00ff00">Green</button><button data-c="#0000ff">Blue</button><button data-c="off">Off</button></div>
@@ -128,9 +130,11 @@
       <select id="capLang" aria-label="Spoken language"></select>
       <label class="chk"><input type="checkbox" id="capTr"> Translate speech to English</label>
       <button id="capGo" class="primary wide">Generate captions</button>
-      <button id="capCancelBtn" class="wide" type="button" hidden>Cancel after current chunk</button>
-      <p class="lbl">Speech is processed in 30-second chunks with progress. Cancelling before completion leaves the project unchanged. The model (about 40 MB) downloads on the first run.</p>
-      <p class="lbl">Long or high-resolution videos can still take time to decode. The model is cached by the browser when supported.</p>
+      <button id="capCancelBtn" class="wide" type="button" hidden>Cancel after current step</button>
+      <p class="lbl">Speech is processed in 30-second chunks with progress. Cancelling leaves the project unchanged. Model download and full-source audio decoding may not be interruptible until the current step finishes.</p>
+      <p class="lbl">The first run downloads the model. Open the timing report after a run to see whether model loading, audio decoding, or inference dominates.</p>
+      <button id="captionTimingBtn" class="wide" type="button" hidden>View last caption timings</button>
+      <pre id="captionTimingDetails" class="export-timing-summary" hidden aria-live="polite"></pre>
     </div>
     <div data-pane="tr" hidden>
       <p class="lbl">Choose a transition for the cut before this clip. Includes the full built-in FFmpeg transition set.</p>
@@ -201,6 +205,8 @@
       <p id="busyDetail">Please keep this tab open while the task finishes.</p>
       <progress id="busyProgress" max="100"></progress>
       <div class="busy-footer"><span id="busyStage">Processing</span><span id="busyPercent"></span></div>
+      <button id="busyCancelExport" class="busy-dismiss" type="button" hidden>Cancel export</button>
+      <button id="busyCancelCaption" class="busy-dismiss" type="button" hidden>Cancel captions</button>
       <button id="busyDismiss" class="busy-dismiss" type="button" hidden>Close</button>
     </div>
   </div>

@@ -324,7 +324,159 @@ with sync_playwright() as p:
       return {silent:hasAudibleSignal(silent), speech:hasAudibleSignal(speechLike)};
     }""")
     assert signal_checks == {'silent':False,'speech':True}, signal_checks
+
     print('PASS: silent tracks are skipped before running speech inference')
+
+    export_metrics = page.evaluate("""async () => {
+      const before = {
+        session: exportSession, last: lastExportPerformance, ff,
+        buttonHidden: $('exportTimingBtn').hidden,
+        detailsHidden: $('exportTimingDetails').hidden,
+        detailsText: $('exportTimingDetails').textContent
+      };
+      try {
+        beginExportTelemetry(999);
+        enterExportPhase('Synthetic encode stage');
+        exportSession.counters.sourceCacheHits = 2;
+        exportSession.counters.sourceCacheMisses = 1;
+        exportSession.counters.overlayPngCacheHits = 3;
+        exportSession.counters.overlayPngCacheMisses = 1;
+        exportSession.counters.bytesStaged = 1024 * 1024;
+        exportSession.counters.encodeAttempts = 1;
+        exportSession.clips.push({index:1,name:'fixture.mp4',sourceDuration:3,ms:1250});
+        const realFF = ff;
+        ff = {loaded:true,exec:async args => 0};
+        await run(['-f','null','synthetic-output.mp4']);
+        ff = realFF;
+        exportSession.status = 'Completed';
+        const status = finishExportTelemetry();
+        return {
+          status, report:$('exportTimingDetails').textContent,
+          shown:!$('exportTimingBtn').hidden,
+          commandRecorded:!!lastExportPerformance && lastExportPerformance.report.includes('synthetic-output.mp4'),
+          clipRecorded:lastExportPerformance.clips ? lastExportPerformance.clips.length : null
+        };
+      } finally {
+        ff = before.ff;
+        exportSession = before.session;
+        lastExportPerformance = before.last;
+        $('exportTimingBtn').hidden = before.buttonHidden;
+        $('exportTimingDetails').hidden = before.detailsHidden;
+        $('exportTimingDetails').textContent = before.detailsText;
+      }
+    }""")
+    assert export_metrics['status'] == 'Completed', export_metrics
+    assert export_metrics['shown'], export_metrics
+    assert 'Total elapsed:' in export_metrics['report'], export_metrics
+    assert 'Synthetic encode stage' in export_metrics['report'], export_metrics
+    assert 'Source cache hits/misses: 2/1' in export_metrics['report'], export_metrics
+    assert export_metrics['commandRecorded'], export_metrics
+    print('PASS: export timing report records stages, cache metrics, clip costs, and FFmpeg commands')
+
+    cancellation_test = page.evaluate("""() => {
+      const originalDispose = disposeFFmpeg;
+      const originalRunning = exportRunning, originalCancelled = exportCancelRequested;
+      const originalButton = {
+        hidden:$('busyCancelExport').hidden,
+        disabled:$('busyCancelExport').disabled,
+        text:$('busyCancelExport').textContent
+      };
+      let disposeCalls = 0;
+      try {
+        disposeFFmpeg = () => { disposeCalls++; };
+        exportRunning = true;
+        exportCancelRequested = false;
+        $('busyCancelExport').hidden = false;
+        $('busyCancelExport').disabled = false;
+        requestExportCancellation();
+        return {
+          requested:exportCancelRequested,
+          disposeCalls,
+          disabled:$('busyCancelExport').disabled,
+          text:$('busyCancelExport').textContent
+        };
+      } finally {
+        disposeFFmpeg = originalDispose;
+        exportRunning = originalRunning;
+        exportCancelRequested = originalCancelled;
+        $('busyCancelExport').hidden = originalButton.hidden;
+        $('busyCancelExport').disabled = originalButton.disabled;
+        $('busyCancelExport').textContent = originalButton.text;
+        hideBusy();
+      }
+    }""")
+    assert cancellation_test == {
+      'requested':True,'disposeCalls':1,'disabled':True,'text':'Cancelling…'
+    }, cancellation_test
+    print('PASS: export cancellation immediately terminates the worker and prevents repeat cancellation clicks')
+
+    caption_metrics = page.evaluate("""() => {
+      const before = {
+        session:captionPerformanceSession, last:lastCaptionPerformance,
+        btnHidden:$('captionTimingBtn').hidden,
+        detailHidden:$('captionTimingDetails').hidden,
+        detailText:$('captionTimingDetails').textContent
+      };
+      try {
+        beginCaptionTelemetry();
+        enterCaptionPhase('Synthetic audio decode');
+        recordCaptionSource('fixture speech.wav', 250, 16000*60, 'decoded');
+        enterCaptionPhase('Synthetic inference');
+        recordCaptionChunk('fixture speech.wav', {chunkIndex:0,chunkCount:2,ms:1300,pcmSeconds:30});
+        captionPerformanceSession.status = 'Completed';
+        const status = finishCaptionTelemetry('Completed');
+        return {
+          status, report:$('captionTimingDetails').textContent,
+          shown:!$('captionTimingBtn').hidden,
+          hasChunk:lastCaptionPerformance.chunks.length === 1
+        };
+      } finally {
+        captionPerformanceSession = before.session;
+        lastCaptionPerformance = before.last;
+        $('captionTimingBtn').hidden = before.btnHidden;
+        $('captionTimingDetails').hidden = before.detailHidden;
+        $('captionTimingDetails').textContent = before.detailText;
+      }
+    }""")
+    assert caption_metrics['status'] == 'Completed', caption_metrics
+    assert caption_metrics['shown'] and caption_metrics['hasChunk'], caption_metrics
+    assert 'Synthetic audio decode' in caption_metrics['report'], caption_metrics
+    assert 'Synthetic inference' in caption_metrics['report'], caption_metrics
+    assert 'fixture speech.wav' in caption_metrics['report'], caption_metrics
+    print('PASS: caption timing report separates source decode from inference and reports slow chunks')
+
+    caption_cancel_ui = page.evaluate("""() => {
+      const originalRunning = captionRunning, originalCancelled = captionCancelRequested;
+      const originals = ['capCancelBtn','busyCancelCaption'].map(id => {
+        const b=$(id); return {id,hidden:b.hidden,disabled:b.disabled,text:b.textContent};
+      });
+      try {
+        captionRunning=true;
+        captionCancelRequested=false;
+        $('capCancelBtn').hidden=false;
+        $('busyCancelCaption').hidden=false;
+        $('busyCancelCaption').disabled=false;
+        requestCaptionCancellation();
+        return {
+          requested:captionCancelRequested,
+          busyButtonDisabled:$('busyCancelCaption').disabled,
+          busyButtonText:$('busyCancelCaption').textContent,
+          sheetButtonDisabled:$('capCancelBtn').disabled
+        };
+      } finally {
+        captionRunning=originalRunning;
+        captionCancelRequested=originalCancelled;
+        originals.forEach(x => { const b=$(x.id); b.hidden=x.hidden; b.disabled=x.disabled; b.textContent=x.text; });
+        hideBusy();
+      }
+    }""")
+    assert caption_cancel_ui == {
+      'requested':True,
+      'busyButtonDisabled':True,
+      'busyButtonText':'Cancelling after current step…',
+      'sheetButtonDisabled':True
+    }, caption_cancel_ui
+    print('PASS: caption cancel remains accessible in the blocking busy dialog')
     def handle_dialog(d): d.accept('Smoke test project')
     page.on('dialog',handle_dialog)
     page.locator('#saveBtn').click(); page.wait_for_timeout(100)
