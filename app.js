@@ -1788,7 +1788,8 @@ async function captionFrom(pcm, src, onProgress = () => {}) {
       ...(lang ? { language: lang } : {}),
       task: $('capTr').checked ? 'translate' : 'transcribe'
     });
-    if (captionCancelRequested) throw abortCaption()    const timedWords = [];
+    if (captionCancelRequested) throw abortCaption();
+    const timedWords = [];
     for (const chunk of result.chunks || []) {
       const text = String(chunk.text || '').trim();
       const words = text.split(/\s+/).filter(Boolean);
