@@ -429,7 +429,7 @@ function scrollTimelineToTime(time) {
   // Only arm a guard when this call changes scroll position or supersedes a still-pending write.
   // refresh() runs repeatedly during playback, so no-op writes must not suppress real user scrolls.
   if (moving || programmaticTimelineScroll) {
-    programmaticTimelineScroll = { left: target, expires: Date.now() + 300 };
+    programmaticTimelineScroll = { left: target };
     if (moving) tl.scrollLeft = target;
   }
 }
@@ -481,7 +481,7 @@ function drawTimeline() {
   // Resizing the timeline can make the browser clamp scrollLeft asynchronously.
   // That clamp is layout housekeeping, not a request to scrub the playhead.
   if (Math.abs(tl.scrollLeft - previousScrollLeft) > 0.5) {
-    programmaticTimelineScroll = { left: tl.scrollLeft, expires: Date.now() + 300 };
+    programmaticTimelineScroll = { left: tl.scrollLeft };
   }
 }
 const snapT = v => { let a = 0; const e = [0, t, ...S.main.map(c => (a += dur(c)))].find(x => Math.abs(x - v) < 8 / PX); return e != null ? e : v; };
@@ -719,7 +719,7 @@ tl.addEventListener('contextmenu', e => e.preventDefault());
 tl.addEventListener('scroll', () => {
   if (drag) return;
   const left = tl.scrollLeft, guard = programmaticTimelineScroll;
-  if (guard && Date.now() <= guard.expires && Math.abs(left - guard.left) < 1.5) {
+  if (guard && Math.abs(left - guard.left) < 1.5) {
     programmaticTimelineScroll = null;
     return;
   }
