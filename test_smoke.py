@@ -139,7 +139,7 @@ with sync_playwright() as p:
       ];
       S.audio = [{id:'trim-audio-start', mediaId:'missing-audio', name:'trim-audio.mp3', in:0, out:8, src:8, start:4}];
       S.overlays = [{id:'trim-overlay', type:'text', text:'T', name:'trim-overlay', start:2, dur:6, layer:1}];
-      sel = {id:'trim-main-start', lane:'main'}; t = 1.25; refresh(t); updateChrome();
+      sel = {id:'trim-main-start', lane:'main'}; t = 1.25; undoStack = [snap()]; redoStack = []; refresh(t); updateChrome();
     }""")
     # Let queued browser scroll events run; refresh-driven scrolling must never move the playhead.
     page.wait_for_timeout(75)
@@ -152,6 +152,13 @@ with sync_playwright() as p:
     assert abs(main_start['duration'] - 2.5) < 0.001, main_start
     assert abs(main_start['t']) < 0.001, main_start
     print('PASS: From here trims source time correctly for a speed-adjusted main clip')
+    page.locator('#undoBtn').click()
+    page.wait_for_function("S.main[0].in === 0.5")
+    assert abs(page.evaluate("S.main[0].out") - 8) < 0.001, 'undo should restore the complete original trim range'
+    page.locator('#redoBtn').click()
+    page.wait_for_function("S.main[0].in === 3")
+    assert abs(page.evaluate("dur(S.main[0])") - 2.5) < 0.001, 'redo should restore the trimmed source range'
+    print('PASS: From here trim participates correctly in Undo and Redo')
 
     page.evaluate("""() => {
       S.main = [{id:'trim-main-end', mediaId:'missing-trim-c', name:'trim-c.mp4', in:0, out:8, src:8, speed:1}];
