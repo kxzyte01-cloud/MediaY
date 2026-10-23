@@ -77,7 +77,7 @@ Do not merge a trim/ripple change until JavaScript syntax, browser smoke tests, 
 
 Use these as behavior references, not as code to paste into MediaY:
 
-- Kdenlive documents distinct normal/overwrite/insert modes, plus ripple trim to playhead: https://docs.kdenlive.org/en/user_interface/menu/tool_menu.html and https://docs.kdenlive.org/en/user_interface/menu/timeline_menu.html
+- Kdenlive documents distinct normal/overwrite/insert modes, plus ripple trim to playhead: https://docs.kdenlive.org/en/user_interface/menu/tool_menu.html and https://docs.kdenlive.org/en/user_interface/editing.html
 - Shotcut distinguishes normal trim from ripple trim and includes explicit “Ripple All Tracks” and “Ripple Markers” settings: https://www.shotcut.org/howtos/keyboard-shortcuts/ and https://www.shotcut.org/notes/configuration/
 
 The product advantage should be predictability: frame-accurate, reversible edits with identical preview/export timing and an explicit answer to “which tracks will move?” before destructive timeline operations.
