@@ -131,6 +131,73 @@ with sync_playwright() as p:
     assert abs(copy_result['duration'] - 7) < 0.01, copy_result
     assert copy_result['selected'] != 'test-video' and not copy_result['enabled'], copy_result
     print('PASS: Copy till here duplicates a clip up to the playhead')
+    # Regression coverage for the playhead trim actions across the main, audio, and overlay lanes.
+    page.evaluate("""() => {
+      S.main = [
+        {id:'trim-main-start', mediaId:'missing-trim-a', name:'trim-a.mp4', in:0.5, out:8, src:8, speed:2},
+        {id:'trim-main-next', mediaId:'missing-trim-b', name:'trim-b.mp4', in:0, out:5, src:5, speed:1}
+      ];
+      S.audio = [{id:'trim-audio-start', mediaId:'missing-audio', name:'trim-audio.mp3', in:0, out:8, src:8, start:4}];
+      S.overlays = [{id:'trim-overlay', type:'text', text:'T', name:'trim-overlay', start:2, dur:6, layer:1}];
+      sel = {id:'trim-main-start', lane:'main'}; t = 1.25; updateChrome();
+    }""")
+    assert not page.locator('#trimStartBtn').is_disabled(), 'From here should enable when playhead is inside a selected clip'
+    assert not page.locator('#trimEndBtn').is_disabled(), 'To here should enable when playhead is inside a selected clip'
+    page.locator('#trimStartBtn').click()
+    main_start = page.evaluate("({in:S.main[0].in, out:S.main[0].out, speed:S.main[0].speed, t, duration:dur(S.main[0])})")
+    assert abs(main_start['in'] - 3.0) < 0.001, main_start
+    assert abs(main_start['duration'] - 2.5) < 0.001, main_start
+    assert abs(main_start['t']) < 0.001, main_start
+    print('PASS: From here trims source time correctly for a speed-adjusted main clip')
+
+    page.evaluate("""() => {
+      S.main = [{id:'trim-main-end', mediaId:'missing-trim-c', name:'trim-c.mp4', in:0, out:8, src:8, speed:1}];
+      sel = {id:'trim-main-end', lane:'main'}; t = 3; updateChrome();
+    }""")
+    page.locator('#trimEndBtn').click()
+    main_end = page.evaluate("({out:S.main[0].out, duration:dur(S.main[0])})")
+    assert abs(main_end['out'] - 3) < 0.001 and abs(main_end['duration'] - 3) < 0.001, main_end
+    print('PASS: To here trims the main clip ending at the playhead')
+
+    page.evaluate("""() => {
+      sel = {id:'trim-audio-start', lane:'audio'}; t = 6; updateChrome();
+    }""")
+    page.locator('#trimStartBtn').click()
+    audio_start = page.evaluate("({in:S.audio[0].in, out:S.audio[0].out, start:S.audio[0].start})")
+    assert abs(audio_start['in'] - 2) < 0.001 and abs(audio_start['start'] - 6) < 0.001, audio_start
+    print('PASS: From here trims audio source and moves its timeline start together')
+
+    page.evaluate("""() => {
+      S.audio = [{id:'trim-audio-end', mediaId:'missing-audio-end', name:'end.mp3', in:0, out:8, src:8, start:1}];
+      sel = {id:'trim-audio-end', lane:'audio'}; t = 4; updateChrome();
+    }""")
+    page.locator('#trimEndBtn').click()
+    audio_end = page.evaluate("({out:S.audio[0].out, start:S.audio[0].start})")
+    assert abs(audio_end['out'] - 3) < 0.001 and abs(audio_end['start'] - 1) < 0.001, audio_end
+    print('PASS: To here trims an audio clip without shifting its timeline start')
+
+    page.evaluate("""() => {
+      sel = {id:'trim-overlay', lane:'overlay'}; t = 4; updateChrome();
+    }""")
+    page.locator('#trimStartBtn').click()
+    overlay_start = page.evaluate("({start:S.overlays[0].start, dur:S.overlays[0].dur})")
+    assert abs(overlay_start['start'] - 4) < 0.001 and abs(overlay_start['dur'] - 4) < 0.001, overlay_start
+    page.evaluate("t = 5; updateChrome();")
+    page.locator('#trimEndBtn').click()
+    overlay_end = page.evaluate("({start:S.overlays[0].start, dur:S.overlays[0].dur})")
+    assert abs(overlay_end['start'] - 4) < 0.001 and abs(overlay_end['dur'] - 1) < 0.001, overlay_end
+    print('PASS: From here and To here trim overlay timing and duration correctly')
+
+    page.evaluate("""() => {
+      S.main = [{id:'trim-boundary', mediaId:'missing-boundary', name:'boundary.mp4', in:0, out:5, src:5}];
+      sel = {id:'trim-boundary', lane:'main'}; t = 0; updateChrome();
+    }""")
+    assert page.locator('#trimStartBtn').is_disabled(), 'From here should disable at the clip boundary'
+    assert page.locator('#trimEndBtn').is_disabled(), 'To here should disable at the clip boundary'
+    page.locator('#trimStartBtn').click()
+    boundary = page.evaluate("({in:S.main[0].in,out:S.main[0].out})")
+    assert boundary == {'in':0,'out':5}, boundary
+    print('PASS: trim buttons reject boundary positions that would create zero-length clips')
     def handle_dialog(d): d.accept('Smoke test project')
     page.on('dialog',handle_dialog)
     page.locator('#saveBtn').click(); page.wait_for_timeout(100)
