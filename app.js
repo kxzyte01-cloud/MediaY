@@ -341,6 +341,7 @@ $('mediaInput').onchange = async e => {
     commit(); refresh(t); console.error(err); say('Import stopped: ' + (err.message || err));
   }
   hideBusy();
+  if (S.main.length) setTimeout(preloadEngine, 1500); // warm the export engine in the background
 };
 const probe = (url, kind = 'video') => new Promise(resolve => {
   const m = document.createElement(kind === 'audio' ? 'audio' : 'video'); m.preload = 'metadata';
@@ -726,31 +727,43 @@ $('aspectRatio').onchange = async e => {
 /* ---------- Export: FFmpeg.wasm, one clip at a time (chunked) ---------- */
 // FFmpeg's small wrapper and class-worker chunk are hosted in this app's origin.
 // This avoids the cross-origin Worker path that produced "ffmpeg is not loaded" in WebView.
-let ff, ffLogs = [], exportProgressHandler = null, exportClipIndex = 0, exportGroupIndex = 0, ffAssetURLs = [];
+let ff, ffLogs = [], exportProgressHandler = null, exportClipIndex = 0, exportGroupIndex = 0, ffAssetURLs = [], ffLoading = null, ffQuiet = false;
 const CDN = 'https://cdn.jsdelivr.net/npm/';
+// The engine (~31 MB) is kept in Cache Storage so it is downloaded once, not on every app launch.
+// The cache name deliberately does not start with "pmy-", so sw.js cleanup never deletes it.
+const ENGINE_CACHE = 'mediay-engine-v1';
+const engineBusy = (...args) => { if (!ffQuiet) updateBusy(...args); }; // silent while the engine preloads in the background
 async function remoteBlobURL(url, mimeType) {
   const assetName = url.split('/').pop() || 'FFmpeg asset';
-  updateBusy('Downloading video engine…', `Downloading ${assetName}. The first run may take a little longer.`, null, 'Engine download');
-  const response = await fetch(url, { mode: 'cors', cache: 'force-cache' });
-  if (!response.ok) throw new Error(`Could not download FFmpeg component (${response.status}): ${url}`);
-  const total = Number(response.headers.get('content-length')) || 0;
-  let blob;
-  if (response.body && typeof response.body.getReader === 'function') {
-    const reader = response.body.getReader(), chunks = [];
-    let received = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      received += value.byteLength;
-      const detail = total
-        ? `${assetName}: ${(received / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(1)} MB`
-        : `${assetName}: ${(received / 1048576).toFixed(1)} MB downloaded`;
-      updateBusy('Downloading video engine…', detail, total ? received / total * 100 : null, 'Engine download');
+  let cache = null, blob = null;
+  try {
+    cache = await caches.open(ENGINE_CACHE);
+    const hit = await cache.match(url);
+    if (hit) blob = await hit.blob();
+  } catch (_) { cache = null; /* Cache Storage unavailable: fall back to the network every time */ }
+  if (!blob) {
+    engineBusy('Downloading video engine…', `Downloading ${assetName}. This only happens once.`, null, 'Engine download');
+    const response = await fetch(url, { mode: 'cors', cache: 'force-cache' });
+    if (!response.ok) throw new Error(`Could not download FFmpeg component (${response.status}): ${url}`);
+    const total = Number(response.headers.get('content-length')) || 0;
+    if (response.body && typeof response.body.getReader === 'function') {
+      const reader = response.body.getReader(), chunks = [];
+      let received = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        received += value.byteLength;
+        const detail = total
+          ? `${assetName}: ${(received / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(1)} MB`
+          : `${assetName}: ${(received / 1048576).toFixed(1)} MB downloaded`;
+        engineBusy('Downloading video engine…', detail, total ? received / total * 100 : null, 'Engine download');
+      }
+      blob = new Blob(chunks, { type: mimeType });
+    } else {
+      blob = await response.blob();
     }
-    blob = new Blob(chunks, { type: mimeType });
-  } else {
-    blob = await response.blob();
+    if (cache) cache.put(url, new Response(blob, { headers: { 'Content-Type': mimeType } })).catch(() => {}); // best effort
   }
   const objectURL = URL.createObjectURL(new Blob([blob], { type: mimeType }));
   ffAssetURLs.push(objectURL);
@@ -762,8 +775,7 @@ function disposeFFmpeg() {
   for (const url of ffAssetURLs) URL.revokeObjectURL(url);
   ffAssetURLs = [];
 }
-async function getFFmpeg() {
-  if (ff && ff.loaded) return ff;
+async function loadFFmpegEngine() {
   if (ff) disposeFFmpeg();
   if (!window.FFmpegWASM || typeof FFmpegWASM.FFmpeg !== 'function') {
     throw new Error('The local FFmpeg wrapper did not load. Reload MediaY; if this persists, redeploy the vendor/ffmpeg files.');
@@ -779,7 +791,7 @@ async function getFFmpeg() {
   });
   ff.on('progress', event => { if (exportProgressHandler) exportProgressHandler(event || {}); });
   try {
-    updateBusy('Starting video engine…', 'The core files are downloaded. Initializing FFmpeg in its local worker.', null, 'Engine startup');
+    engineBusy('Starting video engine…', 'The core files are ready. Initializing FFmpeg in its local worker.', null, 'Engine startup');
     // Do not pass classWorkerURL: the vendored UMD wrapper automatically resolves
     // 814.ffmpeg.js beside vendor/ffmpeg/ffmpeg.js, so Worker stays same-origin.
     await ff.load({
@@ -790,8 +802,27 @@ async function getFFmpeg() {
     return ff;
   } catch (error) {
     disposeFFmpeg();
+    if (window.caches) caches.delete(ENGINE_CACHE).catch(() => {}); // a damaged cached copy must not fail forever
     throw error;
   }
+}
+// One shared load: a background preload and an Export tap can never start two engines.
+function getFFmpeg() {
+  if (ff && ff.loaded) return Promise.resolve(ff);
+  if (!ffLoading) {
+    const p = loadFFmpegEngine(), clear = () => { if (ffLoading === p) ffLoading = null; };
+    ffLoading = p; p.then(clear, clear);
+  }
+  return ffLoading;
+}
+// Warm the engine while the person edits, so Export doesn't begin with a 30 MB download and startup.
+// Skipped on data saver / mobile data: there it loads only when Export is tapped.
+function preloadEngine() {
+  if ((ff && ff.loaded) || ffLoading) return;
+  const net = navigator.connection;
+  if (net && (net.saveData || net.type === 'cellular')) return;
+  ffQuiet = true;
+  getFFmpeg().catch(() => { /* Export will retry and report any real error */ }).finally(() => { ffQuiet = false; });
 }
 const run = async (args) => { const code = await ff.exec(args); if (code !== 0) throw new Error('FFmpeg failed (code ' + code + ')'); };
 async function overlayPNG(o) { // render one overlay alone, full canvas size, transparent
@@ -850,8 +881,9 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       }
       updateBusy('Checking project media…', `Checking file ${m + 1} of ${mediaIds.length}.`, 2 + ((m + 1) / Math.max(1, mediaIds.length)) * 3, 'Preparing');
     }
-    say('Loading video engine (first time only)…');
-    updateBusy('Loading video engine…', 'The first export needs to download the rendering engine.', 6, 'Loading encoder');
+    say('Loading video engine…');
+    ffQuiet = false;
+    updateBusy('Loading video engine…', 'Getting the rendering engine ready.', 6, 'Loading encoder');
     await getFFmpeg();
     updateBusy('Rendering video…', 'Encoding each clip with its effects and overlays.', 8, 'Rendering');
     exportProgressHandler = ({ progress }) => {
@@ -884,8 +916,11 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       const videoFadeFilter = c.fade ? ',fade=type=in:duration=' + fd.toFixed(3) + ',fade=type=out:start_time=' + Math.max(0, td - fd).toFixed(3) + ':duration=' + fd.toFixed(3) : '';
       const audioFadeFilter = c.fade ? 'afade=type=in:duration=' + fd.toFixed(3) + ',afade=type=out:start_time=' + Math.max(0, td - fd).toFixed(3) + ':duration=' + fd.toFixed(3) : '';
       const adjFilter = adjustmentFilter(c);
-      let g = '[0:v]scale=' + W + ':' + H + ':force_original_aspect_ratio=decrease,pad=' + W + ':' + H + ':(ow-iw)/2:(oh-ih)/2:black,setsar=1' +
-        (c.rev ? ',reverse' : '') + (sp !== 1 ? ',setpts=PTS/' + sp : '') + ',fps=' + EXP.fps +
+      const fit = 'scale=' + W + ':' + H + ':force_original_aspect_ratio=decrease,pad=' + W + ':' + H + ':(ow-iw)/2:(oh-ih)/2:black,setsar=1',
+        pace = (sp !== 1 ? 'setpts=PTS/' + sp + ',' : '') + 'fps=' + EXP.fps;
+      // Normal/faster speed, not reversed: fps can only DROP frames, so do it first and scale/pad fewer frames (e.g. 60fps footage -> 30fps).
+      // Reverse buffers every frame, so it stays after the scale (small frames); slow-motion would duplicate frames, so it also stays after.
+      let g = '[0:v]' + (c.rev || sp < 1 ? fit + (c.rev ? ',reverse' : '') + ',' + pace : pace + ',' + fit) +
         (FX[c.fx || 0].f ? ',' + FX[c.fx || 0].f : '') + (adjFilter ? ',' + adjFilter : '') + videoFadeFilter + '[b0]', last = 'b0';
       live.forEach((o, k) => { // lower layers first so stacking matches the preview
         const blend = o.type !== 'video' ? (o.blend || 'normal') : 'normal';
@@ -908,8 +943,18 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       const tx = TD[i + 1] || 0; // hold the last frame so the blend has something to fade from
       if (tx) { g += `;[${last}]tpad=stop_mode=clone:stop_duration=${tx.toFixed(2)}[bt]`; last = 'bt'; }
       const seg = `seg${i}.mp4`;
-      const af = [c.rev && 'areverse', sp !== 1 && `atempo=${sp}`, (c.vol ?? 1) !== 1 && `volume=${c.vol}`, c.fade && audioFadeFilter, tx > 0 && `apad=pad_dur=${tx.toFixed(2)}`].filter(Boolean).join(','), enc = a => ['-ss', String(c.in), '-t', String(d), '-i', src, ...inputs, '-filter_complex', g, '-map', `[${last}]`, '-map', '0:a:0?', ...a, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-t', (td + tx).toFixed(3), seg]; // -t: a long overlay video must not stretch the clip
-      try { await run(enc(af ? ['-af', af] : [])); } catch (e) { if (!af) throw e; await run(enc(['-an'])); }
+      const af = [c.rev && 'areverse', sp !== 1 && `atempo=${sp}`, (c.vol ?? 1) !== 1 && `volume=${c.vol}`, c.fade && audioFadeFilter, tx > 0 && `apad=pad_dur=${tx.toFixed(2)}`].filter(Boolean).join(','), enc = (a, fast) => ['-ss', String(c.in), '-t', String(d), ...(fast ? ['-skip_loop_filter', 'all'] : []), '-i', src, ...inputs, '-filter_complex', g, '-map', `[${last}]`, '-map', '0:a:0?', ...a, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-t', (td + tx).toFixed(3), seg]; // -t: a long overlay video must not stretch the clip
+      // Footage at 10+ Mbps is expensive to decode and its deblocking is invisible after downscaling, so skip it (~15% faster decode).
+      // If that attempt fails for any reason, fall back to the original behaviour: normal decode, then no audio.
+      const hiRate = (files[c.mediaId].size * 8) / Math.max(1, c.src || dur(c)) > 10e6, withAudio = af ? ['-af', af] : [], tries = [];
+      if (hiRate) tries.push([withAudio, true]);
+      tries.push([withAudio, false]);
+      if (af) tries.push([['-an'], false]);
+      let encErr = null;
+      for (const [a, fast] of tries) {
+        try { await run(enc(a, fast)); encErr = null; break; } catch (e) { encErr = e; await ff.deleteFile(seg).catch(() => {}); }
+      }
+      if (encErr) throw encErr;
       for (const n of names) await ff.deleteFile(n);
       segs.push(seg); offset += td;
     }
