@@ -1042,7 +1042,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       const size = file.size;
       let cacheable = size <= EXPORT_SOURCE_CACHE_LIMIT;
       while (cacheable && exportSourceCacheBytes + size > EXPORT_SOURCE_CACHE_LIMIT) {
-        const victim = [...exportSourceCache.entries()].find(([id]) => !pinnedMediaIds.has(id));
+        const victim = [...exportSourceCache.entries()].find(([id]) => !clipSources.has(id));
         if (!victim) { cacheable = false; break; }
         const [victimId, victimEntry] = victim;
         await removeExportFile(victimEntry.name);
@@ -1052,7 +1052,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       // Large single sources are transient to avoid retaining multiple large video blobs in WASM memory.
       if (!cacheable) {
         for (const [victimId, victimEntry] of [...exportSourceCache.entries()]) {
-          if (pinnedMediaIds.has(victimId)) continue;
+          if (clipSources.has(victimId)) continue;
           await removeExportFile(victimEntry.name);
           exportSourceCache.delete(victimId);
           exportSourceCacheBytes -= victimEntry.size;
