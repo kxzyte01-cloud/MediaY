@@ -139,7 +139,7 @@ with sync_playwright() as p:
       ];
       S.audio = [{id:'trim-audio-start', mediaId:'missing-audio', name:'trim-audio.mp3', in:0, out:8, src:8, start:4}];
       S.overlays = [{id:'trim-overlay', type:'text', text:'T', name:'trim-overlay', start:2, dur:6, layer:1}];
-      sel = {id:'trim-main-start', lane:'main'}; t = 1.25; updateChrome();
+      sel = {id:'trim-main-start', lane:'main'}; t = 1.25; refresh(t); updateChrome();
     }""")
     trim_diag = page.evaluate("""() => {
       const item = sel ? itemOf(sel.id, sel.lane) : null;
@@ -157,7 +157,7 @@ with sync_playwright() as p:
 
     page.evaluate("""() => {
       S.main = [{id:'trim-main-end', mediaId:'missing-trim-c', name:'trim-c.mp4', in:0, out:8, src:8, speed:1}];
-      sel = {id:'trim-main-end', lane:'main'}; t = 3; updateChrome();
+      sel = {id:'trim-main-end', lane:'main'}; t = 3; refresh(t); updateChrome();
     }""")
     page.locator('#trimEndBtn').click()
     main_end = page.evaluate("({out:S.main[0].out, duration:dur(S.main[0])})")
@@ -165,7 +165,7 @@ with sync_playwright() as p:
     print('PASS: To here trims the main clip ending at the playhead')
 
     page.evaluate("""() => {
-      sel = {id:'trim-audio-start', lane:'audio'}; t = 6; updateChrome();
+      sel = {id:'trim-audio-start', lane:'audio'}; t = 6; refresh(t); updateChrome();
     }""")
     page.locator('#trimStartBtn').click()
     audio_start = page.evaluate("({in:S.audio[0].in, out:S.audio[0].out, start:S.audio[0].start})")
@@ -174,7 +174,7 @@ with sync_playwright() as p:
 
     page.evaluate("""() => {
       S.audio = [{id:'trim-audio-end', mediaId:'missing-audio-end', name:'end.mp3', in:0, out:8, src:8, start:1}];
-      sel = {id:'trim-audio-end', lane:'audio'}; t = 4; updateChrome();
+      sel = {id:'trim-audio-end', lane:'audio'}; t = 4; refresh(t); updateChrome();
     }""")
     page.locator('#trimEndBtn').click()
     audio_end = page.evaluate("({out:S.audio[0].out, start:S.audio[0].start})")
@@ -182,12 +182,12 @@ with sync_playwright() as p:
     print('PASS: To here trims an audio clip without shifting its timeline start')
 
     page.evaluate("""() => {
-      sel = {id:'trim-overlay', lane:'overlay'}; t = 4; updateChrome();
+      sel = {id:'trim-overlay', lane:'overlay'}; t = 4; refresh(t); updateChrome();
     }""")
     page.locator('#trimStartBtn').click()
     overlay_start = page.evaluate("({start:S.overlays[0].start, dur:S.overlays[0].dur})")
     assert abs(overlay_start['start'] - 4) < 0.001 and abs(overlay_start['dur'] - 4) < 0.001, overlay_start
-    page.evaluate("t = 5; updateChrome();")
+    page.evaluate("t = 5; refresh(t); updateChrome();")
     page.locator('#trimEndBtn').click()
     overlay_end = page.evaluate("({start:S.overlays[0].start, dur:S.overlays[0].dur})")
     assert abs(overlay_end['start'] - 4) < 0.001 and abs(overlay_end['dur'] - 1) < 0.001, overlay_end
@@ -195,7 +195,7 @@ with sync_playwright() as p:
 
     page.evaluate("""() => {
       S.main = [{id:'trim-boundary', mediaId:'missing-boundary', name:'boundary.mp4', in:0, out:5, src:5}];
-      sel = {id:'trim-boundary', lane:'main'}; t = 0; updateChrome();
+      sel = {id:'trim-boundary', lane:'main'}; t = 0; refresh(t); updateChrome();
     }""")
     assert page.locator('#trimStartBtn').is_disabled(), 'From here should disable at the clip boundary'
     assert page.locator('#trimEndBtn').is_disabled(), 'To here should disable at the clip boundary'
