@@ -852,6 +852,7 @@ $('aspectRatio').onchange = async e => {
 // This avoids the cross-origin Worker path that produced "ffmpeg is not loaded" in WebView.
 let ff, ffLogs = [], exportProgressHandler = null, exportClipIndex = 0, exportGroupIndex = 0, ffAssetURLs = [], ffLoading = null, ffQuiet = false;
 let exportRunning = false, exportCancelRequested = false, exportSequence = 0, exportSession = null, lastExportPerformance = null;
+let captionPerformanceSession = null, lastCaptionPerformance = null;
 function beginExportTelemetry(id) {
   const now = performance.now();
   exportSession = {
@@ -934,6 +935,64 @@ function finishExportTelemetry() {
   exportSession = null;
   return status;
 }
+function beginCaptionTelemetry() {
+  const now = performance.now();
+  captionPerformanceSession = { startedAt: now, stageStartedAt: now, stageName: 'Model initialization / download', stages: [], chunks: [], sources: [], status: 'Running' };
+}
+function endCaptionPhase() {
+  if (!captionPerformanceSession || !captionPerformanceSession.stageName) return;
+  const session = captionPerformanceSession;
+  session.stages.push({ name: session.stageName, ms: Math.max(0, performance.now() - session.stageStartedAt) });
+  session.stageName = null;
+}
+function enterCaptionPhase(name) {
+  if (!captionPerformanceSession) return;
+  endCaptionPhase();
+  captionPerformanceSession.stageName = name;
+  captionPerformanceSession.stageStartedAt = performance.now();
+}
+function recordCaptionSource(name, ms, samples, status) {
+  if (!captionPerformanceSession) return;
+  captionPerformanceSession.sources.push({ name, ms: Math.max(0, ms), samples: Math.max(0, samples || 0), status });
+}
+function recordCaptionChunk(name, progress) {
+  if (!captionPerformanceSession) return;
+  captionPerformanceSession.chunks.push({
+    name, index: progress.chunkIndex + 1, count: progress.chunkCount,
+    ms: Math.max(0, progress.ms || 0), seconds: Math.max(0, progress.pcmSeconds || 0)
+  });
+}
+function finishCaptionTelemetry(status) {
+  if (!captionPerformanceSession) return null;
+  endCaptionPhase();
+  const session = captionPerformanceSession;
+  const fmtMs = ms => ms >= 60000 ? (ms / 60000).toFixed(1) + ' min' : ms >= 1000 ? (ms / 1000).toFixed(1) + ' s' : Math.round(ms) + ' ms';
+  const aggregate = new Map();
+  session.stages.forEach(stage => aggregate.set(stage.name, (aggregate.get(stage.name) || 0) + stage.ms));
+  const lines = ['Status: ' + status, 'Total elapsed: ' + fmtMs(performance.now() - session.startedAt), '', 'Stages:'];
+  [...aggregate.entries()].sort((a, b) => b[1] - a[1]).forEach(([name, ms]) => lines.push('  ' + fmtMs(ms) + '  ' + name));
+  if (session.sources.length) {
+    lines.push('', 'Audio sources:');
+    session.sources.forEach(source => lines.push('  ' + fmtMs(source.ms) + '  ' + source.name + ' — ' + source.status + ', ' + (source.samples / 16000).toFixed(1) + ' s PCM'));
+  }
+  if (session.chunks.length) {
+    lines.push('', 'Slowest inference chunks:');
+    [...session.chunks].sort((a, b) => b.ms - a.ms).slice(0, 8).forEach(chunk =>
+      lines.push('  ' + fmtMs(chunk.ms) + '  ' + chunk.name + ', chunk ' + chunk.index + '/' + chunk.count + ' (' + chunk.seconds.toFixed(1) + ' s audio)'));
+  }
+  lastCaptionPerformance = { status, totalMs: performance.now() - session.startedAt, report: lines.join('\n'), stages: session.stages.slice(), chunks: session.chunks.slice() };
+  const details = $('captionTimingDetails'), button = $('captionTimingBtn');
+  if (details) details.textContent = lastCaptionPerformance.report;
+  if (button) { button.hidden = false; button.textContent = 'View last caption timings'; }
+  captionPerformanceSession = null;
+  return status;
+}
+$('captionTimingBtn').onclick = () => {
+  const details = $('captionTimingDetails');
+  if (!details) return;
+  details.hidden = !details.hidden;
+  $('captionTimingBtn').textContent = details.hidden ? 'View last caption timings' : 'Hide caption timings';
+};
 $('busyCancelExport').onclick = requestExportCancellation;
 $('exportTimingBtn').onclick = () => {
   const details = $('exportTimingDetails');
@@ -1774,6 +1833,7 @@ async function captionFrom(pcm, src, onProgress = () => {}) {
   const drafts = [];
   for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++) {
     if (captionCancelRequested) throw abortCaption();
+    const chunkStartedAt = performance.now();
     const sampleStart = chunkIndex * chunkSamples;
     const audioChunk = pcm.subarray(sampleStart, Math.min(pcm.length, sampleStart + chunkSamples));
     if (!audioChunk.length) continue;
@@ -1814,7 +1874,7 @@ async function captionFrom(pcm, src, onProgress = () => {}) {
         });
       }
     }
-    onProgress({ chunkIndex, chunkCount, percent: (chunkIndex + 1) / chunkCount });
+    onProgress({ chunkIndex, chunkCount, percent: (chunkIndex + 1) / chunkCount, ms: performance.now() - chunkStartedAt, pcmSeconds: chunkDuration });
   }
   if (captionCancelRequested) throw abortCaption();
   return drafts;
@@ -1865,6 +1925,7 @@ $('capGo').onclick = async () => {
        ...S.audio.map(audioCandidate)];
   if (!candidates.length) return say('Import a video or add audio first.');
   if (captionRunning) return;
+  beginCaptionTelemetry();
   const btn = $('capGo'), cancelBtn = $('capCancelBtn');
   btn.disabled = true;
   cancelBtn.hidden = false;
@@ -1876,6 +1937,7 @@ $('capGo').onclick = async () => {
   const decodeCache = new Map();
   updateBusy('Preparing captions…', 'Loading the speech model and preparing audio.', 1, 'Captions');
   try {
+    enterCaptionPhase('Speech model initialization / download');
     if (!asr) {
       let gpuReady = false;
       if (navigator.gpu && typeof navigator.gpu.requestAdapter === 'function') {
@@ -1897,6 +1959,7 @@ $('capGo').onclick = async () => {
       }
     }
     if (captionCancelRequested) throw abortCaption();
+    enterCaptionPhase('Audio decode and PCM preparation');
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
     if (!AudioContextClass) throw new Error('This browser does not support audio decoding for captions.');
     try { audioContext = new AudioContextClass({ sampleRate: CAPTION_SAMPLE_RATE }); }
@@ -1908,16 +1971,24 @@ $('capGo').onclick = async () => {
       say(`Preparing ${source.label} for captions…`);
       updateBusy('Decoding audio…', `Preparing the audio from ${source.label}. Large source files can take time to decode.`, 10 + candidateIndex / candidates.length * 5, 'Audio decode');
       let pcm;
-      try { pcm = await pcmOf(source, audioContext, decodeCache); }
-      catch (_) { continue; }
+      const decodeStartedAt = performance.now();
+      try {
+        pcm = await pcmOf(source, audioContext, decodeCache);
+        recordCaptionSource(source.label, performance.now() - decodeStartedAt, pcm.length, 'decoded');
+      } catch (decodeError) {
+        recordCaptionSource(source.label, performance.now() - decodeStartedAt, 0, 'decode failed: ' + String(decodeError && decodeError.message || decodeError).slice(0, 90));
+        continue;
+      }
       if (!hasAudibleSignal(pcm)) {
         updateBusy('Skipping silent audio…', `No useful audio signal was detected in ${source.label}.`, 15 + (candidateIndex + 1) / candidates.length * 5, 'Audio check');
         continue;
       }
       try {
+        enterCaptionPhase('Whisper inference');
         const candidateBase = 20 + candidateIndex / candidates.length * 70;
         const candidateSpan = 70 / candidates.length;
         chosenDrafts = await captionFrom(pcm, source, p => {
+          recordCaptionChunk(source.label, p);
           const percent = candidateBase + candidateSpan * p.percent;
           const detail = `${source.label}: audio chunk ${p.chunkIndex + 1} of ${p.chunkCount}. You can cancel between chunks.`;
           say(detail);
@@ -1928,8 +1999,10 @@ $('capGo').onclick = async () => {
         if (asrBackend !== 'webgpu') throw inferenceError;
         asr = null;
         updateBusy('Switching to compatible captions…', 'GPU inference failed on this device. Retrying with the CPU engine.', null, 'Compatibility');
+        enterCaptionPhase('CPU inference fallback');
         asr = await createSpeechPipeline(false);
         chosenDrafts = await captionFrom(pcm, source, p => {
+          recordCaptionChunk(source.label + ' (CPU fallback)', p);
           const percent = 20 + 70 * p.percent / candidates.length;
           updateBusy('Transcribing speech…', `${source.label}: audio chunk ${p.chunkIndex + 1} of ${p.chunkCount}.`, percent, 'Transcription');
         });
@@ -1938,28 +2011,35 @@ $('capGo').onclick = async () => {
     }
     if (captionCancelRequested) throw abortCaption();
     if (chosenDrafts.length) {
+      enterCaptionPhase('Caption object creation and commit');
       updateBusy('Adding captions…', `Adding ${chosenDrafts.length} captions to the timeline.`, 95, 'Finishing captions');
       const count = await commitCaptionDrafts(chosenDrafts);
       refresh(t);
       closeSheet();
       say(`Added ${count} captions from ${used}. Tap a caption to restyle or move it.`);
+      if (captionPerformanceSession) captionPerformanceSession.status = 'Completed';
     } else {
       say(S.audio.length || audioSelection ? 'No speech was detected in the selected media.' : 'No audible speech was detected. Add or record audio, then try again.');
+      if (captionPerformanceSession) captionPerformanceSession.status = 'No speech detected';
     }
   } catch (error) {
     if (error && error.name === 'AbortError') {
+      if (captionPerformanceSession) captionPerformanceSession.status = 'Cancelled';
       say('Caption generation cancelled. No partial captions were added.');
     } else {
+      if (captionPerformanceSession) captionPerformanceSession.status = 'Failed';
       const message = 'Captions failed: ' + (error && error.message || error) + ' (the first run needs internet access).';
       say(message);
       captionFailed = true;
       showBusyError('Caption generation failed', message);
     }
   } finally {
+    enterCaptionPhase('Audio-context and buffer cleanup');
     decodeCache.clear();
     if (audioContext && audioContext.state !== 'closed') {
       try { await audioContext.close(); } catch (_) {}
     }
+    finishCaptionTelemetry(captionPerformanceSession && captionPerformanceSession.status || (captionFailed ? 'Failed' : 'Completed'));
     captionRunning = false;
     captionCancelRequested = false;
     btn.disabled = false;
