@@ -723,7 +723,7 @@ tl.addEventListener('scroll', () => {
     programmaticTimelineScroll = null;
     return;
   }
-  // A mismatching/expired guard is stale; this is a genuine user-driven timeline scroll.
+  // A mismatching guard targets an older position; this is a genuine user-driven timeline scroll.
   programmaticTimelineScroll = null;
   const x = left / PX;
   if (Math.abs(x - t) < 1.5 / PX) return;
