@@ -1095,6 +1095,28 @@ async function saveVideo(data) {
   Object.assign(document.createElement('a'), { href: url, download: name }).click();
 }
 
+// Native Android builds register this plugin during the APK workflow. A foreground
+// service helps keep the app process alive during export when the user switches apps.
+async function beginNativeExportService() {
+  const plugin = isNative() && window.Capacitor && window.Capacitor.Plugins &&
+    window.Capacitor.Plugins.MediaYExportService;
+  if (!plugin || typeof plugin.start !== 'function') return false;
+  try {
+    await plugin.start();
+    return true;
+  } catch (error) {
+    console.warn('Could not start native export foreground service:', error);
+    return false;
+  }
+}
+async function endNativeExportService() {
+  const plugin = isNative() && window.Capacitor && window.Capacitor.Plugins &&
+    window.Capacitor.Plugins.MediaYExportService;
+  if (!plugin || typeof plugin.stop !== 'function') return;
+  try { await plugin.stop(); }
+  catch (error) { console.warn('Could not stop native export foreground service:', error); }
+}
+
 const EXP = { res: 720, fps: TIMELINE_FPS };
 $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
   if (!S.main.length) return say('Nothing to export yet.');
@@ -1122,6 +1144,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
   updateBusy('Preparing your export…', 'Rendering runs in MediaY. Keep the app open and in the foreground until the MP4 is saved.', 1, 'Preparing');
   let exportWakeLock = null;
   let exportVisibilityHandler = null;
+  let nativeExportServiceStarted = false;
   const requestExportWakeLock = async () => {
     if (!navigator.wakeLock || document.hidden) return;
     try {
@@ -1132,13 +1155,23 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
   try {
     exportVisibilityHandler = () => {
       if (document.hidden) {
-        say('Export is running. Keep MediaY open; browsers may suspend background processing.');
+        say(nativeExportServiceStarted
+          ? 'Android export notification is active. If rendering pauses on this device, return to MediaY and leave it open.'
+          : 'Export is running. Keep MediaY open; this build has no native background service available.');
       } else {
-        say('MediaY is active again. Export is continuing; keep the app open until the MP4 is saved.');
+        say(nativeExportServiceStarted
+          ? 'MediaY is active again. The Android export service is running; keep the app open until the MP4 is saved.'
+          : 'MediaY is active again. Export is continuing; keep the app open until the MP4 is saved.');
         requestExportWakeLock().catch(() => {});
       }
     };
     document.addEventListener('visibilitychange', exportVisibilityHandler);
+    nativeExportServiceStarted = await beginNativeExportService();
+    if (nativeExportServiceStarted) {
+      updateBusy('Preparing your export…', 'An Android export notification is active. You can switch apps while rendering runs; return to MediaY if progress pauses.', 1, 'Preparing');
+    } else {
+      updateBusy('Preparing your export…', 'Rendering runs in MediaY. Keep the app open in the foreground until the MP4 is saved.', 1, 'Preparing');
+    }
     await requestExportWakeLock();
     if (!S.main.length) throw new Error('Add at least one video clip to the main timeline before exporting.');
     for (const c of S.main) {
@@ -1424,6 +1457,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       try { await exportWakeLock.release(); } catch (_) {}
       exportWakeLock = null;
     }
+    if (nativeExportServiceStarted) await endNativeExportService();
     const report = exportMetric.finish(exportOutcome);
     recentMediaYMetrics.export = report;
     renderMediaYPerformanceReport();
