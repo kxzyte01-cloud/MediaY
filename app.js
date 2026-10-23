@@ -1119,8 +1119,27 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
     try { if (ff) await ff.deleteFile(name); } catch (_) {}
     exportWorkspaceFiles.delete(name);
   };
-  updateBusy('Preparing your export…', 'Checking project media before rendering.', 1, 'Preparing');
+  updateBusy('Preparing your export…', 'Rendering runs in MediaY. Keep the app open and in the foreground until the MP4 is saved.', 1, 'Preparing');
+  let exportWakeLock = null;
+  let exportVisibilityHandler = null;
+  const requestExportWakeLock = async () => {
+    if (!navigator.wakeLock || document.hidden) return;
+    try {
+      exportWakeLock = await navigator.wakeLock.request('screen');
+      exportWakeLock.addEventListener('release', () => { exportWakeLock = null; }, { once: true });
+    } catch (_) { exportWakeLock = null; }
+  };
   try {
+    exportVisibilityHandler = () => {
+      if (document.hidden) {
+        say('Export is running. Keep MediaY open; browsers may suspend background processing.');
+      } else {
+        say('MediaY is active again. Export is continuing; keep the app open until the MP4 is saved.');
+        requestExportWakeLock().catch(() => {});
+      }
+    };
+    document.addEventListener('visibilitychange', exportVisibilityHandler);
+    await requestExportWakeLock();
     if (!S.main.length) throw new Error('Add at least one video clip to the main timeline before exporting.');
     for (const c of S.main) {
       if (!Number.isFinite(c.in) || !Number.isFinite(c.out) || c.out <= c.in || !Number.isFinite(dur(c)) || dur(c) <= 0) {
@@ -1400,6 +1419,11 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       }
     }
     exportWorkspaceFiles.clear();
+    if (exportVisibilityHandler) document.removeEventListener('visibilitychange', exportVisibilityHandler);
+    if (exportWakeLock) {
+      try { await exportWakeLock.release(); } catch (_) {}
+      exportWakeLock = null;
+    }
     const report = exportMetric.finish(exportOutcome);
     recentMediaYMetrics.export = report;
     renderMediaYPerformanceReport();
@@ -1760,39 +1784,78 @@ async function captionFrom(pcm, src, onProgress = () => {}) {
     const result = await asr(audioChunk, {
       chunk_length_s: CAPTION_CHUNK_SECONDS,
       stride_length_s: 5,
-      return_timestamps: true,
+      return_timestamps: 'word',
       ...(lang ? { language: lang } : {}),
       task: $('capTr').checked ? 'translate' : 'transcribe'
     });
-    if (captionCancelRequested) throw abortCaption();
+    if (captionCancelRequested) throw abortCaption()    const timedWords = [];
     for (const chunk of result.chunks || []) {
       const text = String(chunk.text || '').trim();
       const words = text.split(/\s+/).filter(Boolean);
       if (!words.length || /^[\[(].*[\])]$/.test(text)) continue;
       const stamp = Array.isArray(chunk.timestamp) ? chunk.timestamp : [];
       let s0 = Number.isFinite(stamp[0]) ? stamp[0] : 0;
-      let e0 = Number.isFinite(stamp[1]) ? stamp[1] : Math.min(s0 + 3, chunkDuration);
+      let e0 = Number.isFinite(stamp[1]) ? stamp[1] : Math.min(s0 + Math.max(0.1, words.length * 0.25), chunkDuration);
       s0 = Math.max(0, Math.min(chunkDuration, s0));
       e0 = Math.max(s0, Math.min(chunkDuration, e0));
       if (e0 - s0 < 0.01) continue;
-      const parts = Math.ceil(words.length / 4);
-      for (let part = 0; part < parts; part++) {
-        const a = s0 + (e0 - s0) * part / parts;
-        const b = s0 + (e0 - s0) * (part + 1) / parts;
-        const relativeSourceStart = sampleStart / CAPTION_SAMPLE_RATE + a;
-        const relativeSourceEnd = sampleStart / CAPTION_SAMPLE_RATE + b;
+
+      // Word-level timestamps are preferred. If the model returns a phrase-level
+      // chunk (or a test/older backend does), subdivide only that chunk as fallback.
+      for (let wordIndex = 0; wordIndex < words.length; wordIndex++) {
+        const a = s0 + (e0 - s0) * wordIndex / words.length;
+        const b = s0 + (e0 - s0) * (wordIndex + 1) / words.length;
+        const entry = {
+          word: words[wordIndex],
+          start: sampleStart / CAPTION_SAMPLE_RATE + a,
+          end: sampleStart / CAPTION_SAMPLE_RATE + b
+        };
+        if (/^[,.;:!?%…]+$/.test(entry.word) && timedWords.length) {
+          timedWords[timedWords.length - 1].word += entry.word;
+          timedWords[timedWords.length - 1].end = entry.end;
+        } else {
+          timedWords.push(entry);
+        }
+      }
+    }
+
+    // Group up to four timed words into readable captions while keeping the actual
+    // first-word/last-word boundaries. This prevents phrase timestamps from being
+    // stretched evenly over unrelated words when the recognizer supplies word times.
+    let group = [];
+    const flushGroup = () => {
+      if (!group.length) return;
+      const rawText = group.map(item => item.word).join(' ');
+      const captionText = rawText.replace(/\s+([,.;:!?%…])/g, '$1').replace(/([([{])\s+/g, '$1').trim();
+      const relativeSourceStart = group[0].start;
+      const relativeSourceEnd = group[group.length - 1].end;
+      const speed = Number.isFinite(src.sp) && src.sp > 0 ? src.sp : 1;
+      const timelineStart = Number.isFinite(src.start) ? src.start : 0;
+      if (captionText && relativeSourceEnd > relativeSourceStart) {
         drafts.push({
           id: uid(),
           layer: S.nextLayer + drafts.length,
           type: 'text',
-          text: words.slice(part * 4, part * 4 + 4).join(' '),
+          text: captionText,
           style: txtStyle,
-          start: src.start + relativeSourceStart / src.sp,
-          dur: Math.max(MIN_TIMELINE_FRAME, (relativeSourceEnd - relativeSourceStart) / src.sp),
+          start: timelineStart + relativeSourceStart / speed,
+          dur: Math.max(MIN_TIMELINE_FRAME, (relativeSourceEnd - relativeSourceStart) / speed),
           top: RATIOS[S.ratio][1] * 0.72
         });
       }
+      group = [];
+    };
+    for (const entry of timedWords) {
+      if (group.length) {
+        const gap = entry.start - group[group.length - 1].end;
+        const duration = entry.end - group[0].start;
+        if (gap > 0.55 || duration >= 2.6) flushGroup();
+      }
+      group.push(entry);
+      if (group.length >= 4 || /[.!?…]["')\]]?$/.test(entry.word)) flushGroup();
     }
+    flushGroup();
+}
     onProgress({ chunkIndex, chunkCount, percent: (chunkIndex + 1) / chunkCount });
   }
   if (captionCancelRequested) throw abortCaption();
@@ -1813,6 +1876,21 @@ async function commitCaptionDrafts(drafts) {
     if (captionCancelRequested) throw abortCaption();
     S.overlays.push(...staged);
     S.nextLayer = originalNextLayer + staged.length;
+
+    // Persist immediately instead of relying only on the ordinary 800 ms debounce.
+    // Confirm that the restart checkpoint really contains the new caption IDs/timings.
+    await saveProject();
+    const checkpoint = await db.projects.get('current');
+    const persisted = checkpoint && checkpoint.state ? normalizeState(checkpoint.state) : null;
+    const verified = !!persisted && staged.every(draft => persisted.overlays.some(saved =>
+      saved.id === draft.id &&
+      Number.isFinite(saved.start) &&
+      Number.isFinite(saved.dur) &&
+      Math.abs(saved.start - draft.start) < 0.001 &&
+      Math.abs(saved.dur - draft.dur) < 0.001
+    ));
+    if (!verified) throw new Error('Captions were generated but could not be verified in the saved project. Check device storage and try again.');
+
     restack();
     commit();
     return staged.length;
@@ -1824,6 +1902,7 @@ async function commitCaptionDrafts(drafts) {
     canvas.requestRenderAll();
     S.overlays = S.overlays.filter(overlay => !staged.some(draft => draft.id === overlay.id));
     S.nextLayer = originalNextLayer;
+    await saveProject().catch(() => {});
     throw error;
   }
 }
@@ -1999,7 +2078,20 @@ const TR = [
   ['Cover left', 'coverleft'], ['Cover right', 'coverright'], ['Cover up', 'coverup'], ['Cover down', 'coverdown'],
   ['Reveal left', 'revealleft'], ['Reveal right', 'revealright'], ['Reveal up', 'revealup'], ['Reveal down', 'revealdown']
 ];
-function markTr() { const c = clipNow(); [...$('trList').children].forEach((b, i) => b.classList.toggle('on', ((c && c.tr) || '') === TR[i][1])); const d = c && c.trDur || 0.5; $('trDuration').value = d; $('trDurationLabel').textContent = Number(d).toFixed(1) + ' s'; $('trDuration').disabled = !c || !c.tr; }
+function markTr() {
+  const c = clipNow();
+  [...$('trList').children].forEach((b, i) => b.classList.toggle('on', ((c && c.tr) || '') === TR[i][1]));
+  const d = c && c.trDur || 0.5;
+  $('trDuration').value = d;
+  $('trDurationLabel').textContent = Number(d).toFixed(1) + ' s';
+  $('trDuration').disabled = !c || !c.tr;
+  const hasPair = !!c && S.main.indexOf(c) > 0;
+  $('trPreviewPlay').disabled = !hasPair || !c.tr;
+  $('trPreviewStatus').textContent = !hasPair
+    ? 'Select the second clip in a sequence of at least two clips.'
+    : (!c.tr ? 'Choose a transition above, then preview it here.' : 'Preview the selected effect on your two clips before exporting.');
+}
+
 $('trBtn').onclick = () => (sheet.hidden || sheet.dataset.tab !== 'tr' ? openSheet('tr') : closeSheet());
 $('trList').innerHTML = TR.map(([n, v]) => `<button data-tr="${v}">${n}</button>`).join('');
 $('trList').onclick = e => {
@@ -2009,6 +2101,132 @@ $('trList').onclick = e => {
 };
 $('trDuration').oninput = e => { const c = clipNow(); if (!c || !c.tr) return; c.trDur = Number(e.target.value); $('trDurationLabel').textContent = c.trDur.toFixed(1) + ' s'; };
 $('trDuration').onchange = () => { const c = clipNow(); if (c && c.tr) { commit(); say(`Transition duration set to ${c.trDur.toFixed(1)} seconds.`); } };
+
+let transitionPreviewToken = 0;
+let transitionPreviewAnimations = [];
+function resetTransitionPreview() {
+  transitionPreviewAnimations.forEach(animation => { try { animation.cancel(); } catch (_) {} });
+  transitionPreviewAnimations = [];
+  const before = $('trPreviewBefore'), after = $('trPreviewAfter');
+  [before, after].forEach(element => {
+    element.pause();
+    element.style.transform = '';
+    element.style.clipPath = '';
+    element.style.opacity = '1';
+  });
+  after.style.opacity = '0';
+}
+async function setTransitionPreviewVideo(element, clip, sourceTime) {
+  const url = await loadMedia(clip.mediaId);
+  if (!url) throw new Error('A clip needed for this transition preview is missing.');
+  if (element.dataset.mediaId !== clip.mediaId || !element.readyState) {
+    await new Promise((resolve, reject) => {
+      const cleanup = () => {
+        element.removeEventListener('loadedmetadata', ready);
+        element.removeEventListener('error', failed);
+      };
+      const ready = () => { cleanup(); resolve(); };
+      const failed = () => { cleanup(); reject(new Error('Could not load a clip for the transition preview.')); };
+      element.addEventListener('loadedmetadata', ready, { once: true });
+      element.addEventListener('error', failed, { once: true });
+      element.dataset.mediaId = clip.mediaId;
+      element.src = url;
+      element.load();
+    });
+  }
+  const duration = Number.isFinite(element.duration) ? element.duration : clip.out;
+  const target = Math.max(0, Math.min(sourceTime, Math.max(0, duration - 0.04)));
+  await new Promise(resolve => {
+    let finished = false;
+    const done = () => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      element.removeEventListener('seeked', done);
+      resolve();
+    };
+    const timer = setTimeout(done, 450);
+    element.addEventListener('seeked', done, { once: true });
+    if (Math.abs((element.currentTime || 0) - target) < 0.03) done();
+    else element.currentTime = target;
+  });
+}
+async function previewSelectedTransition() {
+  const c = clipNow(), index = c ? S.main.indexOf(c) : -1;
+  if (!c || index < 1 || !c.tr) {
+    say('Select a transition on the second clip, then preview it.');
+    return;
+  }
+  const token = ++transitionPreviewToken;
+  resetTransitionPreview();
+  const before = $('trPreviewBefore'), after = $('trPreviewAfter');
+  const previous = S.main[index - 1];
+  const seconds = Math.min(c.trDur || 0.5, dur(previous) * 0.45, dur(c) * 0.45);
+  const mode = c.tr;
+  $('trPreviewEmpty').hidden = true;
+  $('trPreviewStatus').textContent = 'Preparing preview…';
+  try {
+    await Promise.all([
+      setTransitionPreviewVideo(before, previous, Math.max(previous.in, previous.out - seconds * (previous.speed || 1))),
+      setTransitionPreviewVideo(after, c, c.in)
+    ]);
+    if (token !== transitionPreviewToken) return;
+    before.muted = after.muted = true;
+    before.style.opacity = '1';
+    after.style.opacity = '0';
+    const outgoing = [], incoming = [];
+    if (mode === 'slideleft') {
+      outgoing.push({ transform: 'translateX(0%)' }, { transform: 'translateX(-18%)' });
+      incoming.push({ opacity: 1, transform: 'translateX(100%)' }, { opacity: 1, transform: 'translateX(0%)' });
+    } else if (mode === 'slideright') {
+      outgoing.push({ transform: 'translateX(0%)' }, { transform: 'translateX(18%)' });
+      incoming.push({ opacity: 1, transform: 'translateX(-100%)' }, { opacity: 1, transform: 'translateX(0%)' });
+    } else if (mode === 'slideup') {
+      outgoing.push({ transform: 'translateY(0%)' }, { transform: 'translateY(-18%)' });
+      incoming.push({ opacity: 1, transform: 'translateY(100%)' }, { opacity: 1, transform: 'translateY(0%)' });
+    } else if (mode === 'slidedown') {
+      outgoing.push({ transform: 'translateY(0%)' }, { transform: 'translateY(18%)' });
+      incoming.push({ opacity: 1, transform: 'translateY(-100%)' }, { opacity: 1, transform: 'translateY(0%)' });
+    } else if (/^(wipe|reveal|cover)/.test(mode)) {
+      const horizontal = /up|down/.test(mode) ? 'vertical' : 'horizontal';
+      const reverse = /right|down/.test(mode);
+      const startClip = horizontal === 'horizontal'
+        ? (reverse ? 'inset(0 0 0 100%)' : 'inset(0 100% 0 0)')
+        : (reverse ? 'inset(100% 0 0 0)' : 'inset(0 0 100% 0)');
+      incoming.push({ opacity: 1, clipPath: startClip }, { opacity: 1, clipPath: 'inset(0 0 0 0)' });
+    } else if (/circle(open|crop)|radial|rectcrop/.test(mode)) {
+      incoming.push({ opacity: 1, clipPath: 'circle(0% at 50% 50%)' }, { opacity: 1, clipPath: 'circle(75% at 50% 50%)' });
+    } else {
+      // Fade/dissolve/blur/pixel and other filters use a clean cross-fade approximation.
+      outgoing.push({ opacity: 1 }, { opacity: 0 });
+      incoming.push({ opacity: 0 }, { opacity: 1 });
+    }
+    if (incoming.length) {
+      transitionPreviewAnimations.push(after.animate(incoming, { duration: Math.max(200, seconds * 1000), easing: 'ease-in-out', fill: 'forwards' }));
+    }
+    if (outgoing.length) {
+      transitionPreviewAnimations.push(before.animate(outgoing, { duration: Math.max(200, seconds * 1000), easing: 'ease-in-out', fill: 'forwards' }));
+    }
+    await Promise.all(transitionPreviewAnimations.map(animation => animation.finished.catch(() => {})));
+    if (token !== transitionPreviewToken) return;
+    before.pause();
+    after.pause();
+    before.style.opacity = '0';
+    before.style.transform = '';
+    before.style.clipPath = '';
+    after.style.opacity = '1';
+    after.style.transform = '';
+    after.style.clipPath = '';
+    $('trPreviewStatus').textContent = 'Preview complete. The exported FFmpeg transition is authoritative; complex effects may differ slightly here.';
+  } catch (error) {
+    if (token === transitionPreviewToken) {
+      $('trPreviewStatus').textContent = error.message || 'Could not preview this transition.';
+      say(error.message || 'Could not preview this transition.');
+    }
+  }
+}
+$('trPreviewPlay').onclick = previewSelectedTransition;
+
 const volClip = () => (sel && sel.lane === 'audio' ? S.audio.find(x => x.id === sel.id) : clipNow());
 function markVol() {
   const c = volClip(), v = c ? Math.round((c.vol ?? 1) * 100) : 100;
