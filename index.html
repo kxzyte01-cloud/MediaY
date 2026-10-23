@@ -112,7 +112,7 @@
         <button id="copyPerfReport" class="wide" type="button">Copy performance report</button>
         <pre id="perfReport" class="perf-report" aria-live="polite">No diagnostics yet. Run an export or generate captions to record stage timings on this device.</pre>
       </details>
-          <p class="lbl">Export runs on this device. Keep MediaY open in the foreground until the MP4 is saved; Android browsers may pause processing when you switch to another app.</p>
+          <p class="lbl">Android exports use an ongoing foreground-service notification so rendering can continue when you switch apps. Device power settings may still interrupt processing; return to MediaY if progress pauses. In browser builds, keep this tab open.</p>
     </div>
     <div data-pane="key" hidden>
       <div id="keyColors" class="pills"><button data-c="#00ff00">Green</button><button data-c="#0000ff">Blue</button><button data-c="off">Off</button></div>
