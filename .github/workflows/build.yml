@@ -7,6 +7,11 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      validate_signing:
+        description: "Build and verify a signed APK as a workflow artifact without publishing a release"
+        type: boolean
+        required: true
+        default: false
       publish_release:
         description: "Build, sign, and publish a production GitHub Release"
         type: boolean
@@ -109,7 +114,7 @@ jobs:
           if-no-files-found: error
 
       - name: Build and verify production-signed APK
-        if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+        if: github.event_name == 'workflow_dispatch' && (inputs.validate_signing || inputs.publish_release)
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -170,6 +175,17 @@ jobs:
 
           echo "Verified signed release APK: $RELEASE_NAME"
           echo "Android versionCode: $BUILD_NUMBER"
+
+      - name: Upload signed APK validation artifact
+        if: github.event_name == 'workflow_dispatch' && (inputs.validate_signing || inputs.publish_release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: MediaY-signed-release-${{ github.run_number }}
+          path: |
+            MediaY-v1.0.*.apk
+            MediaY-v1.0.*.apk.sha256
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Publish GitHub Release
         if: github.event_name == 'workflow_dispatch' && inputs.publish_release
