@@ -1880,6 +1880,7 @@ async function commitCaptionDrafts(drafts) {
     // Persist immediately instead of relying only on the ordinary 800 ms debounce.
     // Confirm that the restart checkpoint really contains the new caption IDs/timings.
     await saveProject();
+    if (captionCancelRequested) throw abortCaption();
     const checkpoint = await db.projects.get('current');
     const persisted = checkpoint && checkpoint.state ? normalizeState(checkpoint.state) : null;
     const verified = !!persisted && staged.every(draft => persisted.overlays.some(saved =>
@@ -2174,6 +2175,7 @@ async function previewSelectedTransition() {
     before.muted = after.muted = true;
     before.style.opacity = '1';
     after.style.opacity = '0';
+    await Promise.all([before.play().catch(() => {}), after.play().catch(() => {})]);
     const outgoing = [], incoming = [];
     if (mode === 'slideleft') {
       outgoing.push({ transform: 'translateX(0%)' }, { transform: 'translateX(-18%)' });
