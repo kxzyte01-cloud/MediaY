@@ -207,6 +207,9 @@ main, .timeline, .dock, .stage { max-width:100%; overflow-x:hidden; }
 @media (prefers-reduced-motion: reduce) { .busy-spinner, #busyProgress:not([value]) { animation:none; } }
 
 .busy-dismiss { width:100%; min-height:44px; margin-top:18px; background:var(--red); color:#fff; font-weight:700; }
+.export-timing-summary { max-height:30dvh; overflow:auto; padding:12px; margin:10px 0 0; border:1px solid var(--border); border-radius:12px; background:var(--bg); color:var(--text); font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace; white-space:pre-wrap; overflow-wrap:anywhere; text-align:left; }
+.busy-dismiss + .busy-dismiss { margin-top:8px; }
+.busy-dismiss:disabled { opacity:.65; cursor:wait; }
 .busy-overlay[data-state="error"] .busy-spinner { animation:none; border-color:#ff737b; }
 .busy-overlay[data-state="error"] .busy-symbol { background:#3a1b21; }
 .busy-overlay[data-state="error"] #busyProgress { display:none; }
