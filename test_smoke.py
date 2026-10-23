@@ -409,6 +409,41 @@ with sync_playwright() as p:
       'requested':True,'disposeCalls':1,'disabled':True,'text':'Cancelling…'
     }, cancellation_test
     print('PASS: export cancellation immediately terminates the worker and prevents repeat cancellation clicks')
+
+    caption_metrics = page.evaluate("""() => {
+      const before = {
+        session:captionPerformanceSession, last:lastCaptionPerformance,
+        btnHidden:$('captionTimingBtn').hidden,
+        detailHidden:$('captionTimingDetails').hidden,
+        detailText:$('captionTimingDetails').textContent
+      };
+      try {
+        beginCaptionTelemetry();
+        enterCaptionPhase('Synthetic audio decode');
+        recordCaptionSource('fixture speech.wav', 250, 16000*60, 'decoded');
+        enterCaptionPhase('Synthetic inference');
+        recordCaptionChunk('fixture speech.wav', {chunkIndex:0,chunkCount:2,ms:1300,pcmSeconds:30});
+        captionPerformanceSession.status = 'Completed';
+        const status = finishCaptionTelemetry('Completed');
+        return {
+          status, report:$('captionTimingDetails').textContent,
+          shown:!$('captionTimingBtn').hidden,
+          hasChunk:lastCaptionPerformance.chunks.length === 1
+        };
+      } finally {
+        captionPerformanceSession = before.session;
+        lastCaptionPerformance = before.last;
+        $('captionTimingBtn').hidden = before.btnHidden;
+        $('captionTimingDetails').hidden = before.detailHidden;
+        $('captionTimingDetails').textContent = before.detailText;
+      }
+    }""")
+    assert caption_metrics['status'] == 'Completed', caption_metrics
+    assert caption_metrics['shown'] and caption_metrics['hasChunk'], caption_metrics
+    assert 'Synthetic audio decode' in caption_metrics['report'], caption_metrics
+    assert 'Synthetic inference' in caption_metrics['report'], caption_metrics
+    assert 'fixture speech.wav' in caption_metrics['report'], caption_metrics
+    print('PASS: caption timing report separates source decode from inference and reports slow chunks')
     def handle_dialog(d): d.accept('Smoke test project')
     page.on('dialog',handle_dialog)
     page.locator('#saveBtn').click(); page.wait_for_timeout(100)
