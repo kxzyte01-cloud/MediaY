@@ -1097,6 +1097,7 @@ async function saveVideo(data) {
 
 const EXP = { res: 720, fps: TIMELINE_FPS };
 $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
+  if (!S.main.length) return say('Nothing to export yet.');
   const exportMetric = createMediaYMetric('Export', {
     resolution: EXP.res, fps: EXP.fps,
     mainClips: S.main.length, audioTracks: S.audio.length, overlays: S.overlays.length
@@ -1104,7 +1105,6 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
   activeExportMetric = exportMetric;
   let exportOutcome = 'failed';
   exportMetric.stage('Validate project and media');
-  if (!S.main.length) return say('Nothing to export yet.');
   if (playing) stop();
   closeSheet(); const btn = $('goExport'); btn.disabled = true;
   let exportFailed = false;
