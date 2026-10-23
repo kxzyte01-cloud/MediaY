@@ -68,4 +68,6 @@ ASR chunking parameters: https://huggingface.co/docs/transformers.js/api/pipelin
 
 ## Merge and release policy
 
-The trim/performance branch may merge after syntax, browser tests, FFmpeg worker integration, and Android APK build all pass on the same branch head. Before calling the latency work complete, run the representative on-device benchmarks above and record the actual timings. Do not publish a release based on a successful build alone.
+The trim/performance branch may merge after syntax, browser tests, FFmpeg worker integration, and Android APK build all pass on the same branch head. A merge to `main` should build and upload the APK artifact but must not automatically publish a GitHub Release. Release publication is opt-in through **Actions → Build APK → Run workflow → Publish a GitHub Release for this APK build**.
+
+Before calling the latency work complete, run the representative on-device benchmarks above and record the actual timings. Do not publish a release based on a successful build alone.
