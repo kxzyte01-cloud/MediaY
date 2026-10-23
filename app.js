@@ -1539,11 +1539,11 @@ const CAPTION_CHUNK_SECONDS = 30;
 const abortCaption = () => Object.assign(new Error('Caption generation cancelled.'), { name: 'AbortError' });
 async function createSpeechPipeline(useWebGPU) {
   const packageName = useWebGPU ? '@huggingface/transformers@3.8.1' : '@xenova/transformers@2.17.2';
-  const { pipeline, env } = await import(\`https://cdn.jsdelivr.net/npm/\${packageName}\`);
+  const { pipeline, env } = await import(`https://cdn.jsdelivr.net/npm/${packageName}`);
   env.allowLocalModels = false;
   const progress_callback = p => {
     if (p.status !== 'progress') return;
-    const detail = \`Downloading speech model… \${Math.round(p.progress || 0)}%\`;
+    const detail = `Downloading speech model… ${Math.round(p.progress || 0)}%`;
     say(detail);
     updateBusy('Downloading speech model…', detail, Number.isFinite(p.progress) ? p.progress : null, 'Model download');
   };
@@ -1747,13 +1747,13 @@ $('capGo').onclick = async () => {
     for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
       const source = candidates[candidateIndex];
       if (captionCancelRequested) throw abortCaption();
-      say(\`Preparing \${source.label} for captions…\`);
-      updateBusy('Decoding audio…', \`Preparing the audio from \${source.label}. Large source files can take time to decode.\`, 10 + candidateIndex / candidates.length * 5, 'Audio decode');
+      say(`Preparing ${source.label} for captions…`);
+      updateBusy('Decoding audio…', `Preparing the audio from ${source.label}. Large source files can take time to decode.`, 10 + candidateIndex / candidates.length * 5, 'Audio decode');
       let pcm;
       try { pcm = await pcmOf(source, audioContext, decodeCache); }
       catch (_) { continue; }
       if (!hasAudibleSignal(pcm)) {
-        updateBusy('Skipping silent audio…', \`No useful audio signal was detected in \${source.label}.\`, 15 + (candidateIndex + 1) / candidates.length * 5, 'Audio check');
+        updateBusy('Skipping silent audio…', `No useful audio signal was detected in ${source.label}.`, 15 + (candidateIndex + 1) / candidates.length * 5, 'Audio check');
         continue;
       }
       try {
@@ -1761,7 +1761,7 @@ $('capGo').onclick = async () => {
         const candidateSpan = 70 / candidates.length;
         chosenDrafts = await captionFrom(pcm, source, p => {
           const percent = candidateBase + candidateSpan * p.percent;
-          const detail = \`\${source.label}: audio chunk \${p.chunkIndex + 1} of \${p.chunkCount}. You can cancel between chunks.\`;
+          const detail = `${source.label}: audio chunk ${p.chunkIndex + 1} of ${p.chunkCount}. You can cancel between chunks.`;
           say(detail);
           updateBusy('Transcribing speech…', detail, percent, 'Transcription');
         });
@@ -1773,18 +1773,18 @@ $('capGo').onclick = async () => {
         asr = await createSpeechPipeline(false);
         chosenDrafts = await captionFrom(pcm, source, p => {
           const percent = 20 + 70 * p.percent / candidates.length;
-          updateBusy('Transcribing speech…', \`\${source.label}: audio chunk \${p.chunkIndex + 1} of \${p.chunkCount}.\`, percent, 'Transcription');
+          updateBusy('Transcribing speech…', `${source.label}: audio chunk ${p.chunkIndex + 1} of ${p.chunkCount}.`, percent, 'Transcription');
         });
       }
       if (chosenDrafts.length) { used = source.label; break; }
     }
     if (captionCancelRequested) throw abortCaption();
     if (chosenDrafts.length) {
-      updateBusy('Adding captions…', \`Adding \${chosenDrafts.length} captions to the timeline.\`, 95, 'Finishing captions');
+      updateBusy('Adding captions…', `Adding ${chosenDrafts.length} captions to the timeline.`, 95, 'Finishing captions');
       const count = await commitCaptionDrafts(chosenDrafts);
       refresh(t);
       closeSheet();
-      say(\`Added \${count} captions from \${used}. Tap a caption to restyle or move it.\`);
+      say(`Added ${count} captions from ${used}. Tap a caption to restyle or move it.`);
     } else {
       say(S.audio.length || audioSelection ? 'No speech was detected in the selected media.' : 'No audible speech was detected. Add or record audio, then try again.');
     }
