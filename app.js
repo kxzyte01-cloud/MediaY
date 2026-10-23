@@ -1258,7 +1258,6 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
     const message = 'Export problem: ' + (err && err.message || err) + '. Try 720p or a shorter clip.' + diagnostics;
     say(message);
     showBusyError('Export failed', message);
-  }
   } finally {
     // All virtual filesystem inputs and outputs created by this export are session-owned.
     // Clean them on every exit, including encoder recovery and a failed audio mix.
