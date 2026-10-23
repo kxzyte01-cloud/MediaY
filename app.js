@@ -1457,14 +1457,17 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0, sessionId = null) =>
       updateBusy('Restarting video engine…', 'The encoder worker stopped responding. MediaY is reloading it and retrying once.', 2, 'Recovery');
       say('Video engine stopped responding; reloading it and retrying once…');
       btn.disabled = false;
-      return $('goExport').onclick(null, recoveryAttempt + 1, sessionId);
+      await $('goExport').onclick(null, recoveryAttempt + 1, sessionId);
+      return;
     }
     const memoryProblem = /out of memory|memory access out of bounds|failed to grow memory|cannot allocate|allocation failed|out of memory|oom/i.test(errText + ' ' + ffLogs.join(' '));
     if (EXP.res > 1080 && memoryProblem) { // only downgrade resolution when there is evidence of a memory failure
       EXP.res = 1080; [...$('resList').children].forEach(b => b.classList.toggle('on', +b.dataset.v === 1080));
-      exportProgressHandler = null; disposeFFmpeg(); updateBusy('Retrying at 1080p…', 'The selected resolution used too much memory. Retrying at a lower resolution.', 3, 'Retry'); say('That size ran out of memory. Trying again at 1080p…'); btn.disabled = false; return $('goExport').onclick(null, recoveryAttempt + 1, sessionId);
+      exportProgressHandler = null; disposeFFmpeg(); updateBusy('Retrying at 1080p…', 'The selected resolution used too much memory. Retrying at a lower resolution.', 3, 'Retry'); say('That size ran out of memory. Trying again at 1080p…'); btn.disabled = false; await $('goExport').onclick(null, recoveryAttempt + 1, sessionId);
+      return;
     }
     exportFailed = true;
+    $('busyCancelExport').hidden = true;
     exportProgressHandler = null;
     const diagnostics = ffLogs.length ? (' Encoder details: ' + ffLogs.slice(-4).join(' | ').slice(0, 650)) : '';
     const message = 'Export problem: ' + (err && err.message || err) + '. Try 720p or a shorter clip.' + diagnostics;
@@ -1912,13 +1915,18 @@ async function commitCaptionDrafts(drafts) {
     throw error;
   }
 }
-$('capCancelBtn').onclick = () => {
+function requestCaptionCancellation() {
   if (!captionRunning || captionCancelRequested) return;
   captionCancelRequested = true;
-  $('capCancelBtn').disabled = true;
-  $('capCancelBtn').textContent = 'Cancelling after current step…';
-  say('Cancelling captions after the current inference chunk. No partial caption set will be applied.');
-};
+  ['capCancelBtn', 'busyCancelCaption'].forEach(id => {
+    const button = $(id);
+    if (button) { button.disabled = true; button.textContent = 'Cancelling after current step…'; }
+  });
+  say('Cancelling captions after the current safe point. Model downloads and source decoding may need to finish first.');
+  updateBusy('Cancelling captions…', 'MediaY will stop at the next safe point and discard uncommitted captions.', null, 'Cancelling');
+}
+$('capCancelBtn').onclick = requestCaptionCancellation;
+$('busyCancelCaption').onclick = requestCaptionCancellation;
 $('capGo').onclick = async () => {
   const audioSelection = sel && sel.lane === 'audio' ? S.audio.find(x => x.id === sel.id) : null;
   const selectedVideo = audioSelection ? null : clipNow();
@@ -1935,6 +1943,10 @@ $('capGo').onclick = async () => {
   cancelBtn.hidden = false;
   cancelBtn.disabled = false;
   cancelBtn.textContent = 'Cancel after current step';
+  $('busyCancelExport').hidden = true;
+  $('busyCancelCaption').hidden = false;
+  $('busyCancelCaption').disabled = false;
+  $('busyCancelCaption').textContent = 'Cancel captions';
   captionRunning = true;
   captionCancelRequested = false;
   let captionFailed = false, audioContext = null;
@@ -2049,7 +2061,10 @@ $('capGo').onclick = async () => {
     btn.disabled = false;
     cancelBtn.hidden = true;
     cancelBtn.disabled = false;
-    cancelBtn.textContent = 'Cancel after current chunk';
+    cancelBtn.textContent = 'Cancel after current step';
+    $('busyCancelCaption').hidden = true;
+    $('busyCancelCaption').disabled = false;
+    $('busyCancelCaption').textContent = 'Cancel captions';
     if (!captionFailed) hideBusy();
   }
 };
