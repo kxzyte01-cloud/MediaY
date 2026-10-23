@@ -1013,22 +1013,22 @@ function renderMediaYPerformanceReport() {
   const seconds = ms => (ms / 1000).toFixed(2) + ' s';
   el.textContent = reports.map(report => {
     const lines = [
-      \`MediaY \${report.kind} report\`,
-      \`Time: \${report.timestamp}\`,
-      \`Result: \${report.outcome}\`,
-      \`Total: \${seconds(report.durationMs)}\`,
-      \`Settings: \${JSON.stringify(report.metadata)}\`,
+      `MediaY ${report.kind} report`,
+      `Time: ${report.timestamp}`,
+      `Result: ${report.outcome}`,
+      `Total: ${seconds(report.durationMs)}`,
+      `Settings: ${JSON.stringify(report.metadata)}`,
       'Stage timings:'
     ];
-    for (const [name, ms] of Object.entries(report.stages)) lines.push(\`  \${name}: \${seconds(ms)}\`);
+    for (const [name, ms] of Object.entries(report.stages)) lines.push(`  ${name}: ${seconds(ms)}`);
     if (Object.keys(report.ffmpegCommands || {}).length) {
       lines.push('FFmpeg command timings (included in stage totals):');
       for (const [name, detail] of Object.entries(report.ffmpegCommands)) {
-        lines.push(\`  \${name}: \${seconds(detail.durationMs)} across \${detail.count} command(s), \${detail.failures} failed\`);
+        lines.push(`  ${name}: ${seconds(detail.durationMs)} across ${detail.count} command(s), ${detail.failures} failed`);
       }
     }
-    return lines.join('\\n');
-  }).join('\\n\\n');
+    return lines.join('\n');
+  }).join('\n\n');
   window.MediaYDiagnostics = recentMediaYMetrics;
 }
 $('copyPerfReport').onclick = async () => {
