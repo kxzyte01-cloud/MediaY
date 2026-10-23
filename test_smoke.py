@@ -444,6 +444,39 @@ with sync_playwright() as p:
     assert 'Synthetic inference' in caption_metrics['report'], caption_metrics
     assert 'fixture speech.wav' in caption_metrics['report'], caption_metrics
     print('PASS: caption timing report separates source decode from inference and reports slow chunks')
+
+    caption_cancel_ui = page.evaluate("""() => {
+      const originalRunning = captionRunning, originalCancelled = captionCancelRequested;
+      const originals = ['capCancelBtn','busyCancelCaption'].map(id => {
+        const b=$(id); return {id,hidden:b.hidden,disabled:b.disabled,text:b.textContent};
+      });
+      try {
+        captionRunning=true;
+        captionCancelRequested=false;
+        $('capCancelBtn').hidden=false;
+        $('busyCancelCaption').hidden=false;
+        $('busyCancelCaption').disabled=false;
+        requestCaptionCancellation();
+        return {
+          requested:captionCancelRequested,
+          busyButtonDisabled:$('busyCancelCaption').disabled,
+          busyButtonText:$('busyCancelCaption').textContent,
+          sheetButtonDisabled:$('capCancelBtn').disabled
+        };
+      } finally {
+        captionRunning=originalRunning;
+        captionCancelRequested=originalCancelled;
+        originals.forEach(x => { const b=$(x.id); b.hidden=x.hidden; b.disabled=x.disabled; b.textContent=x.text; });
+        hideBusy();
+      }
+    }""")
+    assert caption_cancel_ui == {
+      'requested':True,
+      'busyButtonDisabled':True,
+      'busyButtonText':'Cancelling after current step…',
+      'sheetButtonDisabled':True
+    }, caption_cancel_ui
+    print('PASS: caption cancel remains accessible in the blocking busy dialog')
     def handle_dialog(d): d.accept('Smoke test project')
     page.on('dialog',handle_dialog)
     page.locator('#saveBtn').click(); page.wait_for_timeout(100)
