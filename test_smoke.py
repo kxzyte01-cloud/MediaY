@@ -52,6 +52,11 @@ with sync_playwright() as p:
     page.set_content(html, wait_until='domcontentloaded')
     page.wait_for_selector('#homeScreen:not([hidden])',timeout=10000)
     if page.locator('#consentDialog[open]').count(): page.locator('#consentBtn').click()
+    assert "async function beginNativeExportService()" in app, 'native export-service start hook is missing'
+    assert "async function endNativeExportService()" in app, 'native export-service cleanup hook is missing'
+    assert "await endNativeExportService()" in app, 'native export service is not stopped during export cleanup'
+    assert "foreground-service notification" in html, 'background export guidance is missing'
+    print('PASS: Android export service hooks and foreground-export guidance are present')
     print('PASS: home screen appears on startup')
     page.locator('#hmNew').click(); page.wait_for_selector('#setup:not([hidden])')
     print('PASS: New project opens setup screen')
