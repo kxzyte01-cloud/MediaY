@@ -1856,7 +1856,6 @@ async function captionFrom(pcm, src, onProgress = () => {}) {
       if (group.length >= 4 || /[.!?…]["')\]]?$/.test(entry.word)) flushGroup();
     }
     flushGroup();
-}
     onProgress({ chunkIndex, chunkCount, percent: (chunkIndex + 1) / chunkCount });
   }
   if (captionCancelRequested) throw abortCaption();
