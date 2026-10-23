@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: "Publish a GitHub Release for this APK build"
+        description: "Build, sign, and publish a production GitHub Release"
         type: boolean
         required: true
         default: false
@@ -55,26 +55,135 @@ jobs:
 
       - run: python3 make_icons.py after
 
+      - name: Set unique Android version
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          gradle_file = Path("android/app/build.gradle")
+          source = gradle_file.read_text()
+          number = int(os.environ["BUILD_NUMBER"])
+          if number < 1:
+              raise SystemExit("GitHub run number must be positive")
+
+          version_code, count_code = re.subn(
+              r"(?m)^(\s*versionCode\s+)\d+\s*$",
+              lambda match: match.group(1) + str(number),
+              source,
+              count=1,
+          )
+          version_name, count_name = re.subn(
+              r"(?m)^(\s*versionName\s+)[\"'][^\"']*[\"']\s*$",
+              lambda match: match.group(1) + f'"1.0.{number}"',
+              version_code,
+              count=1,
+          )
+          if count_code != 1 or count_name != 1:
+              raise SystemExit("Could not set versionCode/versionName in generated android/app/build.gradle")
+          gradle_file.write_text(version_name)
+          print(f"Set Android versionName=1.0.{number}, versionCode={number}")
+          PY
+
       - run: |
           SM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SM" --licenses > /dev/null || true
           "$SM" "platforms;android-34" "build-tools;34.0.0" || true
 
-      - run: |
+      - name: Build debug APK
+        run: |
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug
 
-      - run: cp android/app/build/outputs/apk/debug/app-debug.apk ProjectMedia-Y.apk
+      - name: Stage debug APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk MediaY-debug.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ProjectMedia-Y-apk
-          path: ProjectMedia-Y.apk
+          name: MediaY-debug-apk
+          path: MediaY-debug.apk
+          if-no-files-found: error
 
-      - if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+      - name: Build and verify production-signed APK
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/mediay-release.jks
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+
+          for secret_name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!secret_name:-}" ]; then
+              echo "::error::Missing required GitHub Actions secret: $secret_name"
+              echo "Add all four Android signing secrets in Settings > Secrets and variables > Actions, then rerun the workflow."
+              exit 1
+            fi
+          done
+
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+          chmod 600 "$ANDROID_KEYSTORE_PATH"
+          test -s "$ANDROID_KEYSTORE_PATH"
+
+          cat > android/app/mediay-signing.gradle <<'GRADLE'
+          android {
+              signingConfigs {
+                  release {
+                      storeFile file(System.getenv("ANDROID_KEYSTORE_PATH"))
+                      storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                      keyAlias System.getenv("ANDROID_KEY_ALIAS")
+                      keyPassword System.getenv("ANDROID_KEY_PASSWORD")
+                  }
+              }
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.release
+                  }
+              }
+          }
+          GRADLE
+          printf "\napply from: 'mediay-signing.gradle'\n" >> android/app/build.gradle
+
+          (
+            cd android
+            ./gradlew assembleRelease
+          )
+
+          RELEASE_APK="android/app/build/outputs/apk/release/app-release.apk"
+          test -s "$RELEASE_APK"
+
+          APKSIGNER="$ANDROID_HOME/build-tools/34.0.0/apksigner"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs "$RELEASE_APK"
+
+          RELEASE_NAME="MediaY-v1.0.$BUILD_NUMBER.apk"
+          cp "$RELEASE_APK" "$RELEASE_NAME"
+          sha256sum "$RELEASE_NAME" > "$RELEASE_NAME.sha256"
+          rm -f "$ANDROID_KEYSTORE_PATH"
+
+          echo "Verified signed release APK: $RELEASE_NAME"
+          echo "Android versionCode: $BUILD_NUMBER"
+
+      - name: Publish GitHub Release
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: build-${{ github.run_number }}
-          name: ProjectMedia Y APK ${{ github.run_number }}
-          files: ProjectMedia-Y.apk
+          tag_name: v1.0.${{ github.run_number }}
+          name: MediaY v1.0.${{ github.run_number }}
+          body: |
+            Production-signed Android APK for MediaY.
+
+            - Version: 1.0.${{ github.run_number }}
+            - Android versionCode: ${{ github.run_number }}
+            - APK signature verification ran in GitHub Actions before publishing.
+            - SHA-256 checksum is included alongside the APK.
+          files: |
+            MediaY-v1.0.${{ github.run_number }}.apk
+            MediaY-v1.0.${{ github.run_number }}.apk.sha256
