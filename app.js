@@ -458,6 +458,7 @@ async function wave(a, el) {
 }
 const pack = (items, st, ln) => { const rows = []; return [...items].sort((a, b) => st(a) - st(b)).map(c => { let r = c.row || 0; while (rows[r] > st(c) + 1e-6) r++; rows[r] = st(c) + ln(c); return [c, r]; }); };
 function drawTimeline() {
+  const previousScrollLeft = tl.scrollLeft;
   const d = total(); inner.textContent = ''; inner.style.width = Math.max(d, 1) * PX + 'px';
   const mk = (cls, h) => { const e = document.createElement('div'); e.className = cls; if (h) e.style.height = h + 'px'; inner.appendChild(e); return e; };
   const ruler = mk('ruler'); for (let s = 0; s <= Math.ceil(d); s++) { const i = document.createElement('i'); i.style.left = s * PX + 'px'; ruler.appendChild(i); if (s % 2 === 0) { const b = document.createElement('b'); b.style.left = s * PX + 'px'; b.textContent = fmt(s); ruler.appendChild(b); } }
@@ -476,6 +477,11 @@ function drawTimeline() {
   pa.forEach(([a, r]) => wave(a, add('audio', A, a, a.start, a.out - a.in, r * 34, 30, 'audio-clip', (a.vol === 0 ? '🔇 ' : '♪ ') + a.name)));
   $('timeDisplay').textContent = `${fmt(t)} / ${fmt(d)}`;
   hints(V, O, A); updateChrome();
+  // Resizing the timeline can make the browser clamp scrollLeft asynchronously.
+  // That clamp is layout housekeeping, not a request to scrub the playhead.
+  if (Math.abs(tl.scrollLeft - previousScrollLeft) > 0.5) {
+    programmaticTimelineScroll = { left: tl.scrollLeft, expires: Date.now() + 300 };
+  }
 }
 const snapT = v => { let a = 0; const e = [0, t, ...S.main.map(c => (a += dur(c)))].find(x => Math.abs(x - v) < 8 / PX); return e != null ? e : v; };
 
