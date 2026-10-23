@@ -391,6 +391,15 @@ function select(id, lane) {
 }
 const tl = $('tl'), inner = $('tlInner');
 let drag = null, lastScroll = 0;
+// Programmatic scrolling keeps the playhead visible. Ignore only the matching scroll event;
+// otherwise the scroll handler can mistake refresh()/zoom movement for a user scrub.
+let programmaticTimelineScroll = null;
+function scrollTimelineToTime(time) {
+  const maxLeft = Math.max(0, tl.scrollWidth - tl.clientWidth);
+  const target = Math.max(0, Math.min(maxLeft, Math.max(0, Number(time) || 0) * PX));
+  programmaticTimelineScroll = { left: target, expires: Date.now() + 300 };
+  if (Math.abs(tl.scrollLeft - target) > 0.5) tl.scrollLeft = target;
+}
 const itemOf = (id, lane) => (lane === 'main' ? S.main : lane === 'audio' ? S.audio : S.overlays).find(x => x.id === id);
 const lenOf = (c, lane) => (lane === 'overlay' ? c.dur : lane === 'main' ? dur(c) : c.out - c.in);
 const startOf = (c, lane) => (lane === 'main' ? S.main.slice(0, S.main.indexOf(c)).reduce((a, x) => a + dur(x), 0) : c.start);
@@ -450,7 +459,7 @@ function setTimelineZoom(value, persist = false) {
   $('tlZoom').value = String(PX);
   $('tlZoomLabel').textContent = (PX / BASE_PX).toFixed(1) + '×';
   drawTimeline();
-  tl.scrollLeft = Math.max(0, t * PX);
+  scrollTimelineToTime(t);
   if (persist) { try { localStorage.setItem('pmy-timeline-zoom', String(PX)); } catch (_) {} }
 }
 $('tlZoomOut').onclick = () => setTimelineZoom(PX - 6, true);
@@ -661,7 +670,20 @@ tl.addEventListener('pointerup', e => {
 tl.addEventListener('pointercancel', () => { if (drag) { clearTimeout(drag.timer); drag = null; drawTimeline(); } });
 tl.addEventListener('touchmove', e => { if (drag && drag.mode !== 'wait') e.preventDefault(); }, { passive: false });
 tl.addEventListener('contextmenu', e => e.preventDefault());
-tl.addEventListener('scroll', () => { if (drag) return; const x = tl.scrollLeft / PX; if (Math.abs(x - t) < 1.5 / PX) return; lastScroll = Date.now(); $('playhead').oninput({ target: { time: Math.min(x, total()) } }); });
+tl.addEventListener('scroll', () => {
+  if (drag) return;
+  const left = tl.scrollLeft, guard = programmaticTimelineScroll;
+  if (guard && Date.now() <= guard.expires && Math.abs(left - guard.left) < 1.5) {
+    programmaticTimelineScroll = null;
+    return;
+  }
+  // A mismatching/expired guard is stale; this is a genuine user-driven timeline scroll.
+  programmaticTimelineScroll = null;
+  const x = left / PX;
+  if (Math.abs(x - t) < 1.5 / PX) return;
+  lastScroll = Date.now();
+  $('playhead').oninput({ target: { time: Math.min(x, total()) } });
+});
 ['dragover', 'drop'].forEach(ev => document.addEventListener(ev, e => { // drop files from another app / desktop
   if (!e.dataTransfer || ![...e.dataTransfer.types].includes('Files')) return; e.preventDefault();
   if (ev === 'drop') { $('mediaInput').files = e.dataTransfer.files; $('mediaInput').dispatchEvent(new Event('change')); }
@@ -708,7 +730,7 @@ function refresh(time) {
     video.style.display = 'block'; video.style.filter = previewFilter(hit.c);
     video.playbackRate = hit.c.speed || 1; video.volume = Math.min(1, hit.c.vol ?? 1);
   }
-  if (Date.now() - lastScroll > 200) tl.scrollLeft = t * PX;
+  if (Date.now() - lastScroll > 200) scrollTimelineToTime(t);
   $('playhead').value = (t / d) * 1000; $('timeDisplay').textContent = `${fmt(t)} / ${fmt(total())}`;
   S.overlays.forEach(o => {
     const ob = objOf(o.id); if (!ob) return;
