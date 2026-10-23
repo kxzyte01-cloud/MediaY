@@ -69,7 +69,8 @@ const BASE_PX = 30;
 let PX = BASE_PX; // timeline pixels per second; editable with timeline zoom controls
 const uid = () => Math.random().toString(36).slice(2, 10);
 const fmt = s => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
-const MIN_TIMELINE_FRAME = 1 / 30; // Export and timeline edits use a 30 fps project timebase.
+const TIMELINE_FPS = 30; // One authoritative project/export timebase.
+const MIN_TIMELINE_FRAME = 1 / TIMELINE_FPS;
 const say = m => ($('status').textContent = m);
 
 // Shared blocking progress UI for long-running media tasks.
@@ -978,7 +979,7 @@ async function saveVideo(data) {
   Object.assign(document.createElement('a'), { href: url, download: name }).click();
 }
 
-const EXP = { res: 720, fps: 30 };
+const EXP = { res: 720, fps: TIMELINE_FPS };
 $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
   if (!S.main.length) return say('Nothing to export yet.');
   if (playing) stop();
