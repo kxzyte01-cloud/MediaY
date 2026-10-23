@@ -197,7 +197,7 @@ with sync_playwright() as p:
     }""")
     assert page.locator('#trimStartBtn').is_disabled(), 'From here should disable at the clip boundary'
     assert page.locator('#trimEndBtn').is_disabled(), 'To here should disable at the clip boundary'
-    page.locator('#trimStartBtn').click()
+    page.evaluate("trimSelectionAtPlayhead('start')")
     boundary = page.evaluate("({in:S.main[0].in,out:S.main[0].out})")
     assert boundary == {'in':0,'out':5}, boundary
     print('PASS: trim buttons reject boundary positions that would create zero-length clips')
