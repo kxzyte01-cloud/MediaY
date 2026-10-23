@@ -101,6 +101,7 @@ with sync_playwright() as p:
     blend_result = page.evaluate("({a:S.overlays.find(o=>o.id==='blend-test-a'),b:S.overlays.find(o=>o.id==='blend-test-b')})")
     assert blend_result['a']['blend'] == 'multiply' and blend_result['b']['blend'] == 'multiply', blend_result
     assert abs(blend_result['a']['opacity'] - .55) < .001 and abs(blend_result['b']['opacity'] - .55) < .001, blend_result
+    page.locator('#sheetClose').click()
     page.evaluate("select(null); drawTimeline();")
     print('PASS: blending mode and opacity apply to all overlay layers')
     image_result = page.evaluate("""async () => {
