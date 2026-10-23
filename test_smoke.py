@@ -140,7 +140,7 @@ with sync_playwright() as p:
       ];
       S.audio = [{id:'trim-audio-start', mediaId:'missing-audio', name:'trim-audio.mp3', in:0, out:8, src:8, start:4}];
       S.overlays = [{id:'trim-overlay', type:'text', text:'T', name:'trim-overlay', start:2, dur:6, layer:1}];
-      sel = {id:'trim-main-start', lane:'main'}; t = 1.25; undoStack = [snap()]; redoStack = []; refresh(t); updateChrome();
+      sel = {id:'trim-main-start', lane:'main'}; t = 1.25; undoStack = [snap()]; redoStack = []; drawTimeline(); refresh(t); updateChrome();
     }""")
     # Let queued browser scroll events run; refresh-driven scrolling must never move the playhead.
     page.wait_for_timeout(75)
@@ -163,7 +163,7 @@ with sync_playwright() as p:
 
     page.evaluate("""() => {
       S.main = [{id:'trim-main-end', mediaId:'missing-trim-c', name:'trim-c.mp4', in:0, out:8, src:8, speed:1}];
-      sel = {id:'trim-main-end', lane:'main'}; t = 3; refresh(t); updateChrome();
+      sel = {id:'trim-main-end', lane:'main'}; t = 3; drawTimeline(); refresh(t); updateChrome();
     }""")
     page.locator('#trimEndBtn').click()
     main_end = page.evaluate("({out:S.main[0].out, duration:dur(S.main[0])})")
@@ -171,7 +171,7 @@ with sync_playwright() as p:
     print('PASS: To here trims the main clip ending at the playhead')
 
     page.evaluate("""() => {
-      sel = {id:'trim-audio-start', lane:'audio'}; t = 6; refresh(t); updateChrome();
+      S.main = [{id:'timeline-support-audio', mediaId:'missing-support-audio', name:'support.mp4', in:0, out:20, src:20, speed:1}]; sel = {id:'trim-audio-start', lane:'audio'}; t = 6; drawTimeline(); refresh(t); updateChrome();
     }""")
     page.locator('#trimStartBtn').click()
     audio_start = page.evaluate("({in:S.audio[0].in, out:S.audio[0].out, start:S.audio[0].start})")
@@ -180,7 +180,7 @@ with sync_playwright() as p:
 
     page.evaluate("""() => {
       S.audio = [{id:'trim-audio-end', mediaId:'missing-audio-end', name:'end.mp3', in:0, out:8, src:8, start:1}];
-      sel = {id:'trim-audio-end', lane:'audio'}; t = 4; refresh(t); updateChrome();
+      S.main = [{id:'timeline-support-audio-end', mediaId:'missing-support-audio-end', name:'support-end.mp4', in:0, out:20, src:20, speed:1}]; sel = {id:'trim-audio-end', lane:'audio'}; t = 4; drawTimeline(); refresh(t); updateChrome();
     }""")
     page.locator('#trimEndBtn').click()
     audio_end = page.evaluate("({out:S.audio[0].out, start:S.audio[0].start})")
@@ -188,7 +188,7 @@ with sync_playwright() as p:
     print('PASS: To here trims an audio clip without shifting its timeline start')
 
     page.evaluate("""() => {
-      sel = {id:'trim-overlay', lane:'overlay'}; t = 4; refresh(t); updateChrome();
+      S.main = [{id:'timeline-support-overlay', mediaId:'missing-support-overlay', name:'support-overlay.mp4', in:0, out:20, src:20, speed:1}]; sel = {id:'trim-overlay', lane:'overlay'}; t = 4; drawTimeline(); refresh(t); updateChrome();
     }""")
     page.locator('#trimStartBtn').click()
     overlay_start = page.evaluate("({start:S.overlays[0].start, dur:S.overlays[0].dur})")
@@ -200,12 +200,13 @@ with sync_playwright() as p:
     print('PASS: From here and To here trim overlay timing and duration correctly')
 
     page.evaluate("""() => {
+      S.main = [{id:'timeline-support-video-overlay', mediaId:'missing-support-video-overlay', name:'support-video-overlay.mp4', in:0, out:20, src:20, speed:1}];
       S.overlays = [{
         id:'trim-overlay-video', type:'video', mediaId:'missing-video-overlay',
         name:'picture-in-picture.mp4', start:2, dur:6, sourceIn:1, srcDur:10, layer:1,
         el:{currentTime:0, paused:true, play:()=>Promise.resolve(), pause:()=>{}}
       }];
-      sel = {id:'trim-overlay-video', lane:'overlay'}; t = 4; refresh(t); updateChrome();
+      sel = {id:'trim-overlay-video', lane:'overlay'}; t = 4; drawTimeline(); refresh(t); updateChrome();
     }""")
     page.wait_for_timeout(40)
     assert not page.locator('#trimStartBtn').is_disabled(), 'video overlay From here should enable inside its source range'
@@ -225,7 +226,7 @@ with sync_playwright() as p:
 
     page.evaluate("""() => {
       S.main = [{id:'trim-one-frame', mediaId:'missing-one-frame', name:'one-frame.mp4', in:0, out:1, src:1, speed:1}];
-      sel = {id:'trim-one-frame', lane:'main'}; t = 1/30; refresh(t); updateChrome();
+      sel = {id:'trim-one-frame', lane:'main'}; t = 1/30; drawTimeline(); refresh(t); updateChrome();
     }""")
     page.wait_for_timeout(75)
     assert not page.locator('#trimStartBtn').is_disabled(), 'trim should allow frame-accurate edits, not require a 0.2 second margin'
@@ -237,7 +238,7 @@ with sync_playwright() as p:
 
     page.evaluate("""() => {
       S.main = [{id:'trim-boundary', mediaId:'missing-boundary', name:'boundary.mp4', in:0, out:5, src:5}];
-      sel = {id:'trim-boundary', lane:'main'}; t = 0; refresh(t); updateChrome();
+      sel = {id:'trim-boundary', lane:'main'}; t = 0; drawTimeline(); refresh(t); updateChrome();
     }""")
     assert page.locator('#trimStartBtn').is_disabled(), 'From here should disable at the clip boundary'
     assert page.locator('#trimEndBtn').is_disabled(), 'To here should disable at the clip boundary'
