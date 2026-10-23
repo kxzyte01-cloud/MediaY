@@ -141,7 +141,12 @@ with sync_playwright() as p:
       S.overlays = [{id:'trim-overlay', type:'text', text:'T', name:'trim-overlay', start:2, dur:6, layer:1}];
       sel = {id:'trim-main-start', lane:'main'}; t = 1.25; updateChrome();
     }""")
-    assert not page.locator('#trimStartBtn').is_disabled(), 'From here should enable when playhead is inside a selected clip'
+    trim_diag = page.evaluate("""() => {
+      const item = sel ? itemOf(sel.id, sel.lane) : null;
+      return {t,sel,itemFound:!!item,start:item&&startOf(item,sel.lane),length:item&&lenOf(item,sel.lane),offset:item&&t-startOf(item,sel.lane),speed:item&&item.speed,sourceAt:item&&item.in+(t-startOf(item,sel.lane))*(item.speed||1),context:!!trimActionContext(),disabled:$('trimStartBtn').disabled};
+    }""")
+    print('Trim diagnostic:', trim_diag)
+    assert not page.locator('#trimStartBtn').is_disabled(), 'From here should enable when playhead is inside a selected clip: ' + str(trim_diag)
     assert not page.locator('#trimEndBtn').is_disabled(), 'To here should enable when playhead is inside a selected clip'
     page.locator('#trimStartBtn').click()
     main_start = page.evaluate("({in:S.main[0].in, out:S.main[0].out, speed:S.main[0].speed, t, duration:dur(S.main[0])})")
