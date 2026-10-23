@@ -500,6 +500,9 @@ function updateTrimButtons() {
 }
 function trimSelectionAtPlayhead(mode) {
   if (mode !== 'start' && mode !== 'end') return;
+  // Editing while the preview is advancing makes the playhead and source frame race.
+  // Stop first, then capture a stable trim context for this single edit transaction.
+  if (playing) stop();
   const context = trimActionContext();
   if (!context) {
     updateTrimButtons();
