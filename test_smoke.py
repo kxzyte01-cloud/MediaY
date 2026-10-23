@@ -325,6 +325,53 @@ with sync_playwright() as p:
     }""")
     assert signal_checks == {'silent':False,'speech':True}, signal_checks
     print('PASS: silent tracks are skipped before running speech inference')
+
+    perf_contract = page.evaluate("""() => {
+      const metric = createMediaYMetric('Test report', {resolution:480,fps:24});
+      metric.stage('Audio decoding');
+      metric.command('seg0.mp4',12,true);
+      metric.stage('Inference');
+      metric.command('seg1.mp4',8,false);
+      const report = metric.finish('test');
+      recentMediaYMetrics.export = report;
+      renderMediaYPerformanceReport();
+      return {
+        kind:report.kind,
+        outcome:report.outcome,
+        total:report.durationMs,
+        stages:Object.keys(report.stages),
+        clipCommands:report.ffmpegCommands['clip encoding'],
+        visible:$('perfReport').textContent
+      };
+    }""")
+    assert perf_contract['kind'] == 'Test report' and perf_contract['outcome'] == 'test', perf_contract
+    assert perf_contract['total'] >= 0, perf_contract
+    assert 'Audio decoding' in perf_contract['stages'] and 'Inference' in perf_contract['stages'], perf_contract
+    assert perf_contract['clipCommands']['count'] == 2 and perf_contract['clipCommands']['failures'] == 1, perf_contract
+    assert 'Test report report' in perf_contract['visible'] and 'clip encoding' in perf_contract['visible'], perf_contract
+    print('PASS: performance report aggregates stage duration and FFmpeg command timings')
+
+    cancel_button_result = page.evaluate("""() => {
+      captionRunning = true;
+      captionCancelRequested = false;
+      $('busyCancel').hidden = false;
+      updateBusy('Transcribing speech…','test cancellation button',20,'Captions');
+      return {visible:!$('busyCancel').hidden,disabled:$('busyCancel').disabled};
+    }""")
+    assert cancel_button_result == {'visible':True,'disabled':False}, cancel_button_result
+    page.locator('#busyCancel').click()
+    cancel_click_result = page.evaluate("""() => ({
+      requested:captionCancelRequested,
+      disabled:$('busyCancel').disabled,
+      label:$('busyCancel').textContent
+    })""")
+    assert cancel_click_result['requested'] and cancel_click_result['disabled'] and 'Cancellation requested' in cancel_click_result['label'], cancel_click_result
+    page.evaluate("""() => {
+      captionRunning = false; captionCancelRequested = false;
+      $('busyCancel').hidden = true; $('busyOverlay').hidden = true;
+      document.body.removeAttribute('aria-busy');
+    }""")
+    print('PASS: caption cancellation remains clickable above the blocking progress overlay')
     def handle_dialog(d): d.accept('Smoke test project')
     page.on('dialog',handle_dialog)
     page.locator('#saveBtn').click(); page.wait_for_timeout(100)
