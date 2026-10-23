@@ -464,6 +464,57 @@ $('tlZoomFit').onclick = () => {
   say('Timeline zoom adjusted to fit as much of the edit as possible.');
 };
 
+function trimActionContext() {
+  if (!sel) return null;
+  const lane = sel.lane, clip = itemOf(sel.id, lane);
+  if (!clip) return null;
+  const start = startOf(clip, lane), length = lenOf(clip, lane), offset = t - start;
+  // Leave a small usable fragment on both sides; this also prevents accidental zero-length clips.
+  if (!Number.isFinite(start) || !Number.isFinite(length) || length < 0.4 ||
+      !Number.isFinite(offset) || offset < 0.2 || offset > length - 0.2) return null;
+  const sourceAt = lane === 'overlay' ? null : clip.in + offset * (lane === 'main' ? (clip.speed || 1) : 1);
+  if (lane !== 'overlay' && (!Number.isFinite(sourceAt) || sourceAt <= clip.in || sourceAt >= clip.out)) return null;
+  return { lane, clip, start, length, offset, sourceAt, at: t };
+}
+function updateTrimButtons() {
+  const enabled = !!trimActionContext();
+  ['trimStartBtn', 'trimEndBtn'].forEach(id => {
+    const button = $(id);
+    if (button) button.disabled = !enabled;
+  });
+}
+function trimSelectionAtPlayhead(mode) {
+  if (mode !== 'start' && mode !== 'end') return;
+  const context = trimActionContext();
+  if (!context) {
+    updateTrimButtons();
+    return say('Place the playhead at least 0.2 seconds inside the selected clip to trim it.');
+  }
+  const { lane, clip, start, offset, sourceAt, at } = context;
+  if (mode === 'start') {
+    if (lane === 'main') {
+      // The main video lane is a ripple-joined sequence: remove the lead-in and start
+      // the retained source frame at this clip's existing sequence position.
+      clip.in = sourceAt;
+      t = start;
+    } else if (lane === 'audio') {
+      clip.in = sourceAt;
+      clip.start = at;
+    } else {
+      clip.start = at;
+      clip.dur -= offset;
+    }
+  } else {
+    if (lane === 'overlay') clip.dur = offset;
+    else clip.out = sourceAt;
+  }
+  commit();
+  refresh(Math.max(0, Math.min(t, total())));
+  updateTrimButtons();
+  say(mode === 'start'
+    ? 'From here: removed the selected clip’s lead-in and kept the rest.'
+    : 'To here: removed the selected clip’s ending and kept the beginning.');
+}
 function updateCopyTillButton() {
   const btn = $('copyTillBtn');
   if (!btn) return;
@@ -568,6 +619,7 @@ function updateChrome() {
   const blendItem = on && sel.lane === 'overlay' ? S.overlays.find(o => o.id === sel.id) : null;
   $('blendBtn').hidden = !(blendItem && blendItem.type !== 'text');
   updateCopyTillButton();
+  updateTrimButtons();
 }
 function keyFilter(k) { return new fabric.Image.filters.RemoveColor({ color: k.color, distance: 0.1 + k.sim / 100 * 0.5 }); }
 function restackRows() { // higher row on screen = in front, like other editors
@@ -668,6 +720,7 @@ function refresh(time) {
   });
   canvas.requestRenderAll();
   updateCopyTillButton();
+  updateTrimButtons();
 }
 function tick() {
   if (!playing) return;
@@ -712,6 +765,8 @@ $('splitBtn').onclick = () => {
   S.main.splice(S.main.indexOf(c), 1, { ...c, out: at }, { ...c, id: uid(), in: at, tr: undefined });
   commit(); say('Split.');
 };
+$('trimStartBtn').onclick = () => trimSelectionAtPlayhead('start');
+$('trimEndBtn').onclick = () => trimSelectionAtPlayhead('end');
 $('deleteBtn').onclick = () => {
   if (!sel) return say('Tap a clip first.');
   if (sel.lane === 'overlay') { const ob = objOf(sel.id); if (ob) canvas.remove(ob); }
