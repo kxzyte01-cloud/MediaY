@@ -223,6 +223,18 @@ with sync_playwright() as p:
     print('PASS: video overlay trimming preserves source-in across preview, export seek, and audio mixing')
 
     page.evaluate("""() => {
+      S.main = [{id:'trim-one-frame', mediaId:'missing-one-frame', name:'one-frame.mp4', in:0, out:1, src:1, speed:1}];
+      sel = {id:'trim-one-frame', lane:'main'}; t = 1/30; refresh(t); updateChrome();
+    }""")
+    page.wait_for_timeout(75)
+    assert not page.locator('#trimStartBtn').is_disabled(), 'trim should allow frame-accurate edits, not require a 0.2 second margin'
+    page.locator('#trimStartBtn').click()
+    one_frame = page.evaluate("({in:S.main[0].in,duration:dur(S.main[0])})")
+    assert abs(one_frame['in'] - (1/30)) < 0.0001, one_frame
+    assert abs(one_frame['duration'] - (29/30)) < 0.0001, one_frame
+    print('PASS: trim precision supports a one-frame edit at 30 fps')
+
+    page.evaluate("""() => {
       S.main = [{id:'trim-boundary', mediaId:'missing-boundary', name:'boundary.mp4', in:0, out:5, src:5}];
       sel = {id:'trim-boundary', lane:'main'}; t = 0; refresh(t); updateChrome();
     }""")
