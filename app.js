@@ -48,6 +48,11 @@ function previewFilter(clip) {
   if (a.saturation !== 100) filters.push('saturate(' + (bounded(a.saturation, 0, 200) / 100).toFixed(2) + ')');
   return filters.join(' ');
 }
+function overlaySourceAt(overlay, timelineTime) {
+  // Keep preview, rendered picture-in-picture, and its audio on the same source-time mapping.
+  return Math.max(0, Number(overlay && overlay.sourceIn) || 0) +
+    Math.max(0, Number(timelineTime) - (Number(overlay && overlay.start) || 0));
+}
 function canvasBlendMode(mode) {
   const found = BLEND_OPTIONS.find(item => item[1] === mode);
   return found ? found[2] : 'source-over';
@@ -64,6 +69,8 @@ const BASE_PX = 30;
 let PX = BASE_PX; // timeline pixels per second; editable with timeline zoom controls
 const uid = () => Math.random().toString(36).slice(2, 10);
 const fmt = s => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+const TIMELINE_FPS = 30; // One authoritative project/export timebase.
+const MIN_TIMELINE_FRAME = 1 / TIMELINE_FPS;
 const say = m => ($('status').textContent = m);
 
 // Shared blocking progress UI for long-running media tasks.
@@ -242,7 +249,7 @@ canvas.on('selection:created', e => select(e.selected[0].pmId));
 canvas.on('selection:updated', e => select(e.selected[0].pmId));
 canvas.on('selection:cleared', () => { if (sel && sel.lane === 'overlay') select(null); });
 
-async function buildObject(o) {
+async function buildObject(o, { restackAfter = true } = {}) {
   const [w, h] = RATIOS[S.ratio];
   let obj;
   if (o.type === 'text') {
@@ -254,6 +261,10 @@ async function buildObject(o) {
       el = document.createElement('video'); el.src = url; el.muted = true; el.playsInline = true; o.el = el;
       await new Promise((resolve, reject) => { el.onloadeddata = resolve; el.onerror = () => reject(new Error('Could not read this overlay video. Try converting it to MP4.')); });
       el.width = el.videoWidth; el.height = el.videoHeight;
+      const decodedDuration = Number.isFinite(el.duration) && el.duration > 0 ? el.duration :
+        (Number.isFinite(o.srcDur) && o.srcDur > 0 ? o.srcDur : o.dur);
+      o.srcDur = decodedDuration;
+      o.sourceIn = Math.max(0, Math.min(Number(o.sourceIn) || 0, Math.max(0, decodedDuration - 0.001)));
       obj = new fabric.Image(el);
     } else {
       el = await loadOverlayImage(url, o);
@@ -265,7 +276,7 @@ async function buildObject(o) {
   obj.set({ left: o.left ?? w * 0.1, top: o.top ?? h * 0.1, scaleX: o.scaleX ?? 1, scaleY: o.scaleY ?? 1, angle: o.angle || 0, opacity: bounded(o.opacity ?? 1, 0, 1), globalCompositeOperation: canvasBlendMode(o.blend || 'normal'), cornerSize: 22, transparentCorners: false });
   Object.assign(o, { left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY });
   if (o.key && obj.applyFilters) { obj.filters = [keyFilter(o.key)]; obj.applyFilters(); }
-  canvas.add(obj); restack(); return obj;
+  canvas.add(obj); if (restackAfter) restack(); return obj;
 }
 async function rebuildCanvas() {
   canvas.clear(); sizeCanvas();
@@ -352,6 +363,10 @@ const probe = (url, kind = 'video') => new Promise(resolve => {
 /* ---------- Overlays (PiP, stickers, text) ---------- */
 async function addOverlay(o) {
   o = { id: uid(), layer: S.nextLayer++, dur: 3, start: t, ...o };
+  if (o.type === 'video') {
+    o.sourceIn = Math.max(0, Number(o.sourceIn) || 0);
+    o.srcDur = Number.isFinite(o.srcDur) && o.srcDur > 0 ? o.srcDur : o.dur;
+  }
   S.overlays.push(o);
   const obj = await buildObject(o);
   if (obj && o.type === 'text') anime({ targets: obj, opacity: [0, 1], top: [obj.top + 50, obj.top], duration: 700, easing: 'easeOutElastic(1, .6)', update: () => canvas.requestRenderAll() });
@@ -370,13 +385,25 @@ pipInput.onchange = async () => {
     const rid = pipInput.dataset.replace;
     if (rid) { // Keep the layer's position and timing when replacing an overlay.
       const o = S.overlays.find(x => x.id === rid); if (!o) throw new Error('The selected overlay no longer exists.');
+      const replacementDuration = type === 'video' ? await probe(urls[mediaId], 'video') : 0;
+      if (type === 'video' && (!Number.isFinite(replacementDuration) || replacementDuration <= 0)) {
+        throw new Error('Could not read this replacement overlay video. Try converting it to MP4.');
+      }
       const old = objOf(rid); if (old) canvas.remove(old);
       Object.assign(o, { mediaId, type, name: f.name }); delete o.el; delete o.scaleX; delete o.scaleY;
+      if (type === 'video') {
+        o.sourceIn = 0;
+        o.srcDur = replacementDuration;
+        o.dur = Math.min(Number.isFinite(o.dur) && o.dur > 0 ? o.dur : replacementDuration, replacementDuration);
+      } else {
+        delete o.sourceIn;
+        delete o.srcDur;
+      }
       await buildObject(o); restack(); commit(); refresh(t); say('Overlay replaced.');
     } else {
       const length = type === 'video' ? await probe(urls[mediaId], 'video') : 5;
       if (type === 'video' && (!Number.isFinite(length) || length <= 0)) throw new Error('Could not read this video. Try an MP4 or MOV file.');
-      await addOverlay({ type, mediaId, name: f.name, dur: length });
+      await addOverlay({ type, mediaId, name: f.name, dur: length, ...(type === 'video' ? { sourceIn: 0, srcDur: length } : {}) });
       refresh(t); say('Overlay added. Drag it in the preview to position it.');
     }
   } catch (err) { console.error(err); say('Could not add overlay: ' + (err.message || err)); }
@@ -391,6 +418,21 @@ function select(id, lane) {
 }
 const tl = $('tl'), inner = $('tlInner');
 let drag = null, lastScroll = 0;
+// Programmatic scrolling keeps the playhead visible. Ignore only the matching scroll event;
+// otherwise the scroll handler can mistake refresh()/zoom movement for a user scrub.
+let programmaticTimelineScroll = null;
+function scrollTimelineToTime(time) {
+  const maxLeft = Math.max(0, tl.scrollWidth - tl.clientWidth);
+  const target = Math.max(0, Math.min(maxLeft, Math.max(0, Number(time) || 0) * PX));
+  const current = tl.scrollLeft;
+  const moving = Math.abs(current - target) > 0.5;
+  // Only arm a guard when this call changes scroll position or supersedes a still-pending write.
+  // refresh() runs repeatedly during playback, so no-op writes must not suppress real user scrolls.
+  if (moving || programmaticTimelineScroll) {
+    programmaticTimelineScroll = { left: target };
+    if (moving) tl.scrollLeft = target;
+  }
+}
 const itemOf = (id, lane) => (lane === 'main' ? S.main : lane === 'audio' ? S.audio : S.overlays).find(x => x.id === id);
 const lenOf = (c, lane) => (lane === 'overlay' ? c.dur : lane === 'main' ? dur(c) : c.out - c.in);
 const startOf = (c, lane) => (lane === 'main' ? S.main.slice(0, S.main.indexOf(c)).reduce((a, x) => a + dur(x), 0) : c.start);
@@ -417,6 +459,7 @@ async function wave(a, el) {
 }
 const pack = (items, st, ln) => { const rows = []; return [...items].sort((a, b) => st(a) - st(b)).map(c => { let r = c.row || 0; while (rows[r] > st(c) + 1e-6) r++; rows[r] = st(c) + ln(c); return [c, r]; }); };
 function drawTimeline() {
+  const previousScrollLeft = tl.scrollLeft;
   const d = total(); inner.textContent = ''; inner.style.width = Math.max(d, 1) * PX + 'px';
   const mk = (cls, h) => { const e = document.createElement('div'); e.className = cls; if (h) e.style.height = h + 'px'; inner.appendChild(e); return e; };
   const ruler = mk('ruler'); for (let s = 0; s <= Math.ceil(d); s++) { const i = document.createElement('i'); i.style.left = s * PX + 'px'; ruler.appendChild(i); if (s % 2 === 0) { const b = document.createElement('b'); b.style.left = s * PX + 'px'; b.textContent = fmt(s); ruler.appendChild(b); } }
@@ -435,6 +478,11 @@ function drawTimeline() {
   pa.forEach(([a, r]) => wave(a, add('audio', A, a, a.start, a.out - a.in, r * 34, 30, 'audio-clip', (a.vol === 0 ? '🔇 ' : '♪ ') + a.name)));
   $('timeDisplay').textContent = `${fmt(t)} / ${fmt(d)}`;
   hints(V, O, A); updateChrome();
+  // Resizing the timeline can make the browser clamp scrollLeft asynchronously.
+  // That clamp is layout housekeeping, not a request to scrub the playhead.
+  if (Math.abs(tl.scrollLeft - previousScrollLeft) > 0.5) {
+    programmaticTimelineScroll = { left: tl.scrollLeft };
+  }
 }
 const snapT = v => { let a = 0; const e = [0, t, ...S.main.map(c => (a += dur(c)))].find(x => Math.abs(x - v) < 8 / PX); return e != null ? e : v; };
 
@@ -450,7 +498,7 @@ function setTimelineZoom(value, persist = false) {
   $('tlZoom').value = String(PX);
   $('tlZoomLabel').textContent = (PX / BASE_PX).toFixed(1) + '×';
   drawTimeline();
-  tl.scrollLeft = Math.max(0, t * PX);
+  scrollTimelineToTime(t);
   if (persist) { try { localStorage.setItem('pmy-timeline-zoom', String(PX)); } catch (_) {} }
 }
 $('tlZoomOut').onclick = () => setTimelineZoom(PX - 6, true);
@@ -464,6 +512,64 @@ $('tlZoomFit').onclick = () => {
   say('Timeline zoom adjusted to fit as much of the edit as possible.');
 };
 
+function trimActionContext() {
+  if (!sel) return null;
+  const lane = sel.lane, clip = itemOf(sel.id, lane);
+  if (!clip) return null;
+  const start = startOf(clip, lane), length = lenOf(clip, lane), offset = t - start;
+  // Keep at least one output frame on both sides; trims must be frame-precise, not 0.2s-granular.
+  if (!Number.isFinite(start) || !Number.isFinite(length) || length < 2 * MIN_TIMELINE_FRAME ||
+      !Number.isFinite(offset) || offset < MIN_TIMELINE_FRAME || offset > length - MIN_TIMELINE_FRAME) return null;
+  const sourceAt = lane === 'overlay'
+    ? (clip.type === 'video' ? overlaySourceAt(clip, t) : null)
+    : clip.in + offset * (lane === 'main' ? (clip.speed || 1) : 1);
+  if (lane !== 'overlay' && (!Number.isFinite(sourceAt) || sourceAt <= clip.in || sourceAt >= clip.out)) return null;
+  if (lane === 'overlay' && clip.type === 'video' && Number.isFinite(clip.srcDur) && sourceAt >= clip.srcDur) return null;
+  return { lane, clip, start, length, offset, sourceAt, at: t };
+}
+function updateTrimButtons() {
+  const enabled = !!trimActionContext();
+  ['trimStartBtn', 'trimEndBtn'].forEach(id => {
+    const button = $(id);
+    if (button) button.disabled = !enabled;
+  });
+}
+function trimSelectionAtPlayhead(mode) {
+  if (mode !== 'start' && mode !== 'end') return;
+  // Editing while the preview is advancing makes the playhead and source frame race.
+  // Stop first, then capture a stable trim context for this single edit transaction.
+  if (playing) stop();
+  const context = trimActionContext();
+  if (!context) {
+    updateTrimButtons();
+    return say('Place the playhead at least one frame inside the selected clip to trim it.');
+  }
+  const { lane, clip, start, offset, sourceAt, at } = context;
+  if (mode === 'start') {
+    if (lane === 'main') {
+      // The main video lane is a ripple-joined sequence: remove the lead-in and start
+      // the retained source frame at this clip's existing sequence position.
+      clip.in = sourceAt;
+      t = start;
+    } else if (lane === 'audio') {
+      clip.in = sourceAt;
+      clip.start = at;
+    } else {
+      if (clip.type === 'video') clip.sourceIn = sourceAt;
+      clip.start = at;
+      clip.dur -= offset;
+    }
+  } else {
+    if (lane === 'overlay') clip.dur = offset;
+    else clip.out = sourceAt;
+  }
+  commit();
+  refresh(Math.max(0, Math.min(t, total())));
+  updateTrimButtons();
+  say(mode === 'start'
+    ? 'From here: removed the selected clip’s lead-in and kept the rest.'
+    : 'To here: removed the selected clip’s ending and kept the beginning.');
+}
 function updateCopyTillButton() {
   const btn = $('copyTillBtn');
   if (!btn) return;
@@ -568,6 +674,7 @@ function updateChrome() {
   const blendItem = on && sel.lane === 'overlay' ? S.overlays.find(o => o.id === sel.id) : null;
   $('blendBtn').hidden = !(blendItem && blendItem.type !== 'text');
   updateCopyTillButton();
+  updateTrimButtons();
 }
 function keyFilter(k) { return new fabric.Image.filters.RemoveColor({ color: k.color, distance: 0.1 + k.sim / 100 * 0.5 }); }
 function restackRows() { // higher row on screen = in front, like other editors
@@ -609,7 +716,20 @@ tl.addEventListener('pointerup', e => {
 tl.addEventListener('pointercancel', () => { if (drag) { clearTimeout(drag.timer); drag = null; drawTimeline(); } });
 tl.addEventListener('touchmove', e => { if (drag && drag.mode !== 'wait') e.preventDefault(); }, { passive: false });
 tl.addEventListener('contextmenu', e => e.preventDefault());
-tl.addEventListener('scroll', () => { if (drag) return; const x = tl.scrollLeft / PX; if (Math.abs(x - t) < 1.5 / PX) return; lastScroll = Date.now(); $('playhead').oninput({ target: { time: Math.min(x, total()) } }); });
+tl.addEventListener('scroll', () => {
+  if (drag) return;
+  const left = tl.scrollLeft, guard = programmaticTimelineScroll;
+  if (guard && Math.abs(left - guard.left) < 1.5) {
+    programmaticTimelineScroll = null;
+    return;
+  }
+  // A mismatching guard targets an older position; this is a genuine user-driven timeline scroll.
+  programmaticTimelineScroll = null;
+  const x = left / PX;
+  if (Math.abs(x - t) < 1.5 / PX) return;
+  lastScroll = Date.now();
+  $('playhead').oninput({ target: { time: Math.min(x, total()) } });
+});
 ['dragover', 'drop'].forEach(ev => document.addEventListener(ev, e => { // drop files from another app / desktop
   if (!e.dataTransfer || ![...e.dataTransfer.types].includes('Files')) return; e.preventDefault();
   if (ev === 'drop') { $('mediaInput').files = e.dataTransfer.files; $('mediaInput').dispatchEvent(new Event('change')); }
@@ -656,18 +776,19 @@ function refresh(time) {
     video.style.display = 'block'; video.style.filter = previewFilter(hit.c);
     video.playbackRate = hit.c.speed || 1; video.volume = Math.min(1, hit.c.vol ?? 1);
   }
-  if (Date.now() - lastScroll > 200) tl.scrollLeft = t * PX;
+  if (Date.now() - lastScroll > 200) scrollTimelineToTime(t);
   $('playhead').value = (t / d) * 1000; $('timeDisplay').textContent = `${fmt(t)} / ${fmt(total())}`;
   S.overlays.forEach(o => {
     const ob = objOf(o.id); if (!ob) return;
     const on = t >= o.start && t <= o.start + o.dur;
     if (on && !ob.visible && o.type === 'text') anime({ targets: ob, opacity: [0, 1], duration: 400, easing: 'easeOutCubic', update: () => canvas.requestRenderAll() });
     ob.visible = on; if (o.key && on && ob.applyFilters) ob.applyFilters();
-    if (o.el && on) { const want = t - o.start; if (playing && o.el.paused) o.el.play().catch(() => {}); if (!playing && Math.abs(o.el.currentTime - want) > 0.1) o.el.currentTime = want; }
+    if (o.el && on) { const want = overlaySourceAt(o, t); if (playing && o.el.paused) o.el.play().catch(() => {}); if (!playing && Math.abs(o.el.currentTime - want) > 0.1) o.el.currentTime = want; }
     else if (o.el && !o.el.paused) o.el.pause();
   });
   canvas.requestRenderAll();
   updateCopyTillButton();
+  updateTrimButtons();
 }
 function tick() {
   if (!playing) return;
@@ -712,6 +833,8 @@ $('splitBtn').onclick = () => {
   S.main.splice(S.main.indexOf(c), 1, { ...c, out: at }, { ...c, id: uid(), in: at, tr: undefined });
   commit(); say('Split.');
 };
+$('trimStartBtn').onclick = () => trimSelectionAtPlayhead('start');
+$('trimEndBtn').onclick = () => trimSelectionAtPlayhead('end');
 $('deleteBtn').onclick = () => {
   if (!sel) return say('Tap a clip first.');
   if (sel.lane === 'overlay') { const ob = objOf(sel.id); if (ob) canvas.remove(ob); }
@@ -856,13 +979,23 @@ async function saveVideo(data) {
   Object.assign(document.createElement('a'), { href: url, download: name }).click();
 }
 
-const EXP = { res: 720, fps: 30 };
+const EXP = { res: 720, fps: TIMELINE_FPS };
 $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
   if (!S.main.length) return say('Nothing to export yet.');
   if (playing) stop();
   closeSheet(); const btn = $('goExport'); btn.disabled = true;
   let exportFailed = false;
   ffLogs = [];
+  const exportWorkspaceFiles = new Set();
+  const exportSourceCache = new Map();
+  const exportOverlayPngCache = new Map();
+  let exportSourceCacheBytes = 0, exportOverlayPngCacheBytes = 0;
+  const EXPORT_SOURCE_CACHE_LIMIT = 96 * 1024 * 1024;
+  const EXPORT_OVERLAY_PNG_CACHE_LIMIT = 12 * 1024 * 1024;
+  const removeExportFile = async name => {
+    try { if (ff) await ff.deleteFile(name); } catch (_) {}
+    exportWorkspaceFiles.delete(name);
+  };
   updateBusy('Preparing your export…', 'Checking project media before rendering.', 1, 'Preparing');
   try {
     if (!S.main.length) throw new Error('Add at least one video clip to the main timeline before exporting.');
@@ -892,25 +1025,100 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       updateBusy(`Rendering clip ${Math.min(exportClipIndex + 1, S.main.length)} of ${S.main.length}…`, 'Encoding video, effects, and overlays. Longer clips can take more time.', overall, 'Rendering');
       say(`Rendering clip ${Math.min(exportClipIndex + 1, S.main.length)} of ${S.main.length}…`);
     };
-    const [bw, bh] = RATIOS[S.ratio], kk = EXP.res / Math.min(bw, bh), W = Math.round(bw * kk / 2) * 2, H = Math.round(bh * kk / 2) * 2, segs = []; let offset = 0, cached = null;
+    const [bw, bh] = RATIOS[S.ratio], kk = EXP.res / Math.min(bw, bh), W = Math.round(bw * kk / 2) * 2, H = Math.round(bh * kk / 2) * 2, segs = []; let offset = 0;
+    const touchLru = (map, key, value) => { map.delete(key); map.set(key, value); };
+    const ensureExportSource = async (mediaId, pinnedMediaIds, clipSources) => {
+      if (clipSources.has(mediaId)) return clipSources.get(mediaId);
+      const cached = exportSourceCache.get(mediaId);
+      if (cached) {
+        touchLru(exportSourceCache, mediaId, cached);
+        clipSources.set(mediaId, cached);
+        return cached;
+      }
+      const file = files[mediaId];
+      if (!file || !file.size) throw new Error('A source media file is missing during export.');
+      const ext = ((file.name || 'media.mp4').split('.').pop() || 'mp4').toLowerCase();
+      const name = `src_${mediaId}.${ext}`;
+      const size = file.size;
+      let cacheable = size <= EXPORT_SOURCE_CACHE_LIMIT;
+      while (cacheable && exportSourceCacheBytes + size > EXPORT_SOURCE_CACHE_LIMIT) {
+        const victim = [...exportSourceCache.entries()].find(([id]) => !clipSources.has(id));
+        if (!victim) { cacheable = false; break; }
+        const [victimId, victimEntry] = victim;
+        await removeExportFile(victimEntry.name);
+        exportSourceCache.delete(victimId);
+        exportSourceCacheBytes -= victimEntry.size;
+      }
+      // Large single sources are transient to avoid retaining multiple large video blobs in WASM memory.
+      if (!cacheable) {
+        for (const [victimId, victimEntry] of [...exportSourceCache.entries()]) {
+          if (clipSources.has(victimId)) continue;
+          await removeExportFile(victimEntry.name);
+          exportSourceCache.delete(victimId);
+          exportSourceCacheBytes -= victimEntry.size;
+        }
+      }
+      updateBusy('Preparing source media…', `Loading ${file.name || 'media'} for the next encode pass.`, 5 + (segs.length / Math.max(1, S.main.length)) * 5, 'Source preparation');
+      await ff.writeFile(name, new Uint8Array(await file.arrayBuffer()));
+      exportWorkspaceFiles.add(name);
+      const entry = { name, size, cached: cacheable };
+      if (cacheable) {
+        exportSourceCache.set(mediaId, entry);
+        exportSourceCacheBytes += size;
+      }
+      clipSources.set(mediaId, entry);
+      return entry;
+    };
+    const ensureOverlayPng = async (overlay, pinnedOverlayIds, clipPngs, tempNames, clipIndex) => {
+      if (clipPngs.has(overlay.id)) return clipPngs.get(overlay.id);
+      const cached = exportOverlayPngCache.get(overlay.id);
+      if (cached) {
+        touchLru(exportOverlayPngCache, overlay.id, cached);
+        clipPngs.set(overlay.id, cached);
+        return cached;
+      }
+      const png = await overlayPNG(overlay);
+      const size = png.byteLength;
+      let cacheable = size <= EXPORT_OVERLAY_PNG_CACHE_LIMIT;
+      while (cacheable && exportOverlayPngCacheBytes + size > EXPORT_OVERLAY_PNG_CACHE_LIMIT) {
+        const victim = [...exportOverlayPngCache.entries()].find(([id]) => !pinnedOverlayIds.has(id));
+        if (!victim) { cacheable = false; break; }
+        const [victimId, victimEntry] = victim;
+        await removeExportFile(victimEntry.name);
+        exportOverlayPngCache.delete(victimId);
+        exportOverlayPngCacheBytes -= victimEntry.size;
+      }
+      const name = cacheable ? `overlay_${overlay.id}.png` : `ovtemp_${clipIndex}_${overlay.id}.png`;
+      await ff.writeFile(name, png);
+      exportWorkspaceFiles.add(name);
+      const entry = { name, size, cached: cacheable };
+      if (cacheable) {
+        exportOverlayPngCache.set(overlay.id, entry);
+        exportOverlayPngCacheBytes += size;
+      } else tempNames.push(name);
+      clipPngs.set(overlay.id, entry);
+      return entry;
+    };
     const TD = S.main.map((c, i) => (i && c.tr ? Math.min(c.trDur || 0.5, dur(S.main[i - 1]) * 0.45, dur(c) * 0.45) : 0)); // overlap length at each clip's start
     for (let i = 0; i < S.main.length; i++) {
       exportClipIndex = i;
       updateBusy(`Rendering clip ${i + 1} of ${S.main.length}…`, 'Encoding video, effects, and overlays.', 8 + (i / Math.max(1, S.main.length)) * 58, 'Rendering');
-      const c = S.main[i], d = c.out - c.in, sp = c.speed || 1, td = d / sp, ext = (files[c.mediaId].name || 'v.mp4').split('.').pop().toLowerCase();
-      const src = `src_${c.mediaId}.${ext}`;
+      const c = S.main[i], d = c.out - c.in, sp = c.speed || 1, td = d / sp;
       say(`Clip ${i + 1} of ${S.main.length}…`);
-      if (cached !== src) { if (cached) await ff.deleteFile(cached).catch(() => {}); await ff.writeFile(src, new Uint8Array(await files[c.mediaId].arrayBuffer())); cached = src; }
       const live = S.overlays.filter(o => (o.type !== 'video' || objOf(o.id)) && o.start < offset + td && o.start + o.dur > offset).sort((a, b) => a.layer - b.layer), geo = [], K = W / RATIOS[S.ratio][0];
-      const inputs = [], names = [];
+      const pinnedMediaIds = new Set([c.mediaId, ...live.filter(o => o.type === 'video').map(o => o.mediaId)]);
+      const clipSources = new Map(), clipPngs = new Map(), names = [];
+      const sourceEntry = await ensureExportSource(c.mediaId, pinnedMediaIds, clipSources);
+      const src = sourceEntry.name;
+      const pinnedOverlayIds = new Set(live.filter(o => o.type !== 'video').map(o => o.id));
+      const inputs = [];
       for (let k = 0; k < live.length; k++) {
         const o = live[k];
         if (o.type === 'video') { // picture-in-picture video: scale, rotate and place it, starting at the right moment
-          const n = `ovv${k}`, ob = objOf(o.id), bb = ob.getBoundingRect(true, true), rad = ((ob.angle || 0) * Math.PI / 180).toFixed(4);
-          await ff.writeFile(n, new Uint8Array(await files[o.mediaId].arrayBuffer())); names.push(n);
-          inputs.push('-ss', Math.max(0, offset - o.start).toFixed(2), '-i', n);
+          const n = (await ensureExportSource(o.mediaId, pinnedMediaIds, clipSources)).name, ob = objOf(o.id), bb = ob.getBoundingRect(true, true), rad = ((ob.angle || 0) * Math.PI / 180).toFixed(4);
+          inputs.push('-ss', overlaySourceAt(o, offset).toFixed(2), '-i', n);
           geo[k] = { ox: Math.round(bb.left * K), oy: Math.round(bb.top * K), chain: `${o.start > offset ? `tpad=start_mode=clone:start_duration=${(o.start - offset).toFixed(2)},` : ''}scale=${Math.max(2, Math.round(ob.getScaledWidth() * K))}:${Math.max(2, Math.round(ob.getScaledHeight() * K))}${o.key ? `,chromakey=color=0x${o.key.color.slice(1)}:similarity=${(0.08 + o.key.sim / 100 * 0.32).toFixed(3)}:blend=${((o.key.soft || 0) / 100 * 0.25).toFixed(3)}` : ''}${+rad ? `,format=rgba,rotate=${rad}:ow=rotw(${rad}):oh=roth(${rad}):c=none` : ''},format=rgba,colorchannelmixer=aa=${bounded(o.opacity ?? 1, 0, 1).toFixed(2)}` };
-        } else { const n = `ov${k}.png`; await ff.writeFile(n, await overlayPNG(o)); names.push(n); inputs.push('-i', n); }
+        } else { const n = (await ensureOverlayPng(o, pinnedOverlayIds, clipPngs, names, i)).name; inputs.push('-i', n); }
       }
       const fd = Math.min(0.4, Math.max(0.05, td / 2));
       const videoFadeFilter = c.fade ? ',fade=type=in:duration=' + fd.toFixed(3) + ',fade=type=out:start_time=' + Math.max(0, td - fd).toFixed(3) + ':duration=' + fd.toFixed(3) : '';
@@ -943,6 +1151,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       const tx = TD[i + 1] || 0; // hold the last frame so the blend has something to fade from
       if (tx) { g += `;[${last}]tpad=stop_mode=clone:stop_duration=${tx.toFixed(2)}[bt]`; last = 'bt'; }
       const seg = `seg${i}.mp4`;
+      exportWorkspaceFiles.add(seg);
       const af = [c.rev && 'areverse', sp !== 1 && `atempo=${sp}`, (c.vol ?? 1) !== 1 && `volume=${c.vol}`, c.fade && audioFadeFilter, tx > 0 && `apad=pad_dur=${tx.toFixed(2)}`].filter(Boolean).join(','), enc = (a, fast) => ['-ss', String(c.in), '-t', String(d), ...(fast ? ['-skip_loop_filter', 'all'] : []), '-i', src, ...inputs, '-filter_complex', g, '-map', `[${last}]`, '-map', '0:a:0?', ...a, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-t', (td + tx).toFixed(3), seg]; // -t: a long overlay video must not stretch the clip
       // Footage at 10+ Mbps is expensive to decode and its deblocking is invisible after downscaling, so skip it (~15% faster decode).
       // If that attempt fails for any reason, fall back to the original behaviour: normal decode, then no audio.
@@ -955,10 +1164,16 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
         try { await run(enc(a, fast)); encErr = null; break; } catch (e) { encErr = e; await ff.deleteFile(seg).catch(() => {}); }
       }
       if (encErr) throw encErr;
-      for (const n of names) await ff.deleteFile(n);
+      for (const n of names) await removeExportFile(n);
+      for (const [mediaId, entry] of clipSources) {
+        if (!entry.cached) await removeExportFile(entry.name);
+      }
       segs.push(seg); offset += td;
     }
-    if (cached) await ff.deleteFile(cached).catch(() => {});
+    for (const entry of exportSourceCache.values()) await removeExportFile(entry.name);
+    exportSourceCache.clear(); exportSourceCacheBytes = 0;
+    for (const entry of exportOverlayPngCache.values()) await removeExportFile(entry.name);
+    exportOverlayPngCache.clear(); exportOverlayPngCacheBytes = 0;
     exportProgressHandler = null;
     updateBusy('Finishing transitions…', 'Preparing the final sequence of clips.', 68, 'Transitions');
     const groups = []; segs.forEach((sg, i) => (i && TD[i] ? groups[groups.length - 1].push(i) : groups.push([i])));
@@ -973,6 +1188,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       if (grp.length === 1) { pieces.push(segs[grp[0]]); continue; }
       say(`Blending clips (${gi + 1} of ${groups.length})…`);
       const ins = grp.flatMap(i => ['-i', segs[i]]), name = `grp${gi}.mp4`;
+      exportWorkspaceFiles.add(name);
       let pv = '[0:v]', pa = '[0:a]', cur = dur(S.main[grp[0]]) + TD[grp[1]], fv = '', fa = '';
       grp.slice(1).forEach((i, j) => {
         const d = TD[i], k = j + 1;
@@ -988,6 +1204,8 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
     updateBusy('Joining clips…', 'Combining the rendered clips into one MP4.', 84, 'Final assembly');
     say('Joining clips…');
     await ff.writeFile('list.txt', new TextEncoder().encode(pieces.map(s => `file '${s}'`).join('\n')));
+    exportWorkspaceFiles.add('list.txt');
+    exportWorkspaceFiles.add('joined.mp4');
     await run(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', 'joined.mp4']);
     for (const s of new Set([...segs, ...pieces])) await ff.deleteFile(s).catch(() => {});
     let out = 'joined.mp4';
@@ -995,11 +1213,11 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
     if (S.audio.length || ovA.length) { // mix music, voice-over and overlay-video sound on top
       updateBusy('Mixing audio tracks…', 'Combining the original sound, music, and voice-over.', 90, 'Audio');
       say('Mixing audio…');
-      const trk = [...S.audio.map(a => ({ m: a.mediaId, st: a.start, in: a.in, out: a.out, vol: a.vol, fade: a.fade, ov: false })), ...ovA.map(o => ({ m: o.mediaId, st: o.start, in: 0, out: o.dur, ov: true }))], ins = [];
-      for (let k = 0; k < trk.length; k++) { await ff.writeFile(`aud${k}`, new Uint8Array(await files[trk[k].m].arrayBuffer())); ins.push('-i', `aud${k}`); }
+      const trk = [...S.audio.map(a => ({ m: a.mediaId, st: a.start, in: a.in, out: a.out, vol: a.vol, fade: a.fade, ov: false })), ...ovA.map(o => ({ m: o.mediaId, st: o.start, in: Number(o.sourceIn) || 0, out: (Number(o.sourceIn) || 0) + o.dur, ov: true }))], ins = [];
+      for (let k = 0; k < trk.length; k++) { const audioFile = `aud${k}`; exportWorkspaceFiles.add(audioFile); await ff.writeFile(audioFile, new Uint8Array(await files[trk[k].m].arrayBuffer())); ins.push('-i', audioFile); }
       const tryMix = (idx, withOrig) => {
         const parts = idx.map(k => { const a = trk[k], ms = Math.round(a.st * 1000); return `[${k + 1}:a]atrim=start=${a.in}:end=${a.out},asetpts=PTS-STARTPTS${(a.vol ?? 1) !== 1 ? `,volume=${a.vol}` : ''}${a.fade ? ',afade=type=in:duration=1,afade=type=out:start_time=' + Math.max(0, a.out - a.in - 1).toFixed(2) + ':duration=1' : ''},adelay=${ms}|${ms}[a${k}]`; });
-        return run(['-i', 'joined.mp4', ...ins, '-filter_complex', `${parts.join(';')};${withOrig ? '[0:a]' : ''}${idx.map(k => `[a${k}]`).join('')}amix=inputs=${idx.length + (withOrig ? 1 : 0)}:duration=first:normalize=0[m]`, '-map', '0:v', '-map', '[m]', '-c:v', 'copy', '-c:a', 'aac', 'final.mp4']);
+        exportWorkspaceFiles.add('final.mp4'); return run(['-i', 'joined.mp4', ...ins, '-filter_complex', `${parts.join(';')};${withOrig ? '[0:a]' : ''}${idx.map(k => `[a${k}]`).join('')}amix=inputs=${idx.length + (withOrig ? 1 : 0)}:duration=first:normalize=0[m]`, '-map', '0:v', '-map', '[m]', '-c:v', 'copy', '-c:a', 'aac', 'final.mp4']);
       };
       const all = trk.map((_, k) => k), music = all.filter(k => !trk[k].ov); let done = false;
       for (const [idx, wo] of [[all, true], [all, false], [music, true], [music, false]]) { // a video with no sound falls back to the next combination
@@ -1040,6 +1258,15 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
     const message = 'Export problem: ' + (err && err.message || err) + '. Try 720p or a shorter clip.' + diagnostics;
     say(message);
     showBusyError('Export failed', message);
+  } finally {
+    // All virtual filesystem inputs and outputs created by this export are session-owned.
+    // Clean them on every exit, including encoder recovery and a failed audio mix.
+    if (ff) {
+      for (const name of exportWorkspaceFiles) {
+        try { await ff.deleteFile(name); } catch (_) {}
+      }
+    }
+    exportWorkspaceFiles.clear();
   }
   exportProgressHandler = null;
   btn.disabled = false;
@@ -1306,7 +1533,10 @@ document.querySelectorAll('#ratioPick button').forEach(b => (b.onclick = () => {
 const LANGS = [['Auto-detect', ''], ['English', 'english'], ['Hindi', 'hindi'], ['Bengali', 'bengali'], ['Urdu', 'urdu'], ['Spanish', 'spanish'], ['French', 'french'], ['Portuguese', 'portuguese'], ['Arabic', 'arabic'], ['Indonesian', 'indonesian']];
 $('capLang').innerHTML = LANGS.map(([n, v]) => `<option value="${v}">${n}</option>`).join('');
 $('capBtn').onclick = () => (sheet.hidden || sheet.dataset.tab !== 'cap' ? openSheet('cap') : closeSheet());
-let asr, asrBackend = 'wasm';
+let asr, asrBackend = 'wasm', captionCancelRequested = false, captionRunning = false;
+const CAPTION_SAMPLE_RATE = 16000;
+const CAPTION_CHUNK_SECONDS = 30;
+const abortCaption = () => Object.assign(new Error('Caption generation cancelled.'), { name: 'AbortError' });
 async function createSpeechPipeline(useWebGPU) {
   const packageName = useWebGPU ? '@huggingface/transformers@3.8.1' : '@xenova/transformers@2.17.2';
   const { pipeline, env } = await import(`https://cdn.jsdelivr.net/npm/${packageName}`);
@@ -1324,80 +1554,262 @@ async function createSpeechPipeline(useWebGPU) {
   asrBackend = useWebGPU ? 'webgpu' : 'wasm';
   return model;
 }
-async function pcmOf(src) { // 16 kHz mono sound of one clip; throws if it has no sound
+async function pcmOf(src, audioContext, decodeCache) {
+  // Reuse at most one decoded source buffer. This avoids decoding the same source twice
+  // when a video and its audio track reference the same media without retaining many hours of PCM.
   await loadMedia(src.m);
-  const ac = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+  if (!files[src.m]) throw new Error('The selected audio source is missing.');
+  let cached = decodeCache.get(src.m), buf;
+  if (!cached) {
+    decodeCache.clear();
+    cached = audioContext.decodeAudioData(await files[src.m].arrayBuffer());
+    decodeCache.set(src.m, cached);
+  }
   try {
-    const buf = await ac.decodeAudioData(await files[src.m].arrayBuffer()), sampleRate = buf.sampleRate || 16000, pcm = buf.getChannelData(0).slice(Math.floor(src.in * sampleRate), Math.ceil(src.out * sampleRate));
-    if (pcm.length < 1600) throw new Error('empty'); return pcm;
-  } finally { ac.close(); }
-}
-async function captionFrom(pcm, src) {
-  const lang = $('capLang').value;
-  const r = await asr(pcm, { chunk_length_s: 30, stride_length_s: 5, return_timestamps: true, ...(lang ? { language: lang } : {}), task: $('capTr').checked ? 'translate' : 'transcribe' });
-  let n = 0;
-  for (const ch of r.chunks || []) {
-    const words = ch.text.trim().split(/\s+/).filter(Boolean); if (!words.length || /^[\[(].*[\])]$/.test(ch.text.trim())) continue; // skip [music] style tags
-    const s0 = ch.timestamp[0] || 0, e0 = ch.timestamp[1] != null ? ch.timestamp[1] : Math.min(s0 + 3, src.out - src.in), parts = Math.ceil(words.length / 4);
-    for (let p = 0; p < parts; p++) { // short captions, about 4 words each
-      const a = s0 + (e0 - s0) * p / parts, b = s0 + (e0 - s0) * (p + 1) / parts;
-      const o = { id: uid(), layer: S.nextLayer++, type: 'text', text: words.slice(p * 4, p * 4 + 4).join(' '), style: txtStyle, start: src.start + a / src.sp, dur: Math.max(0.4, (b - a) / src.sp), top: RATIOS[S.ratio][1] * 0.72 };
-      S.overlays.push(o); await buildObject(o); n++;
+    buf = await cached;
+    decodeCache.set(src.m, buf);
+  } catch (error) {
+    if (decodeCache.get(src.m) === cached) decodeCache.delete(src.m);
+    throw error;
+  }
+  const inputRate = buf.sampleRate || audioContext.sampleRate || CAPTION_SAMPLE_RATE;
+  const start = Math.max(0, Math.min(buf.length, Math.floor(src.in * inputRate)));
+  const end = Math.max(start, Math.min(buf.length, Math.ceil(src.out * inputRate)));
+  if (end - start < Math.floor(inputRate * 0.1)) throw new Error('The selected audio range is too short.');
+  const count = end - start;
+  let mono;
+  if (buf.numberOfChannels === 1) {
+    mono = buf.getChannelData(0).subarray(start, end);
+  } else {
+    mono = new Float32Array(count);
+    for (let channel = 0; channel < buf.numberOfChannels; channel++) {
+      const data = buf.getChannelData(channel);
+      for (let i = 0, source = start; source < end; i++, source++) mono[i] += data[source] / buf.numberOfChannels;
     }
   }
-  return n;
+  if (inputRate === CAPTION_SAMPLE_RATE) return mono;
+  const outLength = Math.max(1, Math.round(mono.length * CAPTION_SAMPLE_RATE / inputRate));
+  const resampled = new Float32Array(outLength);
+  const ratio = inputRate / CAPTION_SAMPLE_RATE;
+  for (let i = 0; i < outLength; i++) {
+    const position = i * ratio, lo = Math.min(Math.floor(position), mono.length - 1), hi = Math.min(lo + 1, mono.length - 1), f = position - lo;
+    resampled[i] = mono[lo] * (1 - f) + mono[hi] * f;
+  }
+  return resampled;
 }
+function hasAudibleSignal(pcm) {
+  if (!pcm || !pcm.length) return false;
+  // Sparse RMS/peak sampling is enough to skip genuinely silent tracks without scanning every sample.
+  const stride = Math.max(1, Math.floor(pcm.length / 200000));
+  let sum = 0, peak = 0, count = 0;
+  for (let i = 0; i < pcm.length; i += stride) {
+    const value = pcm[i], magnitude = Math.abs(value);
+    sum += value * value; peak = Math.max(peak, magnitude); count++;
+  }
+  const rms = Math.sqrt(sum / Math.max(1, count));
+  return !(rms < 0.0012 && peak < 0.006);
+}
+async function captionFrom(pcm, src, onProgress = () => {}) {
+  const lang = $('capLang').value;
+  const chunkSamples = CAPTION_CHUNK_SECONDS * CAPTION_SAMPLE_RATE;
+  const chunkCount = Math.ceil(pcm.length / chunkSamples);
+  const drafts = [];
+  for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++) {
+    if (captionCancelRequested) throw abortCaption();
+    const sampleStart = chunkIndex * chunkSamples;
+    const audioChunk = pcm.subarray(sampleStart, Math.min(pcm.length, sampleStart + chunkSamples));
+    if (!audioChunk.length) continue;
+    const chunkDuration = audioChunk.length / CAPTION_SAMPLE_RATE;
+    const result = await asr(audioChunk, {
+      chunk_length_s: CAPTION_CHUNK_SECONDS,
+      stride_length_s: 5,
+      return_timestamps: true,
+      ...(lang ? { language: lang } : {}),
+      task: $('capTr').checked ? 'translate' : 'transcribe'
+    });
+    if (captionCancelRequested) throw abortCaption();
+    for (const chunk of result.chunks || []) {
+      const text = String(chunk.text || '').trim();
+      const words = text.split(/\s+/).filter(Boolean);
+      if (!words.length || /^[\[(].*[\])]$/.test(text)) continue;
+      const stamp = Array.isArray(chunk.timestamp) ? chunk.timestamp : [];
+      let s0 = Number.isFinite(stamp[0]) ? stamp[0] : 0;
+      let e0 = Number.isFinite(stamp[1]) ? stamp[1] : Math.min(s0 + 3, chunkDuration);
+      s0 = Math.max(0, Math.min(chunkDuration, s0));
+      e0 = Math.max(s0, Math.min(chunkDuration, e0));
+      if (e0 - s0 < 0.01) continue;
+      const parts = Math.ceil(words.length / 4);
+      for (let part = 0; part < parts; part++) {
+        const a = s0 + (e0 - s0) * part / parts;
+        const b = s0 + (e0 - s0) * (part + 1) / parts;
+        const relativeSourceStart = sampleStart / CAPTION_SAMPLE_RATE + a;
+        const relativeSourceEnd = sampleStart / CAPTION_SAMPLE_RATE + b;
+        drafts.push({
+          id: uid(),
+          layer: S.nextLayer + drafts.length,
+          type: 'text',
+          text: words.slice(part * 4, part * 4 + 4).join(' '),
+          style: txtStyle,
+          start: src.start + relativeSourceStart / src.sp,
+          dur: Math.max(MIN_TIMELINE_FRAME, (relativeSourceEnd - relativeSourceStart) / src.sp),
+          top: RATIOS[S.ratio][1] * 0.72
+        });
+      }
+    }
+    onProgress({ chunkIndex, chunkCount, percent: (chunkIndex + 1) / chunkCount });
+  }
+  if (captionCancelRequested) throw abortCaption();
+  return drafts;
+}
+async function commitCaptionDrafts(drafts) {
+  if (!drafts.length) return 0;
+  const originalNextLayer = S.nextLayer;
+  const staged = drafts.map((draft, index) => ({ ...draft, layer: originalNextLayer + index }));
+  const built = [];
+  try {
+    for (const overlay of staged) {
+      if (captionCancelRequested) throw abortCaption();
+      const object = await buildObject(overlay, { restackAfter: false });
+      if (!object) throw new Error('A generated caption could not be added to the preview.');
+      built.push(overlay.id);
+    }
+    if (captionCancelRequested) throw abortCaption();
+    S.overlays.push(...staged);
+    S.nextLayer = originalNextLayer + staged.length;
+    restack();
+    commit();
+    return staged.length;
+  } catch (error) {
+    for (const id of built) {
+      const object = objOf(id);
+      if (object) canvas.remove(object);
+    }
+    canvas.requestRenderAll();
+    S.overlays = S.overlays.filter(overlay => !staged.some(draft => draft.id === overlay.id));
+    S.nextLayer = originalNextLayer;
+    throw error;
+  }
+}
+$('capCancelBtn').onclick = () => {
+  if (!captionRunning || captionCancelRequested) return;
+  captionCancelRequested = true;
+  $('capCancelBtn').disabled = true;
+  $('capCancelBtn').textContent = 'Cancelling after this chunk…';
+  say('Cancelling captions after the current inference chunk. No partial caption set will be applied.');
+};
 $('capGo').onclick = async () => {
-  const aSel = sel && sel.lane === 'audio' ? S.audio.find(x => x.id === sel.id) : null, vid = aSel ? null : clipNow();
-  const A = a => ({ m: a.mediaId, in: a.in, out: a.out, start: a.start, sp: 1, label: 'your audio track' });
-  const cands = aSel ? [A(aSel)] : [...(vid ? [{ m: vid.mediaId, in: vid.in, out: vid.out, start: startOf(vid, 'main'), sp: vid.speed || 1, label: 'this video' }] : []), ...S.audio.map(A)];
-  if (!cands.length) return say('Import a video or add audio first.');
-  const btn = $('capGo'); btn.disabled = true;
-  let captionFailed = false;
-  updateBusy('Preparing captions…', 'Loading the selected audio and speech-recognition model.', 1, 'Captions');
+  const audioSelection = sel && sel.lane === 'audio' ? S.audio.find(x => x.id === sel.id) : null;
+  const selectedVideo = audioSelection ? null : clipNow();
+  const audioCandidate = item => ({ m: item.mediaId, in: item.in, out: item.out, start: item.start, sp: 1, label: item.name || 'audio track' });
+  const candidates = audioSelection
+    ? [audioCandidate(audioSelection)]
+    : [...(selectedVideo ? [{ m: selectedVideo.mediaId, in: selectedVideo.in, out: selectedVideo.out, start: startOf(selectedVideo, 'main'), sp: selectedVideo.speed || 1, label: selectedVideo.name || 'selected video clip' }] : []),
+       ...S.audio.map(audioCandidate)];
+  if (!candidates.length) return say('Import a video or add audio first.');
+  if (captionRunning) return;
+  const btn = $('capGo'), cancelBtn = $('capCancelBtn');
+  btn.disabled = true;
+  cancelBtn.hidden = false;
+  cancelBtn.disabled = false;
+  cancelBtn.textContent = 'Cancel after current chunk';
+  captionRunning = true;
+  captionCancelRequested = false;
+  let captionFailed = false, audioContext = null;
+  const decodeCache = new Map();
+  updateBusy('Preparing captions…', 'Loading the speech model and preparing audio.', 1, 'Captions');
   try {
     if (!asr) {
       let gpuReady = false;
       if (navigator.gpu && typeof navigator.gpu.requestAdapter === 'function') {
         try {
-          updateBusy('Starting GPU captions…', 'Checking whether this browser can accelerate speech recognition.', null, 'GPU acceleration');
+          updateBusy('Starting GPU captions…', 'Checking whether browser GPU acceleration is available.', null, 'GPU acceleration');
           asr = await createSpeechPipeline(true);
           gpuReady = true;
-        } catch (gpuError) {
+        } catch (_) {
           asr = null;
-          updateBusy('Switching to compatibility mode…', 'GPU acceleration is unavailable on this device. Using the compatible speech engine instead.', null, 'Compatibility');
+          updateBusy('Switching to compatibility mode…', 'GPU acceleration is unavailable. Using the compatible speech engine instead.', null, 'Compatibility');
         }
       }
       if (!asr) {
-        say('Loading the speech model (about 40 MB the first time)…');
-        updateBusy('Loading speech model…', 'The first download is cached for later sessions.', null, 'Model download');
+        say('Loading speech model (about 40 MB the first time)…');
+        updateBusy('Loading speech model…', 'The first model download is cached by the browser when supported.', null, 'Model download');
         asr = await createSpeechPipeline(false);
       } else if (gpuReady) {
         updateBusy('Speech model ready', 'Using browser GPU acceleration for transcription.', null, 'GPU accelerated');
       }
     }
-    let n = 0, used = '';
-    for (const src of cands) { // the video first, then your audio tracks; a silent video is skipped automatically
-      say(`Listening to ${src.label}…`);
-      updateBusy('Transcribing speech…', `Listening to ${src.label}. This step can take time on slower phones.`, null, 'Transcription');
-      let pcm; try { pcm = await pcmOf(src); } catch (e) { continue; }
-      try {
-        n = await captionFrom(pcm, src);
-      } catch (inferenceError) {
-        if (asrBackend !== 'webgpu') throw inferenceError;
-        // GPU model loading can succeed while inference fails on certain drivers.
-        asr = null;
-        updateBusy('Switching to compatible captions…', 'This device could not finish GPU inference. Retrying with the CPU engine.', null, 'Compatibility');
-        asr = await createSpeechPipeline(false);
-        n = await captionFrom(pcm, src);
+    if (captionCancelRequested) throw abortCaption();
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) throw new Error('This browser does not support audio decoding for captions.');
+    try { audioContext = new AudioContextClass({ sampleRate: CAPTION_SAMPLE_RATE }); }
+    catch (_) { audioContext = new AudioContextClass(); }
+    let chosenDrafts = [], used = '';
+    for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
+      const source = candidates[candidateIndex];
+      if (captionCancelRequested) throw abortCaption();
+      say(`Preparing ${source.label} for captions…`);
+      updateBusy('Decoding audio…', `Preparing the audio from ${source.label}. Large source files can take time to decode.`, 10 + candidateIndex / candidates.length * 5, 'Audio decode');
+      let pcm;
+      try { pcm = await pcmOf(source, audioContext, decodeCache); }
+      catch (_) { continue; }
+      if (!hasAudibleSignal(pcm)) {
+        updateBusy('Skipping silent audio…', `No useful audio signal was detected in ${source.label}.`, 15 + (candidateIndex + 1) / candidates.length * 5, 'Audio check');
+        continue;
       }
-      if (n) { used = src.label; break; }
+      try {
+        const candidateBase = 20 + candidateIndex / candidates.length * 70;
+        const candidateSpan = 70 / candidates.length;
+        chosenDrafts = await captionFrom(pcm, source, p => {
+          const percent = candidateBase + candidateSpan * p.percent;
+          const detail = `${source.label}: audio chunk ${p.chunkIndex + 1} of ${p.chunkCount}. You can cancel between chunks.`;
+          say(detail);
+          updateBusy('Transcribing speech…', detail, percent, 'Transcription');
+        });
+      } catch (inferenceError) {
+        if (inferenceError.name === 'AbortError') throw inferenceError;
+        if (asrBackend !== 'webgpu') throw inferenceError;
+        asr = null;
+        updateBusy('Switching to compatible captions…', 'GPU inference failed on this device. Retrying with the CPU engine.', null, 'Compatibility');
+        asr = await createSpeechPipeline(false);
+        chosenDrafts = await captionFrom(pcm, source, p => {
+          const percent = 20 + 70 * p.percent / candidates.length;
+          updateBusy('Transcribing speech…', `${source.label}: audio chunk ${p.chunkIndex + 1} of ${p.chunkCount}.`, percent, 'Transcription');
+        });
+      }
+      if (chosenDrafts.length) { used = source.label; break; }
     }
-    if (n) { restack(); commit(); refresh(t); closeSheet(); say(`Added ${n} captions from ${used}. Tap one to restyle or move it.`); }
-    else say(S.audio.length || aSel ? 'No speech found.' : 'This video has no sound to caption. Add or record audio, then try again.');
-  } catch (e) { const message = 'Captions failed: ' + (e.message || e) + ' (the first run needs internet).'; say(message); captionFailed = true; showBusyError('Caption generation failed', message); }
-  btn.disabled = false;
-  if (!captionFailed) hideBusy();
+    if (captionCancelRequested) throw abortCaption();
+    if (chosenDrafts.length) {
+      updateBusy('Adding captions…', `Adding ${chosenDrafts.length} captions to the timeline.`, 95, 'Finishing captions');
+      const count = await commitCaptionDrafts(chosenDrafts);
+      refresh(t);
+      closeSheet();
+      say(`Added ${count} captions from ${used}. Tap a caption to restyle or move it.`);
+    } else {
+      say(S.audio.length || audioSelection ? 'No speech was detected in the selected media.' : 'No audible speech was detected. Add or record audio, then try again.');
+    }
+  } catch (error) {
+    if (error && error.name === 'AbortError') {
+      say('Caption generation cancelled. No partial captions were added.');
+    } else {
+      const message = 'Captions failed: ' + (error && error.message || error) + ' (the first run needs internet access).';
+      say(message);
+      captionFailed = true;
+      showBusyError('Caption generation failed', message);
+    }
+  } finally {
+    decodeCache.clear();
+    if (audioContext && audioContext.state !== 'closed') {
+      try { await audioContext.close(); } catch (_) {}
+    }
+    captionRunning = false;
+    captionCancelRequested = false;
+    btn.disabled = false;
+    cancelBtn.hidden = true;
+    cancelBtn.disabled = false;
+    cancelBtn.textContent = 'Cancel after current chunk';
+    if (!captionFailed) hideBusy();
+  }
 };
 const TR = [
   ['None', ''],
@@ -1455,6 +1867,21 @@ $('revBtn').onclick = () => { const c = clipNow(); if (!c) return say('Import a 
 $('addClip').onclick = () => $('importBtn').click();
 const opt = (id, vals, key) => { $(id).innerHTML = vals.map(v => `<button data-v="${v}" class="${EXP[key] === v ? 'on' : ''}">${key === 'res' ? (v === 1440 ? '2K' : v === 2160 ? '4K' : v + 'p' + (v === 720 ? ' · fast' : v === 1080 ? ' · HD' : '')) : v}</button>`).join(''); $(id).onclick = e => { const b = e.target.closest('[data-v]'); if (!b) return; EXP[key] = +b.dataset.v; [...$(id).children].forEach(x => x.classList.toggle('on', x === b)); }; };
 opt('resList', [480, 720, 1080, 1440, 2160], 'res'); opt('fpsList', [24, 30, 60], 'fps');
+function applyExportPreset(name) {
+  const presets = { draft: { res: 480, fps: 24 } };
+  const preset = presets[name];
+  if (!preset) throw new Error('Unknown export preset: ' + name);
+  EXP.res = preset.res; EXP.fps = preset.fps;
+  [['resList', 'res'], ['fpsList', 'fps']].forEach(([id, key]) => {
+    [...$(id).children].forEach(button => button.classList.toggle('on', Number(button.dataset.v) === EXP[key]));
+  });
+}
+$('fastExportBtn').onclick = () => {
+  if ($('goExport').disabled) return;
+  applyExportPreset('draft');
+  say('Fast draft selected (480p / 24 fps).');
+  $('goExport').click();
+};
 
 /* ---------- Start up ---------- */
 const projectMediaReady = (async function init() {

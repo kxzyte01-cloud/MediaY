@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Publish a GitHub Release for this APK build"
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: write
@@ -66,7 +72,7 @@ jobs:
           name: ProjectMedia-Y-apk
           path: ProjectMedia-Y.apk
 
-      - if: github.event_name != 'pull_request'
+      - if: github.event_name == 'workflow_dispatch' && inputs.publish_release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}

@@ -103,6 +103,8 @@
     <div data-pane="export" hidden>
       <p class="lbl">Quality: 1080p is best for YouTube. 2K and 4K are very heavy for a phone, so the app drops to 1080p if it runs out of memory</p><div id="resList" class="pills"></div>
       <p class="lbl">Frames per second</p><div id="fpsList" class="pills"></div>
+      <button id="fastExportBtn" class="wide" type="button">⚡ Fast draft — 480p / 24 fps</button>
+      <p class="lbl">Fast draft prioritizes speed for review copies. Choose a higher resolution or frame rate for your final export.</p>
       <button id="goExport" class="primary wide">Export video</button>
     </div>
     <div data-pane="key" hidden>
@@ -126,7 +128,9 @@
       <select id="capLang" aria-label="Spoken language"></select>
       <label class="chk"><input type="checkbox" id="capTr"> Translate speech to English</label>
       <button id="capGo" class="primary wide">Generate captions</button>
-      <p class="lbl">Works on the selected clip and runs on your phone. The speech model (about 40 MB) downloads once. Accuracy is best for English; other languages can be rough.</p>
+      <button id="capCancelBtn" class="wide" type="button" hidden>Cancel after current chunk</button>
+      <p class="lbl">Speech is processed in 30-second chunks with progress. Cancelling before completion leaves the project unchanged. The model (about 40 MB) downloads on the first run.</p>
+      <p class="lbl">Long or high-resolution videos can still take time to decode. The model is cached by the browser when supported.</p>
     </div>
     <div data-pane="tr" hidden>
       <p class="lbl">Choose a transition for the cut before this clip. Includes the full built-in FFmpeg transition set.</p>
@@ -162,6 +166,8 @@
   <nav id="dockEdit" class="dock" aria-label="Edit the selected clip" hidden>
     <button id="doneBtn"><i data-lucide="check"></i>Done</button>
     <button id="splitBtn" data-for="main"><i data-lucide="scissors"></i>Split</button>
+    <button id="trimStartBtn" data-for="main audio overlay" title="Keep the selected clip from the playhead through its end"><i data-lucide="skip-back"></i>From here</button>
+    <button id="trimEndBtn" data-for="main audio overlay" title="Keep the selected clip from its start up to the playhead"><i data-lucide="skip-forward"></i>To here</button>
     <button id="speedBtn" data-sheet="speed" data-for="main"><i data-lucide="gauge"></i>Speed</button>
     <button id="volBtn" data-sheet="vol" data-for="main audio"><i data-lucide="volume-2"></i>Volume</button>
     <button id="fxBtn" data-sheet="fx" data-for="main"><i data-lucide="sparkles"></i>Filters</button>
