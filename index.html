@@ -112,6 +112,7 @@
         <button id="copyPerfReport" class="wide" type="button">Copy performance report</button>
         <pre id="perfReport" class="perf-report" aria-live="polite">No diagnostics yet. Run an export or generate captions to record stage timings on this device.</pre>
       </details>
+          <p class="lbl">Export runs on this device. Keep MediaY open in the foreground until the MP4 is saved; Android browsers may pause processing when you switch to another app.</p>
     </div>
     <div data-pane="key" hidden>
       <div id="keyColors" class="pills"><button data-c="#00ff00">Green</button><button data-c="#0000ff">Blue</button><button data-c="off">Off</button></div>
@@ -142,7 +143,16 @@
       <p class="lbl">Choose a transition for the cut before this clip. Includes the full built-in FFmpeg transition set.</p>
       <div id="trList" class="pills"></div>
       <div class="tr-duration"><label for="trDuration">Duration <b id="trDurationLabel">0.5 s</b></label><input id="trDuration" class="rng" type="range" min="0.2" max="1.5" step="0.1" value="0.5"></div>
-      <p class="lbl">Transitions are rendered into the exported video. Preview playback currently shows the cut without the transition effect.</p>
+      <section class="tr-preview" aria-label="Transition visual preview">
+        <div id="trPreviewStage" class="tr-preview-stage">
+          <video id="trPreviewBefore" muted playsinline preload="metadata" aria-label="Previous clip preview"></video>
+          <video id="trPreviewAfter" muted playsinline preload="metadata" aria-label="Incoming clip preview"></video>
+          <div id="trPreviewEmpty" class="tr-preview-empty">Select the second clip and choose a transition above.</div>
+        </div>
+        <button id="trPreviewPlay" class="wide" type="button" disabled>Preview selected transition</button>
+        <p id="trPreviewStatus" class="lbl" aria-live="polite">Choose a transition to see an animated preview using your clips.</p>
+      </section>
+      <p class="lbl">The preview shows the selected transition with your clips. Complex FFmpeg effects may look slightly different in the exported MP4.</p>
     </div>
     <div data-pane="vol" hidden>
       <input id="volRange" type="range" min="0" max="200" value="100" aria-label="Volume">
