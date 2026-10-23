@@ -69,6 +69,7 @@ const BASE_PX = 30;
 let PX = BASE_PX; // timeline pixels per second; editable with timeline zoom controls
 const uid = () => Math.random().toString(36).slice(2, 10);
 const fmt = s => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+const MIN_TIMELINE_FRAME = 1 / 30; // Export and timeline edits use a 30 fps project timebase.
 const say = m => ($('status').textContent = m);
 
 // Shared blocking progress UI for long-running media tasks.
@@ -509,9 +510,9 @@ function trimActionContext() {
   const lane = sel.lane, clip = itemOf(sel.id, lane);
   if (!clip) return null;
   const start = startOf(clip, lane), length = lenOf(clip, lane), offset = t - start;
-  // Leave a small usable fragment on both sides; this also prevents accidental zero-length clips.
-  if (!Number.isFinite(start) || !Number.isFinite(length) || length < 0.4 ||
-      !Number.isFinite(offset) || offset < 0.2 || offset > length - 0.2) return null;
+  // Keep at least one output frame on both sides; trims must be frame-precise, not 0.2s-granular.
+  if (!Number.isFinite(start) || !Number.isFinite(length) || length < 2 * MIN_TIMELINE_FRAME ||
+      !Number.isFinite(offset) || offset < MIN_TIMELINE_FRAME || offset > length - MIN_TIMELINE_FRAME) return null;
   const sourceAt = lane === 'overlay'
     ? (clip.type === 'video' ? overlaySourceAt(clip, t) : null)
     : clip.in + offset * (lane === 'main' ? (clip.speed || 1) : 1);
@@ -534,7 +535,7 @@ function trimSelectionAtPlayhead(mode) {
   const context = trimActionContext();
   if (!context) {
     updateTrimButtons();
-    return say('Place the playhead at least 0.2 seconds inside the selected clip to trim it.');
+    return say('Place the playhead at least one frame inside the selected clip to trim it.');
   }
   const { lane, clip, start, offset, sourceAt, at } = context;
   if (mode === 'start') {
