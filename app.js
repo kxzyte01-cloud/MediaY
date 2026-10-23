@@ -48,6 +48,11 @@ function previewFilter(clip) {
   if (a.saturation !== 100) filters.push('saturate(' + (bounded(a.saturation, 0, 200) / 100).toFixed(2) + ')');
   return filters.join(' ');
 }
+function overlaySourceAt(overlay, timelineTime) {
+  // Keep preview, rendered picture-in-picture, and its audio on the same source-time mapping.
+  return Math.max(0, Number(overlay && overlay.sourceIn) || 0) +
+    Math.max(0, Number(timelineTime) - (Number(overlay && overlay.start) || 0));
+}
 function canvasBlendMode(mode) {
   const found = BLEND_OPTIONS.find(item => item[1] === mode);
   return found ? found[2] : 'source-over';
@@ -254,6 +259,10 @@ async function buildObject(o) {
       el = document.createElement('video'); el.src = url; el.muted = true; el.playsInline = true; o.el = el;
       await new Promise((resolve, reject) => { el.onloadeddata = resolve; el.onerror = () => reject(new Error('Could not read this overlay video. Try converting it to MP4.')); });
       el.width = el.videoWidth; el.height = el.videoHeight;
+      const decodedDuration = Number.isFinite(el.duration) && el.duration > 0 ? el.duration :
+        (Number.isFinite(o.srcDur) && o.srcDur > 0 ? o.srcDur : o.dur);
+      o.srcDur = decodedDuration;
+      o.sourceIn = Math.max(0, Math.min(Number(o.sourceIn) || 0, Math.max(0, decodedDuration - 0.001)));
       obj = new fabric.Image(el);
     } else {
       el = await loadOverlayImage(url, o);
@@ -352,6 +361,10 @@ const probe = (url, kind = 'video') => new Promise(resolve => {
 /* ---------- Overlays (PiP, stickers, text) ---------- */
 async function addOverlay(o) {
   o = { id: uid(), layer: S.nextLayer++, dur: 3, start: t, ...o };
+  if (o.type === 'video') {
+    o.sourceIn = Math.max(0, Number(o.sourceIn) || 0);
+    o.srcDur = Number.isFinite(o.srcDur) && o.srcDur > 0 ? o.srcDur : o.dur;
+  }
   S.overlays.push(o);
   const obj = await buildObject(o);
   if (obj && o.type === 'text') anime({ targets: obj, opacity: [0, 1], top: [obj.top + 50, obj.top], duration: 700, easing: 'easeOutElastic(1, .6)', update: () => canvas.requestRenderAll() });
@@ -370,13 +383,25 @@ pipInput.onchange = async () => {
     const rid = pipInput.dataset.replace;
     if (rid) { // Keep the layer's position and timing when replacing an overlay.
       const o = S.overlays.find(x => x.id === rid); if (!o) throw new Error('The selected overlay no longer exists.');
+      const replacementDuration = type === 'video' ? await probe(urls[mediaId], 'video') : 0;
+      if (type === 'video' && (!Number.isFinite(replacementDuration) || replacementDuration <= 0)) {
+        throw new Error('Could not read this replacement overlay video. Try converting it to MP4.');
+      }
       const old = objOf(rid); if (old) canvas.remove(old);
       Object.assign(o, { mediaId, type, name: f.name }); delete o.el; delete o.scaleX; delete o.scaleY;
+      if (type === 'video') {
+        o.sourceIn = 0;
+        o.srcDur = replacementDuration;
+        o.dur = Math.min(Number.isFinite(o.dur) && o.dur > 0 ? o.dur : replacementDuration, replacementDuration);
+      } else {
+        delete o.sourceIn;
+        delete o.srcDur;
+      }
       await buildObject(o); restack(); commit(); refresh(t); say('Overlay replaced.');
     } else {
       const length = type === 'video' ? await probe(urls[mediaId], 'video') : 5;
       if (type === 'video' && (!Number.isFinite(length) || length <= 0)) throw new Error('Could not read this video. Try an MP4 or MOV file.');
-      await addOverlay({ type, mediaId, name: f.name, dur: length });
+      await addOverlay({ type, mediaId, name: f.name, dur: length, ...(type === 'video' ? { sourceIn: 0, srcDur: length } : {}) });
       refresh(t); say('Overlay added. Drag it in the preview to position it.');
     }
   } catch (err) { console.error(err); say('Could not add overlay: ' + (err.message || err)); }
@@ -487,8 +512,11 @@ function trimActionContext() {
   // Leave a small usable fragment on both sides; this also prevents accidental zero-length clips.
   if (!Number.isFinite(start) || !Number.isFinite(length) || length < 0.4 ||
       !Number.isFinite(offset) || offset < 0.2 || offset > length - 0.2) return null;
-  const sourceAt = lane === 'overlay' ? null : clip.in + offset * (lane === 'main' ? (clip.speed || 1) : 1);
+  const sourceAt = lane === 'overlay'
+    ? (clip.type === 'video' ? overlaySourceAt(clip, t) : null)
+    : clip.in + offset * (lane === 'main' ? (clip.speed || 1) : 1);
   if (lane !== 'overlay' && (!Number.isFinite(sourceAt) || sourceAt <= clip.in || sourceAt >= clip.out)) return null;
+  if (lane === 'overlay' && clip.type === 'video' && Number.isFinite(clip.srcDur) && sourceAt >= clip.srcDur) return null;
   return { lane, clip, start, length, offset, sourceAt, at: t };
 }
 function updateTrimButtons() {
@@ -519,6 +547,7 @@ function trimSelectionAtPlayhead(mode) {
       clip.in = sourceAt;
       clip.start = at;
     } else {
+      if (clip.type === 'video') clip.sourceIn = sourceAt;
       clip.start = at;
       clip.dur -= offset;
     }
@@ -746,7 +775,7 @@ function refresh(time) {
     const on = t >= o.start && t <= o.start + o.dur;
     if (on && !ob.visible && o.type === 'text') anime({ targets: ob, opacity: [0, 1], duration: 400, easing: 'easeOutCubic', update: () => canvas.requestRenderAll() });
     ob.visible = on; if (o.key && on && ob.applyFilters) ob.applyFilters();
-    if (o.el && on) { const want = t - o.start; if (playing && o.el.paused) o.el.play().catch(() => {}); if (!playing && Math.abs(o.el.currentTime - want) > 0.1) o.el.currentTime = want; }
+    if (o.el && on) { const want = overlaySourceAt(o, t); if (playing && o.el.paused) o.el.play().catch(() => {}); if (!playing && Math.abs(o.el.currentTime - want) > 0.1) o.el.currentTime = want; }
     else if (o.el && !o.el.paused) o.el.pause();
   });
   canvas.requestRenderAll();
@@ -994,7 +1023,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
         if (o.type === 'video') { // picture-in-picture video: scale, rotate and place it, starting at the right moment
           const n = `ovv${k}`, ob = objOf(o.id), bb = ob.getBoundingRect(true, true), rad = ((ob.angle || 0) * Math.PI / 180).toFixed(4);
           await ff.writeFile(n, new Uint8Array(await files[o.mediaId].arrayBuffer())); names.push(n);
-          inputs.push('-ss', Math.max(0, offset - o.start).toFixed(2), '-i', n);
+          inputs.push('-ss', overlaySourceAt(o, offset).toFixed(2), '-i', n);
           geo[k] = { ox: Math.round(bb.left * K), oy: Math.round(bb.top * K), chain: `${o.start > offset ? `tpad=start_mode=clone:start_duration=${(o.start - offset).toFixed(2)},` : ''}scale=${Math.max(2, Math.round(ob.getScaledWidth() * K))}:${Math.max(2, Math.round(ob.getScaledHeight() * K))}${o.key ? `,chromakey=color=0x${o.key.color.slice(1)}:similarity=${(0.08 + o.key.sim / 100 * 0.32).toFixed(3)}:blend=${((o.key.soft || 0) / 100 * 0.25).toFixed(3)}` : ''}${+rad ? `,format=rgba,rotate=${rad}:ow=rotw(${rad}):oh=roth(${rad}):c=none` : ''},format=rgba,colorchannelmixer=aa=${bounded(o.opacity ?? 1, 0, 1).toFixed(2)}` };
         } else { const n = `ov${k}.png`; await ff.writeFile(n, await overlayPNG(o)); names.push(n); inputs.push('-i', n); }
       }
@@ -1081,7 +1110,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
     if (S.audio.length || ovA.length) { // mix music, voice-over and overlay-video sound on top
       updateBusy('Mixing audio tracks…', 'Combining the original sound, music, and voice-over.', 90, 'Audio');
       say('Mixing audio…');
-      const trk = [...S.audio.map(a => ({ m: a.mediaId, st: a.start, in: a.in, out: a.out, vol: a.vol, fade: a.fade, ov: false })), ...ovA.map(o => ({ m: o.mediaId, st: o.start, in: 0, out: o.dur, ov: true }))], ins = [];
+      const trk = [...S.audio.map(a => ({ m: a.mediaId, st: a.start, in: a.in, out: a.out, vol: a.vol, fade: a.fade, ov: false })), ...ovA.map(o => ({ m: o.mediaId, st: o.start, in: Number(o.sourceIn) || 0, out: (Number(o.sourceIn) || 0) + o.dur, ov: true }))], ins = [];
       for (let k = 0; k < trk.length; k++) { await ff.writeFile(`aud${k}`, new Uint8Array(await files[trk[k].m].arrayBuffer())); ins.push('-i', `aud${k}`); }
       const tryMix = (idx, withOrig) => {
         const parts = idx.map(k => { const a = trk[k], ms = Math.round(a.st * 1000); return `[${k + 1}:a]atrim=start=${a.in}:end=${a.out},asetpts=PTS-STARTPTS${(a.vol ?? 1) !== 1 ? `,volume=${a.vol}` : ''}${a.fade ? ',afade=type=in:duration=1,afade=type=out:start_time=' + Math.max(0, a.out - a.in - 1).toFixed(2) + ':duration=1' : ''},adelay=${ms}|${ms}[a${k}]`; });
