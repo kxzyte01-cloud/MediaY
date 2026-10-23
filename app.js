@@ -397,8 +397,14 @@ let programmaticTimelineScroll = null;
 function scrollTimelineToTime(time) {
   const maxLeft = Math.max(0, tl.scrollWidth - tl.clientWidth);
   const target = Math.max(0, Math.min(maxLeft, Math.max(0, Number(time) || 0) * PX));
-  programmaticTimelineScroll = { left: target, expires: Date.now() + 300 };
-  if (Math.abs(tl.scrollLeft - target) > 0.5) tl.scrollLeft = target;
+  const current = tl.scrollLeft;
+  const moving = Math.abs(current - target) > 0.5;
+  // Only arm a guard when this call changes scroll position or supersedes a still-pending write.
+  // refresh() runs repeatedly during playback, so no-op writes must not suppress real user scrolls.
+  if (moving || programmaticTimelineScroll) {
+    programmaticTimelineScroll = { left: target, expires: Date.now() + 300 };
+    if (moving) tl.scrollLeft = target;
+  }
 }
 const itemOf = (id, lane) => (lane === 'main' ? S.main : lane === 'audio' ? S.audio : S.overlays).find(x => x.id === id);
 const lenOf = (c, lane) => (lane === 'overlay' ? c.dur : lane === 'main' ? dur(c) : c.out - c.in);
