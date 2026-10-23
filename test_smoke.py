@@ -192,6 +192,30 @@ with sync_playwright() as p:
     print('PASS: From here and To here trim overlay timing and duration correctly')
 
     page.evaluate("""() => {
+      S.overlays = [{
+        id:'trim-overlay-video', type:'video', mediaId:'missing-video-overlay',
+        name:'picture-in-picture.mp4', start:2, dur:6, sourceIn:1, srcDur:10, layer:1,
+        el:{currentTime:0, paused:true, play:()=>Promise.resolve(), pause:()=>{}}
+      }];
+      sel = {id:'trim-overlay-video', lane:'overlay'}; t = 4; refresh(t); updateChrome();
+    }""")
+    page.wait_for_timeout(40)
+    assert not page.locator('#trimStartBtn').is_disabled(), 'video overlay From here should enable inside its source range'
+    page.locator('#trimStartBtn').click()
+    video_overlay_start = page.evaluate("({start:S.overlays[0].start,dur:S.overlays[0].dur,sourceIn:S.overlays[0].sourceIn,previewTime:S.overlays[0].el.currentTime})")
+    assert abs(video_overlay_start['start'] - 4) < 0.001 and abs(video_overlay_start['dur'] - 4) < 0.001, video_overlay_start
+    assert abs(video_overlay_start['sourceIn'] - 3) < 0.001 and abs(video_overlay_start['previewTime'] - 3) < 0.001, video_overlay_start
+    assert abs(page.evaluate("overlaySourceAt({sourceIn:3,start:4},6)") - 5) < 0.001, 'export video source mapping should account for prior source trim'
+    assert abs(page.evaluate("overlaySourceAt({sourceIn:3,start:8},6)") - 3) < 0.001, 'export seek before overlay start should preserve its trimmed source-in'
+    page.evaluate("t = 5; refresh(t); updateChrome();")
+    page.wait_for_timeout(40)
+    page.locator('#trimEndBtn').click()
+    video_overlay_end = page.evaluate("({start:S.overlays[0].start,dur:S.overlays[0].dur,sourceIn:S.overlays[0].sourceIn})")
+    assert abs(video_overlay_end['start'] - 4) < 0.001 and abs(video_overlay_end['dur'] - 1) < 0.001, video_overlay_end
+    assert abs(video_overlay_end['sourceIn'] - 3) < 0.001, video_overlay_end
+    print('PASS: video overlay trimming preserves source-in across preview, export seek, and audio mixing')
+
+    page.evaluate("""() => {
       S.main = [{id:'trim-boundary', mediaId:'missing-boundary', name:'boundary.mp4', in:0, out:5, src:5}];
       sel = {id:'trim-boundary', lane:'main'}; t = 0; refresh(t); updateChrome();
     }""")
