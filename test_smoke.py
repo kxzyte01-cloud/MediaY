@@ -206,6 +206,7 @@ with sync_playwright() as p:
         name:'picture-in-picture.mp4', start:2, dur:6, sourceIn:1, srcDur:10, layer:1,
         el:{currentTime:0, paused:true, play:()=>Promise.resolve(), pause:()=>{}}
       }];
+      canvas.clear(); canvas.add({pmId:'trim-overlay-video', layer:1, visible:true});
       sel = {id:'trim-overlay-video', lane:'overlay'}; t = 4; drawTimeline(); refresh(t); updateChrome();
     }""")
     page.wait_for_timeout(40)
