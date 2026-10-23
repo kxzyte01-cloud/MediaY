@@ -48,7 +48,7 @@ A push/merge to `main` builds and uploads an APK artifact but does not publish a
 
 - Physical-device export performance has not yet been benchmarked.
 - No full app-level automated test validates export duration, frame/audio sync, and repeat export after Undo/Redo.
-- Export cancellation and stage-by-stage timing diagnostics are not implemented.
+- Export cancellation is not implemented. Export/caption stage timing diagnostics are available in the Export pane, but physical-device benchmark data is still missing.
 - Whole-media caption audio decoding is still slow for long videos.
 - Multi-thread FFmpeg has not been enabled; it requires cross-origin isolation / `SharedArrayBuffer` verification and may increase memory use.
 - Global ripple-across-tracks, slip, and roll edits are not yet implemented.

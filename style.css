@@ -240,3 +240,11 @@ main, .timeline, .dock, .stage { max-width:100%; overflow-x:hidden; }
   .adjust-control { padding:6px; }
   .blend-modes button { flex-basis:44%; }
 }
+
+
+/* Performance diagnostics and cancellation controls for long-running media tasks. */
+.busy-cancel { width:100%; min-height:44px; margin-top:18px; border:1px solid #ff737b; border-radius:12px; background:#3a1b21; color:#fff; font-weight:700; }
+.busy-cancel:disabled { opacity:.72; cursor:wait; }
+.perf-tools { margin-top:18px; border-top:1px solid var(--line,#37313a); padding-top:12px; }
+.perf-tools > summary { cursor:pointer; min-height:40px; display:flex; align-items:center; font-weight:700; }
+.perf-report { white-space:pre-wrap; overflow-wrap:anywhere; max-height:280px; overflow:auto; padding:12px; border:1px solid var(--line,#37313a); border-radius:10px; background:var(--panel,#121216); color:var(--text,#eee); font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace; user-select:text; }

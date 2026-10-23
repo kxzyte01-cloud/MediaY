@@ -23,6 +23,14 @@ On the current feature branch:
 
 These are correctness gates, not performance benchmarks. Do not claim a quantified speedup yet; measure representative media on a real device.
 
+## Performance reports available in the app
+
+The Export pane now contains **Performance diagnostics** and **Copy performance report**. The report captures the latest export and caption operation in the current app session. It contains timestamps, settings/counts, stage wall times, and FFmpeg command categories; it intentionally excludes media filenames and media content.
+
+For export, compare preflight/media validation, FFmpeg initialization, asset staging + clip encoding, transition rendering, segment joining, audio mixing, output saving, and cleanup. FFmpeg command time categories are a subset of the stage totals, not additive extra time. For captions, compare model/runtime load, audio decode/resampling, inference, caption overlay creation/commit, and resource cleanup.
+
+On captions, the busy progress dialog now exposes **Request cancellation** too; the previous button lived behind the blocking dialog and could not be clicked during generation. Cancellation is cooperative: it is honored when the current model/audio operation or inference chunk returns. It cannot instantly interrupt an in-flight WASM/GPU inference or the model download.
+
 ## Why export can still be slow
 
 MediaY's export path uses FFmpeg WebAssembly in a worker. It encodes main clips individually, applies filters/overlays during each encode, assembles clips, then may mix separate audio tracks. This is substantially more work than a single simple transcode, and repeated clips, many overlays, transitions, high frame rates, and high output resolutions all add cost.
@@ -51,7 +59,7 @@ ASR chunking parameters: https://huggingface.co/docs/transformers.js/api/pipelin
 
 ### P1 — tackle actual wall-clock bottlenecks
 4. Replace full-file caption decode with source-range/streaming audio decode. Evaluate a maintained MP4 demuxer + WebCodecs path and compare it against FFmpeg extraction; preserve container support and Android fallback behavior.
-5. Profile Whisper model download, model initialization, decode, and inference separately. Benchmark WebGPU and WASM on supported devices and languages. Keep the compatibility path and do not make a model/version upgrade without comparing WER/quality, load time, steady-state time, cancellation behavior, and peak memory.
+5. Use the in-app stage report to profile Whisper model download, model initialization, decode, and inference separately. Benchmark WebGPU and WASM on supported devices and languages. Keep the compatibility path and do not make a model/version upgrade without comparing WER/quality, load time, steady-state time, cancellation behavior, and peak memory.
 6. Profile cache hit rate and source staging. Tune the bounded FFmpeg FS budgets from device measurements; test many unique sources and alternating repeated clips to ensure the cache neither increases OOMs nor leaves stale virtual files.
 7. Evaluate `@ffmpeg/core-mt` only after configuring cross-origin isolation for every web deployment and verifying Capacitor/WebView support. Multi-threading can improve throughput but increases CPU/memory pressure and is not a free upgrade.
 

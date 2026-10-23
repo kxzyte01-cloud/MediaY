@@ -106,6 +106,12 @@
       <button id="fastExportBtn" class="wide" type="button">⚡ Fast draft — 480p / 24 fps</button>
       <p class="lbl">Fast draft prioritizes speed for review copies. Choose a higher resolution or frame rate for your final export.</p>
       <button id="goExport" class="primary wide">Export video</button>
+      <details class="perf-tools">
+        <summary>Performance diagnostics</summary>
+        <p class="lbl">Reports separate initialization, encoding, transitions, audio mixing, save, model load, audio decode, and inference time. Copy this report when reporting a slowdown.</p>
+        <button id="copyPerfReport" class="wide" type="button">Copy performance report</button>
+        <pre id="perfReport" class="perf-report" aria-live="polite">No diagnostics yet. Run an export or generate captions to record stage timings on this device.</pre>
+      </details>
     </div>
     <div data-pane="key" hidden>
       <div id="keyColors" class="pills"><button data-c="#00ff00">Green</button><button data-c="#0000ff">Blue</button><button data-c="off">Off</button></div>
@@ -128,7 +134,7 @@
       <select id="capLang" aria-label="Spoken language"></select>
       <label class="chk"><input type="checkbox" id="capTr"> Translate speech to English</label>
       <button id="capGo" class="primary wide">Generate captions</button>
-      <button id="capCancelBtn" class="wide" type="button" hidden>Cancel after current chunk</button>
+      <button id="capCancelBtn" class="wide" type="button" hidden>Request cancellation</button>
       <p class="lbl">Speech is processed in 30-second chunks with progress. Cancelling before completion leaves the project unchanged. The model (about 40 MB) downloads on the first run.</p>
       <p class="lbl">Long or high-resolution videos can still take time to decode. The model is cached by the browser when supported.</p>
     </div>
@@ -201,6 +207,7 @@
       <p id="busyDetail">Please keep this tab open while the task finishes.</p>
       <progress id="busyProgress" max="100"></progress>
       <div class="busy-footer"><span id="busyStage">Processing</span><span id="busyPercent"></span></div>
+      <button id="busyCancel" class="busy-cancel" type="button" hidden>Request cancellation</button>
       <button id="busyDismiss" class="busy-dismiss" type="button" hidden>Close</button>
     </div>
   </div>
