@@ -1827,13 +1827,18 @@ async function commitCaptionDrafts(drafts) {
     throw error;
   }
 }
-$('capCancelBtn').onclick = () => {
+function requestCaptionCancel() {
   if (!captionRunning || captionCancelRequested) return;
   captionCancelRequested = true;
-  $('capCancelBtn').disabled = true;
-  $('capCancelBtn').textContent = 'Cancelling after this chunk…';
-  say('Cancelling captions after the current inference chunk. No partial caption set will be applied.');
-};
+  for (const button of [$('capCancelBtn'), $('busyCancel')]) {
+    if (!button) continue;
+    button.disabled = true;
+    button.textContent = 'Cancellation requested…';
+  }
+  say('Cancellation requested. MediaY will finish the current model/audio operation and discard all generated captions.');
+}
+$('capCancelBtn').onclick = requestCaptionCancel;
+$('busyCancel').onclick = requestCaptionCancel;
 $('capGo').onclick = async () => {
   const audioSelection = sel && sel.lane === 'audio' ? S.audio.find(x => x.id === sel.id) : null;
   const selectedVideo = audioSelection ? null : clipNow();
@@ -1853,7 +1858,11 @@ $('capGo').onclick = async () => {
   btn.disabled = true;
   cancelBtn.hidden = false;
   cancelBtn.disabled = false;
-  cancelBtn.textContent = 'Cancel after current chunk';
+  cancelBtn.textContent = 'Request cancellation';
+  const busyCancelButton = $('busyCancel');
+  busyCancelButton.hidden = false;
+  busyCancelButton.disabled = false;
+  busyCancelButton.textContent = 'Request cancellation';
   captionRunning = true;
   captionCancelRequested = false;
   let captionFailed = false, audioContext = null;
@@ -1930,6 +1939,7 @@ $('capGo').onclick = async () => {
       updateBusy('Adding captions…', `Adding ${chosenDrafts.length} captions to the timeline.`, 95, 'Finishing captions');
       captionMetric.stage('Create caption overlays and commit');
       const count = await commitCaptionDrafts(chosenDrafts);
+      captionOutcome = 'complete';
       refresh(t);
       closeSheet();
       say(`Added ${count} captions from ${used}. Tap a caption to restyle or move it.`);
@@ -1959,7 +1969,10 @@ $('capGo').onclick = async () => {
     btn.disabled = false;
     cancelBtn.hidden = true;
     cancelBtn.disabled = false;
-    cancelBtn.textContent = 'Cancel after current chunk';
+    cancelBtn.textContent = 'Request cancellation';
+    busyCancelButton.hidden = true;
+    busyCancelButton.disabled = false;
+    busyCancelButton.textContent = 'Request cancellation';
     recentMediaYMetrics.captions = captionMetric.finish(captionOutcome);
     renderMediaYPerformanceReport();
     if (!captionFailed) hideBusy();
