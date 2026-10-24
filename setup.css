@@ -63,8 +63,11 @@
 .hm-footer { padding:21px 0 4px; text-align:center; color:#777782; font-size:10px; }
 .su-back { display:block; margin:0 0 22px; background:var(--panel2); }
 #setup { z-index:61; }
-#overlayCanvas, .canvas-container, .canvas-container .upper-canvas { pointer-events:auto; touch-action:none; }
+/* Overlay manipulation: keep touch handles usable while preventing browser gestures from stealing drags. */
+#overlayCanvas, .canvas-container, .canvas-container .upper-canvas { pointer-events:auto; touch-action:none; -webkit-user-select:none; user-select:none; }
 .canvas-container { max-width:100%; }
+.canvas-container .upper-canvas { cursor:grab; }
+.canvas-container .upper-canvas:active { cursor:grabbing; }
 @media (min-width:700px) { #homeScreen { padding-top:38px; } .hm-hero { padding-top:52px; } }
 
 .tr-duration { margin:14px 2px 4px; padding:13px; border:1px solid var(--border); border-radius:14px; background:#101014; }

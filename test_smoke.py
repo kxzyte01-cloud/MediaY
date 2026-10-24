@@ -52,6 +52,11 @@ with sync_playwright() as p:
     page.set_content(html, wait_until='domcontentloaded')
     page.wait_for_selector('#homeScreen:not([hidden])',timeout=10000)
     if page.locator('#consentDialog[open]').count(): page.locator('#consentBtn').click()
+    assert "async function beginNativeExportService()" in app, 'native export-service start hook is missing'
+    assert "async function endNativeExportService()" in app, 'native export-service cleanup hook is missing'
+    assert "await endNativeExportService()" in app, 'native export service is not stopped during export cleanup'
+    assert "foreground-service notification" in html, 'background export guidance is missing'
+    print('PASS: Android export service hooks and foreground-export guidance are present')
     print('PASS: home screen appears on startup')
     page.locator('#hmNew').click(); page.wait_for_selector('#setup:not([hidden])')
     print('PASS: New project opens setup screen')
@@ -63,6 +68,26 @@ with sync_playwright() as p:
     assert page.locator('#blendBtn').count() == 1, 'Blending control is missing'
     transition_count = page.locator('#trList button').count()
     assert transition_count == 59, f'expected None plus 58 FFmpeg transitions, found {transition_count}'
+    assert page.locator('#trPreviewPlay').count() == 1, 'transition preview control is missing'
+    assert page.locator('#trPreviewStage').count() == 1, 'transition preview stage is missing'
+    assert page.evaluate("typeof previewSelectedTransition === 'function'"), 'transition preview handler is missing'
+    assert "transitionPreviewAbortController" in app, 'transition preview cancellation controller is missing'
+    assert "Timed out loading a clip for the transition preview" in app, 'media metadata load has no bounded timeout'
+    assert "Timed out seeking media for the transition preview" in app, 'media seek has no bounded timeout'
+    assert "setTransitionPreviewVideo(before, previous, Math.max(previous.in, previous.out - seconds * (previous.speed || 1)), token, previewSignal)" in app, 'outgoing preview does not receive cancellation state'
+    assert "setTransitionPreviewVideo(after, c, c.in, token, previewSignal)" in app, 'incoming preview does not receive cancellation state'
+    transition_failure = page.evaluate("""async () => {
+      resetTransitionPreview();
+      const token = transitionPreviewToken;
+      const controller = new AbortController();
+      try {
+        await setTransitionPreviewVideo(document.createElement('video'),
+          {mediaId:'missing-transition-preview-media', in:0, out:1}, 0, token, controller.signal);
+        return '';
+      } catch (error) { return error.message; }
+    }""")
+    assert 'missing' in transition_failure.lower(), transition_failure
+    print('PASS: transition preview has cancellation, bounded media waits, and missing-media failure handling')
     old_zoom = page.evaluate('PX')
     page.locator('#tlZoomIn').click()
     assert page.evaluate('PX') == min(90, old_zoom + 6), 'timeline zoom-in control did not change scale'
@@ -268,9 +293,10 @@ with sync_playwright() as p:
     caption_chunks = page.evaluate("""async () => {
       const oldAsr = asr, oldCancel = captionCancelRequested;
       const oldLang = $('capLang').value, oldTranslate = $('capTr').checked;
-      const sizes = [], progress = [];
+      const sizes = [], progress = [], timestampModes = [];
       asr = async (pcm, options) => {
         sizes.push(pcm.length);
+        timestampModes.push(options.return_timestamps);
         return {chunks:[{text:'alpha beta gamma delta', timestamp:[0,1]}]};
       };
       captionCancelRequested = false;
@@ -284,7 +310,7 @@ with sync_playwright() as p:
           sizes, count:drafts.length,
           starts:drafts.map(x => x.start),
           durations:drafts.map(x => x.dur),
-          progress
+          progress, timestampModes
         };
       } finally {
         asr = oldAsr; captionCancelRequested = oldCancel;
@@ -296,7 +322,50 @@ with sync_playwright() as p:
     assert all(abs(a-b) < 0.001 for a,b in zip(caption_chunks['starts'],[5,20,35])), caption_chunks
     assert all(abs(d-.5) < 0.001 for d in caption_chunks['durations']), caption_chunks
     assert caption_chunks['progress'] == [1/3,2/3,1], caption_chunks
-    print('PASS: auto captions stream 30-second inference chunks with correct source-time offsets and progress')
+    assert caption_chunks['timestampModes'] == ['word','word','word'], caption_chunks
+    print('PASS: auto captions stream 30-second inference chunks, request word timestamps, and retain source-time offsets')
+
+    word_aligned = page.evaluate("""async () => {
+      const oldAsr = asr, oldCancel = captionCancelRequested;
+      asr = async (_pcm, options) => {
+        if (options.return_timestamps !== 'word') throw new Error('word timestamps were not requested');
+        return {chunks:[
+          {text:'Hello', timestamp:[1.0,1.1]},
+          {text:'there,', timestamp:[1.3,1.55]},
+          {text:'this', timestamp:[2.0,2.2]},
+          {text:'works.', timestamp:[2.25,2.5]},
+          {text:'Again', timestamp:[4.0,4.3]}
+        ]};
+      };
+      captionCancelRequested = false;
+      try {
+        const drafts = await captionFrom(new Float32Array(CAPTION_SAMPLE_RATE*5),
+          {start:10,in:3,out:8,sp:2,label:'word timing test'}, () => {});
+        return drafts.map(x => ({text:x.text,start:x.start,dur:x.dur}));
+      } finally { asr=oldAsr; captionCancelRequested=oldCancel; }
+    }""")
+    assert len(word_aligned) == 2, word_aligned
+    assert word_aligned[0]['text'] == 'Hello there, this works.', word_aligned
+    assert abs(word_aligned[0]['start'] - 10.5) < 0.001, word_aligned
+    assert abs(word_aligned[0]['dur'] - .75) < 0.001, word_aligned
+    assert word_aligned[1]['text'] == 'Again', word_aligned
+    assert abs(word_aligned[1]['start'] - 12) < 0.001 and abs(word_aligned[1]['dur'] - .15) < 0.001, word_aligned
+    print('PASS: word-level subtitle grouping preserves real speech boundaries and clip-speed mapping')
+
+    caption_persistence = page.evaluate("""async () => {
+      const draft = {id:'persist-caption-check',layer:S.nextLayer,type:'text',text:'Saved caption',style:0,start:1.25,dur:.75,top:250};
+      const count = await commitCaptionDrafts([draft]);
+      const checkpoint = await db.projects.get('current');
+      const persisted = checkpoint && normalizeState(checkpoint.state);
+      const stored = persisted && persisted.overlays.find(x => x.id === draft.id);
+      await restore(checkpoint.state);
+      const restored = S.overlays.find(x => x.id === draft.id);
+      return {count, stored:stored && {start:stored.start,dur:stored.dur}, restored:restored && {text:restored.text,start:restored.start,dur:restored.dur}};
+    }""")
+    assert caption_persistence['count'] == 1, caption_persistence
+    assert caption_persistence['stored'] == {'start':1.25,'dur':.75}, caption_persistence
+    assert caption_persistence['restored'] == {'text':'Saved caption','start':1.25,'dur':.75}, caption_persistence
+    print('PASS: generated captions are saved, verified, and survive project-state restoration')
 
     caption_cancel = page.evaluate("""async () => {
       const oldAsr = asr, oldCancel = captionCancelRequested;
