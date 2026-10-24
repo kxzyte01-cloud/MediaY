@@ -222,7 +222,22 @@ const total = () => S.main.reduce((a, c) => a + dur(c), 0);
 const video = $('sourceVideo');
 
 /* ---------- Fabric canvas ---------- */
-const canvas = new fabric.Canvas('overlayCanvas', { enableRetinaScaling: false, preserveObjectStacking: true, selection: false });
+const canvas = new fabric.Canvas('overlayCanvas', { enableRetinaScaling: false, preserveObjectStacking: true, selection: false, perPixelTargetFind: false, targetFindTolerance: 12, stopContextMenu: true });
+// Keep transform handles physically large on phones even though the editor uses a
+// high-resolution logical canvas scaled down to the responsive preview.
+const OVERLAY_HANDLE_CSS_PX = 44;
+function syncOverlayControls() {
+  const displayWidth = canvas.upperCanvasEl && canvas.upperCanvasEl.getBoundingClientRect().width;
+  const logicalWidth = canvas.getWidth();
+  if (!displayWidth || !logicalWidth) return;
+  const handleSize = Math.max(22, Math.min(180, OVERLAY_HANDLE_CSS_PX * logicalWidth / displayWidth));
+  for (const obj of canvas.getObjects()) {
+    obj.set({ cornerSize: handleSize, touchCornerSize: handleSize, padding: Math.max(8, handleSize * 0.12),
+      transparentCorners: false, cornerColor: '#ff4b55', cornerStrokeColor: '#ffffff', borderColor: '#ff4b55',
+      borderScaleFactor: Math.max(1.5, handleSize / 22) });
+  }
+  canvas.requestRenderAll();
+}
 Object.assign(canvas.wrapperEl.style, { position: 'absolute', inset: '0', width: '100%', height: '100%', maxWidth: '100%', maxHeight: '100%' });
 // Fabric creates a fixed-pixel wrapper by default. Force it to follow the responsive preview frame.
 canvas.wrapperEl.style.zIndex = '2';
@@ -234,6 +249,7 @@ function sizeCanvas() {
   $('previewFrame').style.width = `min(100%, calc(100cqh * ${w / h}))`;
   $('previewFrame').style.maxWidth = 'none';
   $('aspectRatio').value = S.ratio; markRatio();
+  requestAnimationFrame(syncOverlayControls);
 }
 // Locked layering: every overlay keeps its own layer number. Stack order always comes from it.
 function restack() {
@@ -273,10 +289,10 @@ async function buildObject(o, { restackAfter = true } = {}) {
     if (o.scaleX == null) { o.scaleX = o.scaleY = (w * 0.4) / obj.width; }
   }
   Object.assign(obj, { pmId: o.id, layer: o.layer });
-  obj.set({ left: o.left ?? w * 0.1, top: o.top ?? h * 0.1, scaleX: o.scaleX ?? 1, scaleY: o.scaleY ?? 1, angle: o.angle || 0, opacity: bounded(o.opacity ?? 1, 0, 1), globalCompositeOperation: canvasBlendMode(o.blend || 'normal'), cornerSize: 22, transparentCorners: false });
+  obj.set({ left: o.left ?? w * 0.1, top: o.top ?? h * 0.1, scaleX: o.scaleX ?? 1, scaleY: o.scaleY ?? 1, angle: o.angle || 0, opacity: bounded(o.opacity ?? 1, 0, 1), globalCompositeOperation: canvasBlendMode(o.blend || 'normal'), cornerSize: 22, transparentCorners: false, cornerColor: '#ff4b55', cornerStrokeColor: '#ffffff', borderColor: '#ff4b55', lockUniScaling: o.type !== 'text', lockScalingFlip: true, centeredScaling: false, perPixelTargetFind: false });
   Object.assign(o, { left: obj.left, top: obj.top, scaleX: obj.scaleX, scaleY: obj.scaleY });
   if (o.key && obj.applyFilters) { obj.filters = [keyFilter(o.key)]; obj.applyFilters(); }
-  canvas.add(obj); if (restackAfter) restack(); return obj;
+  canvas.add(obj); syncOverlayControls(); if (restackAfter) restack(); return obj;
 }
 async function rebuildCanvas() {
   canvas.clear(); sizeCanvas();
