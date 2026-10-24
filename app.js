@@ -1939,10 +1939,23 @@ $('capGo').onclick = async () => {
       updateBusy('Adding captions…', `Adding ${chosenDrafts.length} captions to the timeline.`, 95, 'Finishing captions');
       captionMetric.stage('Create caption overlays and commit');
       const count = await commitCaptionDrafts(chosenDrafts);
-      captionOutcome = 'complete';
       refresh(t);
-      closeSheet();
-      say(`Added ${count} captions from ${used}. Tap a caption to restyle or move it.`);
+      try {
+        // Persist generated captions before reporting success. The normal debounced
+        // autosave remains enabled, but it must not be the only save attempt for
+        // a long-running generation task that users may immediately leave.
+        await saveProject();
+        captionOutcome = 'complete';
+        closeSheet();
+        say(`Added ${count} captions from ${used} and saved the project. Tap a caption to restyle or move it.`);
+      } catch (saveError) {
+        captionOutcome = 'save failed';
+        captionFailed = true;
+        const saveMessage = 'Captions were added to the current session, but the project could not be saved: ' +
+          (saveError && saveError.message || saveError) + '. Keep the app open and use Save to retry.';
+        say(saveMessage);
+        showBusyError('Captions added, save failed', saveMessage);
+      }
     } else {
       captionOutcome = 'no speech detected';
       say(S.audio.length || audioSelection ? 'No speech was detected in the selected media.' : 'No audible speech was detected. Add or record audio, then try again.');
