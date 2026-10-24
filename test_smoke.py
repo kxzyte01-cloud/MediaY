@@ -71,6 +71,23 @@ with sync_playwright() as p:
     assert page.locator('#trPreviewPlay').count() == 1, 'transition preview control is missing'
     assert page.locator('#trPreviewStage').count() == 1, 'transition preview stage is missing'
     assert page.evaluate("typeof previewSelectedTransition === 'function'"), 'transition preview handler is missing'
+    assert "transitionPreviewAbortController" in app, 'transition preview cancellation controller is missing'
+    assert "Timed out loading a clip for the transition preview" in app, 'media metadata load has no bounded timeout'
+    assert "Timed out seeking media for the transition preview" in app, 'media seek has no bounded timeout'
+    assert "setTransitionPreviewVideo(before, previous, Math.max(previous.in, previous.out - seconds * (previous.speed || 1)), token, previewSignal)" in app, 'outgoing preview does not receive cancellation state'
+    assert "setTransitionPreviewVideo(after, c, c.in, token, previewSignal)" in app, 'incoming preview does not receive cancellation state'
+    transition_failure = page.evaluate("""async () => {
+      resetTransitionPreview();
+      const token = transitionPreviewToken;
+      const controller = new AbortController();
+      try {
+        await setTransitionPreviewVideo(document.createElement('video'),
+          {mediaId:'missing-transition-preview-media', in:0, out:1}, 0, token, controller.signal);
+        return '';
+      } catch (error) { return error.message; }
+    }""")
+    assert 'missing' in transition_failure.lower(), transition_failure
+    print('PASS: transition preview has cancellation, bounded media waits, and missing-media failure handling')
     old_zoom = page.evaluate('PX')
     page.locator('#tlZoomIn').click()
     assert page.evaluate('PX') == min(90, old_zoom + 6), 'timeline zoom-in control did not change scale'
