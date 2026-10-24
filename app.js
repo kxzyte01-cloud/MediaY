@@ -227,11 +227,17 @@ const canvas = new fabric.Canvas('overlayCanvas', { enableRetinaScaling: false, 
 // high-resolution logical canvas scaled down to the responsive preview.
 const OVERLAY_HANDLE_CSS_PX = 44;
 function syncOverlayControls() {
+  // Caption persistence and other non-browser tests may provide a canvas-compatible
+  // stub that does not implement Fabric's sizing/selection APIs. Overlay handles are
+  // optional in those contexts; never let UI sizing break the underlying edit action.
+  if (!canvas || typeof canvas.getWidth !== 'function' ||
+      typeof canvas.getObjects !== 'function' || typeof canvas.requestRenderAll !== 'function') return;
   const displayWidth = canvas.upperCanvasEl && canvas.upperCanvasEl.getBoundingClientRect().width;
   const logicalWidth = canvas.getWidth();
   if (!displayWidth || !logicalWidth) return;
   const handleSize = Math.max(22, Math.min(180, OVERLAY_HANDLE_CSS_PX * logicalWidth / displayWidth));
   for (const obj of canvas.getObjects()) {
+    if (!obj || typeof obj.set !== 'function') continue;
     obj.set({ cornerSize: handleSize, touchCornerSize: handleSize, padding: Math.max(8, handleSize * 0.12),
       transparentCorners: false, cornerColor: '#ff4b55', cornerStrokeColor: '#ffffff', borderColor: '#ff4b55',
       borderScaleFactor: Math.max(1.5, handleSize / 22) });
