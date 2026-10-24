@@ -238,6 +238,14 @@ function syncOverlayControls() {
   }
   canvas.requestRenderAll();
 }
+// Recalculate handle hit areas when the preview changes size (rotation, split-screen,
+// responsive layout), without rebuilding or moving any overlay objects.
+if (typeof ResizeObserver !== 'undefined') {
+  const overlayResizeObserver = new ResizeObserver(() => requestAnimationFrame(syncOverlayControls));
+  overlayResizeObserver.observe($('previewFrame'));
+} else {
+  window.addEventListener('resize', () => requestAnimationFrame(syncOverlayControls), { passive: true });
+}
 Object.assign(canvas.wrapperEl.style, { position: 'absolute', inset: '0', width: '100%', height: '100%', maxWidth: '100%', maxHeight: '100%' });
 // Fabric creates a fixed-pixel wrapper by default. Force it to follow the responsive preview frame.
 canvas.wrapperEl.style.zIndex = '2';
