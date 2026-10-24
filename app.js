@@ -2139,7 +2139,21 @@ $('trDuration').onchange = () => { const c = clipNow(); if (c && c.tr) { commit(
 
 let transitionPreviewToken = 0;
 let transitionPreviewAnimations = [];
+let transitionPreviewAbortController = null;
+function transitionPreviewAbortError() {
+  const error = new Error('Transition preview was superseded.');
+  error.name = 'AbortError';
+  return error;
+}
+function assertTransitionPreviewCurrent(token, signal) {
+  if (token !== transitionPreviewToken || signal.aborted) throw transitionPreviewAbortError();
+}
 function resetTransitionPreview() {
+  transitionPreviewToken++;
+  if (transitionPreviewAbortController) {
+    transitionPreviewAbortController.abort();
+    transitionPreviewAbortController = null;
+  }
   transitionPreviewAnimations.forEach(animation => { try { animation.cancel(); } catch (_) {} });
   transitionPreviewAnimations = [];
   const before = $('trPreviewBefore'), after = $('trPreviewAfter');
@@ -2151,40 +2165,72 @@ function resetTransitionPreview() {
   });
   after.style.opacity = '0';
 }
-async function setTransitionPreviewVideo(element, clip, sourceTime) {
+async function setTransitionPreviewVideo(element, clip, sourceTime, token, signal) {
   const url = await loadMedia(clip.mediaId);
+  assertTransitionPreviewCurrent(token, signal);
   if (!url) throw new Error('A clip needed for this transition preview is missing.');
-  if (element.dataset.mediaId !== clip.mediaId || !element.readyState) {
+  if (element.dataset.mediaId !== clip.mediaId || element.readyState < 1) {
     await new Promise((resolve, reject) => {
+      let settled = false;
       const cleanup = () => {
+        clearTimeout(timer);
         element.removeEventListener('loadedmetadata', ready);
         element.removeEventListener('error', failed);
+        signal.removeEventListener('abort', aborted);
       };
-      const ready = () => { cleanup(); resolve(); };
-      const failed = () => { cleanup(); reject(new Error('Could not load a clip for the transition preview.')); };
+      const finish = error => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        error ? reject(error) : resolve();
+      };
+      const ready = () => finish();
+      const failed = () => finish(new Error('Could not load a clip for the transition preview.'));
+      const aborted = () => finish(transitionPreviewAbortError());
+      const timer = setTimeout(() => finish(new Error('Timed out loading a clip for the transition preview. Check that the media is available and try again.')), 10000);
       element.addEventListener('loadedmetadata', ready, { once: true });
       element.addEventListener('error', failed, { once: true });
+      signal.addEventListener('abort', aborted, { once: true });
       element.dataset.mediaId = clip.mediaId;
       element.src = url;
       element.load();
+      if (signal.aborted) aborted();
     });
   }
-  const duration = Number.isFinite(element.duration) ? element.duration : clip.out;
-  const target = Math.max(0, Math.min(sourceTime, Math.max(0, duration - 0.04)));
-  await new Promise(resolve => {
-    let finished = false;
-    const done = () => {
-      if (finished) return;
-      finished = true;
+  assertTransitionPreviewCurrent(token, signal);
+  if (!Number.isFinite(element.duration) || element.duration <= 0) {
+    throw new Error('The selected clip has no usable duration for transition preview.');
+  }
+  const target = Math.max(0, Math.min(Number(sourceTime) || 0, Math.max(0, element.duration - 0.04)));
+  if (Math.abs((element.currentTime || 0) - target) < 0.03) return;
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
       clearTimeout(timer);
-      element.removeEventListener('seeked', done);
-      resolve();
+      element.removeEventListener('seeked', seeked);
+      signal.removeEventListener('abort', aborted);
     };
-    const timer = setTimeout(done, 450);
-    element.addEventListener('seeked', done, { once: true });
-    if (Math.abs((element.currentTime || 0) - target) < 0.03) done();
-    else element.currentTime = target;
+    const finish = error => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      error ? reject(error) : resolve();
+    };
+    const seeked = () => {
+      if (Math.abs(element.currentTime - target) <= 0.12) finish();
+    };
+    const aborted = () => finish(transitionPreviewAbortError());
+    const timer = setTimeout(() => finish(new Error('Timed out seeking media for the transition preview. Try again or re-import the affected clip.')), 2500);
+    element.addEventListener('seeked', seeked);
+    signal.addEventListener('abort', aborted, { once: true });
+    try {
+      element.currentTime = target;
+      if (signal.aborted) aborted();
+    } catch (error) {
+      finish(new Error('Could not seek media for the transition preview: ' + (error.message || error)));
+    }
   });
+  assertTransitionPreviewCurrent(token, signal);
 }
 async function previewSelectedTransition() {
   const c = clipNow(), index = c ? S.main.indexOf(c) : -1;
@@ -2192,8 +2238,11 @@ async function previewSelectedTransition() {
     say('Select a transition on the second clip, then preview it.');
     return;
   }
-  const token = ++transitionPreviewToken;
   resetTransitionPreview();
+  const token = transitionPreviewToken;
+  const previewController = new AbortController();
+  const previewSignal = previewController.signal;
+  transitionPreviewAbortController = previewController;
   const before = $('trPreviewBefore'), after = $('trPreviewAfter');
   const previous = S.main[index - 1];
   const seconds = Math.min(c.trDur || 0.5, dur(previous) * 0.45, dur(c) * 0.45);
@@ -2202,8 +2251,8 @@ async function previewSelectedTransition() {
   $('trPreviewStatus').textContent = 'Preparing preview…';
   try {
     await Promise.all([
-      setTransitionPreviewVideo(before, previous, Math.max(previous.in, previous.out - seconds * (previous.speed || 1))),
-      setTransitionPreviewVideo(after, c, c.in)
+      setTransitionPreviewVideo(before, previous, Math.max(previous.in, previous.out - seconds * (previous.speed || 1)), token, previewSignal),
+      setTransitionPreviewVideo(after, c, c.in, token, previewSignal)
     ]);
     if (token !== transitionPreviewToken) return;
     before.muted = after.muted = true;
@@ -2255,10 +2304,12 @@ async function previewSelectedTransition() {
     after.style.clipPath = '';
     $('trPreviewStatus').textContent = 'Preview complete. The exported FFmpeg transition is authoritative; complex effects may differ slightly here.';
   } catch (error) {
-    if (token === transitionPreviewToken) {
+    if (token === transitionPreviewToken && error.name !== 'AbortError') {
       $('trPreviewStatus').textContent = error.message || 'Could not preview this transition.';
       say(error.message || 'Could not preview this transition.');
     }
+  } finally {
+    if (transitionPreviewAbortController === previewController) transitionPreviewAbortController = null;
   }
 }
 $('trPreviewPlay').onclick = previewSelectedTransition;
