@@ -71,6 +71,11 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 const fmt = s => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 const TIMELINE_FPS = 30; // One authoritative project/export timebase.
 const MIN_TIMELINE_FRAME = 1 / TIMELINE_FPS;
+// Timeline edit boundaries are stored as integer output frames. Seconds are converted
+// only at API/media boundaries, avoiding cumulative floating-point trim drift.
+const timelineFrame = seconds => Math.round(Number(seconds) * TIMELINE_FPS);
+const timelineSeconds = frame => frame / TIMELINE_FPS;
+const snapTimelineTime = seconds => timelineSeconds(timelineFrame(seconds));
 const say = m => ($('status').textContent = m);
 
 // Shared blocking progress UI for long-running media tasks.
@@ -540,16 +545,39 @@ function trimActionContext() {
   if (!sel) return null;
   const lane = sel.lane, clip = itemOf(sel.id, lane);
   if (!clip) return null;
-  const start = startOf(clip, lane), length = lenOf(clip, lane), offset = t - start;
-  // Keep at least one output frame on both sides; trims must be frame-precise, not 0.2s-granular.
-  if (!Number.isFinite(start) || !Number.isFinite(length) || length < 2 * MIN_TIMELINE_FRAME ||
-      !Number.isFinite(offset) || offset < MIN_TIMELINE_FRAME || offset > length - MIN_TIMELINE_FRAME) return null;
+
+  const rawStart = startOf(clip, lane);
+  const rawLength = lenOf(clip, lane);
+  if (!Number.isFinite(rawStart) || !Number.isFinite(rawLength) || rawLength <= 0) return null;
+
+  // Use integer output-frame boundaries for the whole trim transaction. A playhead
+  // between frames resolves to the nearest frame, consistently for buttons and edits.
+  const startFrame = timelineFrame(rawStart);
+  const endFrame = timelineFrame(rawStart + rawLength);
+  const atFrame = timelineFrame(t);
+  const lengthFrames = endFrame - startFrame;
+  const offsetFrames = atFrame - startFrame;
+  if (lengthFrames < 2 || offsetFrames < 1 || offsetFrames >= lengthFrames) return null;
+
+  const start = timelineSeconds(startFrame);
+  const at = timelineSeconds(atFrame);
+  const length = timelineSeconds(lengthFrames);
+  const offset = timelineSeconds(offsetFrames);
+  const speed = lane === 'main' ? Number(clip.speed || 1) : 1;
+  if (!Number.isFinite(speed) || speed <= 0) return null;
+
   const sourceAt = lane === 'overlay'
-    ? (clip.type === 'video' ? overlaySourceAt(clip, t) : null)
-    : clip.in + offset * (lane === 'main' ? (clip.speed || 1) : 1);
-  if (lane !== 'overlay' && (!Number.isFinite(sourceAt) || sourceAt <= clip.in || sourceAt >= clip.out)) return null;
-  if (lane === 'overlay' && clip.type === 'video' && Number.isFinite(clip.srcDur) && sourceAt >= clip.srcDur) return null;
-  return { lane, clip, start, length, offset, sourceAt, at: t };
+    ? (clip.type === 'video' ? overlaySourceAt(clip, at) : null)
+    : Number(clip.in) + offset * speed;
+
+  if (lane !== 'overlay' &&
+      (!Number.isFinite(sourceAt) || sourceAt <= Number(clip.in) ||
+       sourceAt >= Number(clip.out))) return null;
+  if (lane === 'overlay' && clip.type === 'video' &&
+      (!Number.isFinite(sourceAt) || sourceAt <= Number(clip.sourceIn || 0) ||
+       (Number.isFinite(clip.srcDur) && sourceAt >= clip.srcDur))) return null;
+
+  return { lane, clip, start, length, offset, sourceAt, at, startFrame, atFrame, endFrame };
 }
 function updateTrimButtons() {
   const enabled = !!trimActionContext();
@@ -569,6 +597,8 @@ function trimSelectionAtPlayhead(mode) {
     return say('Place the playhead at least one frame inside the selected clip to trim it.');
   }
   const { lane, clip, start, offset, sourceAt, at } = context;
+  // Freeze the playhead to the same output-frame boundary used by validation.
+  t = at;
   if (mode === 'start') {
     if (lane === 'main') {
       // The main video lane is a ripple-joined sequence: remove the lead-in and start
