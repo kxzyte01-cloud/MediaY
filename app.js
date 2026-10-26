@@ -227,11 +227,17 @@ const canvas = new fabric.Canvas('overlayCanvas', { enableRetinaScaling: false, 
 // high-resolution logical canvas scaled down to the responsive preview.
 const OVERLAY_HANDLE_CSS_PX = 44;
 function syncOverlayControls() {
+  // Caption persistence and other non-browser tests may provide a canvas-compatible
+  // stub that does not implement Fabric's sizing/selection APIs. Overlay handles are
+  // optional in those contexts; never let UI sizing break the underlying edit action.
+  if (!canvas || typeof canvas.getWidth !== 'function' ||
+      typeof canvas.getObjects !== 'function' || typeof canvas.requestRenderAll !== 'function') return;
   const displayWidth = canvas.upperCanvasEl && canvas.upperCanvasEl.getBoundingClientRect().width;
   const logicalWidth = canvas.getWidth();
   if (!displayWidth || !logicalWidth) return;
   const handleSize = Math.max(22, Math.min(180, OVERLAY_HANDLE_CSS_PX * logicalWidth / displayWidth));
   for (const obj of canvas.getObjects()) {
+    if (!obj || typeof obj.set !== 'function') continue;
     obj.set({ cornerSize: handleSize, touchCornerSize: handleSize, padding: Math.max(8, handleSize * 0.12),
       transparentCorners: false, cornerColor: '#ff4b55', cornerStrokeColor: '#ffffff', borderColor: '#ff4b55',
       borderScaleFactor: Math.max(1.5, handleSize / 22) });
@@ -277,6 +283,7 @@ async function buildObject(o, { restackAfter = true } = {}) {
   const [w, h] = RATIOS[S.ratio];
   let obj;
   if (o.type === 'text') {
+    await ensureFontsReady();
     obj = new fabric.Textbox(o.text, { width: w * 0.8, fontFamily: 'DM Sans', fontWeight: 700, fontSize: 56, textAlign: 'center', ...TS[o.style || 0]() });
   } else {
     const url = await loadMedia(o.mediaId); if (!url) return;
@@ -348,6 +355,126 @@ $('saveBtn').onclick = async () => {
   activeProjectName = name.slice(0, 80);
   try { await saveProject(); } catch (err) { console.error(err); say('Could not save this project: ' + (err.message || err)); }
 };
+
+/* ---------- Runtime guard: heavy-job safety, background keep-alive, in-place project refresh ---------- */
+let exportInProgress = 0;
+let fontsReadyPromise = null;
+// Canvas text is measured the moment it is created. If the web font is still loading, every caption is
+// measured with a fallback font and stays mis-sized until the project is reopened. Wait for the font once.
+function ensureFontsReady() {
+  if (fontsReadyPromise) return fontsReadyPromise;
+  fontsReadyPromise = (async () => {
+    if (!document.fonts || typeof document.fonts.load !== 'function') return;
+    try {
+      await Promise.race([
+        Promise.all([document.fonts.load('700 56px "DM Sans"'), document.fonts.ready]),
+        new Promise(resolve => setTimeout(resolve, 2500))
+      ]);
+    } catch (_) { /* offline or blocked: continue with the fallback font */ }
+  })();
+  return fontsReadyPromise;
+}
+
+// Reference-counted wrapper around the native Android foreground service (MediaYExportService), so that
+// export and caption jobs share one service, start/stop calls never overlap, and the last job stops it.
+const Background = (() => {
+  let holders = 0, running = false;
+  let chain = Promise.resolve();
+  const queue = job => (chain = chain.then(job, job));
+  return {
+    begin() {
+      holders++;
+      return queue(async () => {
+        if (running) return true;
+        if (holders <= 0) return false; // the job already ended while an earlier call was in flight
+        running = await beginNativeExportService();
+        return running;
+      });
+    },
+    end() {
+      holders = Math.max(0, holders - 1);
+      return queue(async () => {
+        if (holders > 0 || !running) return;
+        running = false;
+        await endNativeExportService();
+      });
+    },
+    get active() { return running; }
+  };
+})();
+
+// An export that finishes while the app is hidden cannot open the Android share sheet; remember it and
+// open it the moment the person returns.
+let pendingExportShare = null, appStateActive = null;
+const appInBackground = () => document.visibilityState === 'hidden' || appStateActive === false;
+async function deliverPendingExport() {
+  if (!pendingExportShare || appInBackground()) return;
+  const share = pendingExportShare; pendingExportShare = null;
+  try { await share(); say('Your exported video is ready to save or share.'); }
+  catch (error) { say('Could not open the share sheet: ' + (error && error.message || error)); }
+}
+document.addEventListener('visibilitychange', () => { deliverPendingExport(); });
+try {
+  if (window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.App && Capacitor.Plugins.App.addListener) {
+    Capacitor.Plugins.App.addListener('appStateChange', state => { appStateActive = !!(state && state.isActive); deliverPendingExport(); });
+  }
+} catch (_) { /* not running inside the Android shell */ }
+
+// Frees the two big memory users once a job is finished. Both reload automatically on next use.
+async function releaseHeavyResources({ includeSpeech = true } = {}) {
+  const released = [];
+  if (asr && includeSpeech) {
+    const model = asr; asr = null;
+    try { if (typeof model.dispose === 'function') await model.dispose(); } catch (_) { /* already gone */ }
+    released.push('speech model');
+  }
+  if (ff && !ffLoading && !exportInProgress) { disposeFFmpeg(); released.push('video engine'); }
+  return released;
+}
+function dropMediaCaches() {
+  Object.values(audios).forEach(el => { try { el.pause(); el.removeAttribute('src'); el.load(); } catch (_) {} });
+  Object.keys(audios).forEach(k => delete audios[k]);
+  Object.keys(audioLoads).forEach(k => delete audioLoads[k]);
+  try { video.pause(); } catch (_) {}
+  delete video.dataset.mid; video.removeAttribute('src'); try { video.load(); } catch (_) {}
+  for (const id of Object.keys(urls)) { try { URL.revokeObjectURL(urls[id]); } catch (_) {} delete urls[id]; }
+  for (const id of Object.keys(files)) delete files[id];
+}
+// Does by itself what closing and reopening the app and the project used to do: saves the project, frees the
+// heavy engines, forgets cached media handles, then rebuilds preview and timeline from the saved copy.
+let reopenInFlight = null;
+function reopenProjectInPlace(reason = 'generation') {
+  if (reopenInFlight) return reopenInFlight;
+  reopenInFlight = (async () => {
+    try {
+      if (playing) stop();
+      const keepTime = Math.min(t, total());
+      clearTimeout(saveTimer);
+      await saveProject();
+      const row = await db.projects.get('current');
+      if (!row || typeof row.state !== 'string') throw new Error('The saved copy could not be read back.');
+      const next = normalizeState(row.state); // parsed before anything live is touched
+      if (next.main.length !== S.main.length || next.audio.length !== S.audio.length || next.overlays.length !== S.overlays.length) {
+        throw new Error('The saved copy does not match the project on screen.');
+      }
+      await releaseHeavyResources();
+      dropMediaCaches();
+      S = next; sel = null;
+      await rebuildCanvas();
+      drawTimeline();
+      if (S.main.length) await seek(keepTime);
+      refresh(keepTime);
+      if (S.main.length) setTimeout(preloadEngine, 4000);
+      return { ok: true, reason };
+    } catch (error) {
+      console.warn('In-place project refresh skipped:', error);
+      return { ok: false, reason, error };
+    } finally {
+      reopenInFlight = null;
+    }
+  })();
+  return reopenInFlight;
+}
 
 /* ---------- Import ---------- */
 $('importBtn').onclick = () => { $('mediaInput').accept = 'video/*,image/*,audio/*'; $('mediaInput').click(); };
@@ -805,7 +932,7 @@ function refresh(time) {
   S.overlays.forEach(o => {
     const ob = objOf(o.id); if (!ob) return;
     const on = t >= o.start && t <= o.start + o.dur;
-    if (on && !ob.visible && o.type === 'text') anime({ targets: ob, opacity: [0, 1], duration: 400, easing: 'easeOutCubic', update: () => canvas.requestRenderAll() });
+    if (on && !ob.visible && o.type === 'text' && !o.caption) anime({ targets: ob, opacity: [0, 1], duration: 400, easing: 'easeOutCubic', update: () => canvas.requestRenderAll() });
     ob.visible = on; if (o.key && on && ob.applyFilters) ob.applyFilters();
     if (o.el && on) { const want = overlaySourceAt(o, t); if (playing && o.el.paused) o.el.play().catch(() => {}); if (!playing && Math.abs(o.el.currentTime - want) > 0.1) o.el.currentTime = want; }
     else if (o.el && !o.el.paused) o.el.pause();
@@ -1112,7 +1239,12 @@ async function saveVideo(data) {
       if (i === 0) await Filesystem.writeFile(opts); else await Filesystem.appendFile(opts);
     }
     const { uri } = await Filesystem.getUri({ path: name, directory: 'CACHE' });
-    await Share.share({ title: 'ProjectMedia Y video', url: uri, dialogTitle: 'Save or share your video' });
+    const openShare = () => Share.share({ title: 'ProjectMedia Y video', url: uri, dialogTitle: 'Save or share your video' });
+    if (appInBackground()) { // Android will not open the share sheet from the background: finish it on return
+      pendingExportShare = openShare;
+      return 'deferred';
+    }
+    await openShare();
     return;
   }
   const url = URL.createObjectURL(new Blob([data], { type: 'video/mp4' }));
@@ -1142,8 +1274,9 @@ async function endNativeExportService() {
 }
 
 const EXP = { res: 720, fps: TIMELINE_FPS };
-$('goExport').onclick = async (_event, recoveryAttempt = 0) => {
+const runExport = async (_event, recoveryAttempt = 0) => {
   if (!S.main.length) return say('Nothing to export yet.');
+  if (captionRunning) return say('Captions are still being generated. Wait for them to finish, then export.');
   const exportMetric = createMediaYMetric('Export', {
     resolution: EXP.res, fps: EXP.fps,
     mainClips: S.main.length, audioTracks: S.audio.length, overlays: S.overlays.length
@@ -1153,7 +1286,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
   exportMetric.stage('Validate project and media');
   if (playing) stop();
   closeSheet(); const btn = $('goExport'); btn.disabled = true;
-  let exportFailed = false;
+  let exportFailed = false, delivered = null;
   ffLogs = [];
   const exportWorkspaceFiles = new Set();
   const exportSourceCache = new Map();
@@ -1190,7 +1323,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       }
     };
     document.addEventListener('visibilitychange', exportVisibilityHandler);
-    nativeExportServiceStarted = await beginNativeExportService();
+    nativeExportServiceStarted = await Background.begin();
     if (nativeExportServiceStarted) {
       updateBusy('Preparing your export…', 'An Android export notification is active. You can switch apps while rendering runs; return to MediaY if progress pauses.', 1, 'Preparing');
     } else {
@@ -1434,10 +1567,11 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
     exportMetric.stage('Read and save final MP4');
     updateBusy('Preparing your MP4…', 'Writing the final video file.', 97, 'Finishing');
     const data = await ff.readFile(out);
-    await saveVideo(data);
+    const delivery = await saveVideo(data);
+    delivered = delivery || 'shared';
     ['joined.mp4', 'final.mp4', 'list.txt'].forEach(n => ff.deleteFile(n).catch(() => {}));
     exportOutcome = 'complete';
-    say('Export complete — your MP4 is ready.');
+    say(delivery === 'deferred' ? 'Export finished in the background. Open MediaY to save your MP4.' : 'Export complete — your MP4 is ready.');
   } catch (err) {
     exportMetric.stage('Handle export error or recovery');
     console.error(err);
@@ -1481,7 +1615,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       try { await exportWakeLock.release(); } catch (_) {}
       exportWakeLock = null;
     }
-    if (nativeExportServiceStarted) await endNativeExportService();
+    await Background.end(); // always balanced with Background.begin above
     const report = exportMetric.finish(exportOutcome);
     recentMediaYMetrics.export = report;
     renderMediaYPerformanceReport();
@@ -1490,6 +1624,22 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
   exportProgressHandler = null;
   btn.disabled = false;
   if (!exportFailed) hideBusy();
+  return delivered;
+};
+$('goExport').onclick = async (event, recoveryAttempt = 0) => {
+  exportInProgress++;
+  let result;
+  try {
+    result = await runExport(event, recoveryAttempt);
+  } finally {
+    exportInProgress--;
+    if (!exportInProgress) {
+      // The video engine's memory is returned after every export; it reloads on the next one.
+      await releaseHeavyResources({ includeSpeech: !captionRunning });
+      if (S.main.length) setTimeout(preloadEngine, 4000);
+    }
+  }
+  return result;
 };
 
 /* ---------- Effects sheet, fades, text styles ---------- */
@@ -1756,20 +1906,127 @@ let asr, asrBackend = 'wasm', captionCancelRequested = false, captionRunning = f
 const CAPTION_SAMPLE_RATE = 16000;
 const CAPTION_CHUNK_SECONDS = 30;
 const abortCaption = () => Object.assign(new Error('Caption generation cancelled.'), { name: 'AbortError' });
+// ---- Speech engine: the JavaScript library, its WASM runtime and the model weights are three separate downloads ----
+//  1. Library + WASM runtime (CPU engine): bundled in the app under vendor/transformers/ (works offline).
+//     The CPU engine falls back to the same version on jsdelivr only if the bundled copy cannot be loaded.
+//  2. Library for the optional GPU engine (transformers 3.x): loaded from jsdelivr; a failure falls back to the CPU engine.
+//  3. Model weights (~40 MB): downloaded from huggingface.co on first use and kept in the browser Cache Storage
+//     ("transformers-cache"), so later runs work offline for as long as Android keeps the app's storage.
+const SPEECH_ENGINE = Object.freeze({
+  bundledModule: './vendor/transformers/transformers.min.js',
+  bundledRuntime: './vendor/transformers/',
+  cpuRemote: 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/transformers.min.js',
+  gpuRemote: 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/dist/transformers.min.js',
+  modelCache: 'transformers-cache'
+});
+const speechModules = new Map();
+const absoluteUrl = relative => { try { return new URL(relative, document.baseURI).href; } catch (_) { return relative; } };
+let speechRetryDelayMs = 1500; // tests set this to 0
+const isOnline = () => typeof navigator === 'undefined' || navigator.onLine !== false;
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+function withTimeout(promise, ms, message) {
+  let timer;
+  return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); })])
+    .finally(() => clearTimeout(timer));
+}
+async function loadSpeechEngineModule(useWebGPU) {
+  const key = useWebGPU ? 'gpu' : 'cpu';
+  if (speechModules.has(key)) return speechModules.get(key);
+  const sources = useWebGPU
+    ? [{ url: SPEECH_ENGINE.gpuRemote, bundled: false, label: 'online GPU library' }]
+    : [{ url: absoluteUrl(SPEECH_ENGINE.bundledModule), bundled: true, label: 'built-in library' },
+       { url: SPEECH_ENGINE.cpuRemote, bundled: false, label: 'online library' }];
+  let lastError = null;
+  for (const source of sources) {
+    for (let attempt = 1; attempt <= (source.bundled ? 1 : 3); attempt++) {
+      if (captionCancelRequested) throw abortCaption();
+      updateBusy('Loading speech engine…', `Loading the ${source.label}${attempt > 1 ? ` (attempt ${attempt})` : ''}. This is the code only, not the speech model.`, null, 'Speech engine');
+      try {
+        // A failed import() is remembered by the browser for that exact URL, so retries use a fresh one.
+        const url = attempt > 1 ? `${source.url}${source.url.includes('?') ? '&' : '?'}retry=${attempt}` : source.url;
+        const loaded = await withTimeout(import(url), source.bundled ? 15000 : 25000, `Timed out loading the ${source.label}.`);
+        const api = loaded && typeof loaded.pipeline === 'function' ? loaded : (loaded && loaded.default);
+        if (!api || typeof api.pipeline !== 'function' || !api.env) throw new Error('The speech library loaded but is not the expected version.');
+        if (source.bundled && await bundledRuntimeAvailable()) {
+          // Without this the library fetches its WASM runtime from the internet even though the code is local.
+          api.env.backends.onnx.wasm.wasmPaths = absoluteUrl(SPEECH_ENGINE.bundledRuntime);
+        }
+        if (api.env.backends && api.env.backends.onnx && api.env.backends.onnx.wasm) api.env.backends.onnx.wasm.numThreads = 1;
+        speechModules.set(key, api);
+        return api;
+      } catch (error) {
+        lastError = error;
+        if (captionCancelRequested) throw abortCaption();
+        if (attempt < 3 && !source.bundled) await sleep(500 * attempt);
+      }
+    }
+  }
+  const detail = lastError && lastError.message ? lastError.message : String(lastError);
+  throw new Error(isOnline()
+    ? `The speech engine could not be loaded (${detail}). Check the connection and try again.`
+    : 'The speech engine could not be loaded and this device looks offline. Reconnect and try again.');
+}
+// The runtime files are fetched into vendor/transformers/ by scripts/fetch_speech_engine.sh during the build. A source
+// checkout without them still works (online) because the library then falls back to its own default download location.
+async function bundledRuntimeAvailable() {
+  const controller = new AbortController();
+  try {
+    const response = await withTimeout(fetch(absoluteUrl(SPEECH_ENGINE.bundledRuntime) + 'ort-wasm-simd.wasm', { signal: controller.signal }), 4000, 'runtime probe timed out');
+    return response.ok;
+  } catch (_) {
+    return false;
+  } finally {
+    controller.abort(); // only the headers are needed, never the 10 MB body
+  }
+}
+const looksLikeCorruptModelCache = error => /protobuf|parsing failed|unexpected end|unexpected token|invalid (model|json)|corrupt|deserialize|not a valid/i.test(String(error && error.message || error));
+async function clearSpeechModelCache() {
+  try { if (window.caches) await caches.delete(SPEECH_ENGINE.modelCache); } catch (_) { /* nothing to clear */ }
+}
 async function createSpeechPipeline(useWebGPU) {
-  const packageName = useWebGPU ? '@huggingface/transformers@3.8.1' : '@xenova/transformers@2.17.2';
-  const { pipeline, env } = await import(`https://cdn.jsdelivr.net/npm/${packageName}`);
+  const { pipeline, env } = await loadSpeechEngineModule(useWebGPU);
   env.allowLocalModels = false;
+  env.useBrowserCache = true;
+  // The model is several files; report one overall percentage instead of one that jumps back for each file.
+  const files = new Map();
+  let shown = 0; // never move backwards when another model file starts reporting
   const progress_callback = p => {
-    if (p.status !== 'progress') return;
-    const detail = `Downloading speech model… ${Math.round(p.progress || 0)}%`;
+    if (!p || p.status !== 'progress' || !p.file) return;
+    files.set(p.file, { loaded: Number(p.loaded) || 0, total: Number(p.total) || 0 });
+    let loaded = 0, total = 0;
+    for (const f of files.values()) { loaded += f.loaded; total += f.total; }
+    const raw = total > 0 ? Math.min(100, loaded / total * 100) : (Number.isFinite(p.progress) ? p.progress : null);
+    const percent = raw === null ? null : (shown = Math.max(shown, raw));
+    const detail = `Downloading speech model… ${Math.round(percent || 0)}% (${(loaded / 1048576).toFixed(0)} of ${(total / 1048576).toFixed(0)} MB)`;
     say(detail);
-    updateBusy('Downloading speech model…', detail, Number.isFinite(p.progress) ? p.progress : null, 'Model download');
+    updateBusy('Downloading speech model…', detail, percent, 'Model download');
   };
   const options = { progress_callback };
   if (useWebGPU) options.device = 'webgpu';
   const modelId = useWebGPU ? 'onnx-community/whisper-tiny' : 'Xenova/whisper-tiny';
-  const model = await pipeline('automatic-speech-recognition', modelId, options);
+  let model = null, lastError = null, clearedCache = false;
+  for (let attempt = 1; attempt <= 3 && !model; attempt++) {
+    if (captionCancelRequested) throw abortCaption();
+    updateBusy('Downloading speech model…', attempt === 1
+      ? 'The speech model (about 40 MB) downloads once and is then kept on this device.'
+      : `Retrying the speech model download (attempt ${attempt} of 3).`, null, 'Model download');
+    try {
+      model = await pipeline('automatic-speech-recognition', modelId, options);
+    } catch (error) {
+      lastError = error;
+      if (captionCancelRequested) throw abortCaption();
+      if (!clearedCache && looksLikeCorruptModelCache(error)) { // a damaged cached file would fail forever
+        clearedCache = true; files.clear(); await clearSpeechModelCache(); continue;
+      }
+      if (attempt < 3) await sleep(speechRetryDelayMs * attempt);
+    }
+  }
+  if (!model) {
+    const detail = lastError && lastError.message ? lastError.message : String(lastError);
+    throw new Error(!isOnline()
+      ? 'The speech model has not been downloaded yet and this device is offline. Connect once to download it (about 40 MB); after that captions work offline.'
+      : `The speech model could not be downloaded (${detail}). Check the connection and try again. Files already downloaded are kept.`);
+  }
   asrBackend = useWebGPU ? 'webgpu' : 'wasm';
   return model;
 }
@@ -1828,99 +2085,74 @@ function hasAudibleSignal(pcm) {
   const rms = Math.sqrt(sum / Math.max(1, count));
   return !(rms < 0.0012 && peak < 0.006);
 }
-async function captionFrom(pcm, src, onProgress = () => {}) {
+let asrWordTimestamps = true; // becomes false for this session if the speech model cannot return word times
+async function transcribeChunk(audioChunk) {
   const lang = $('capLang').value;
-  const chunkSamples = CAPTION_CHUNK_SECONDS * CAPTION_SAMPLE_RATE;
-  const chunkCount = Math.ceil(pcm.length / chunkSamples);
-  const drafts = [];
-  for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++) {
+  const options = {
+    chunk_length_s: CAPTION_CHUNK_SECONDS,
+    stride_length_s: 5,
+    ...(lang ? { language: lang } : {}),
+    task: $('capTr').checked ? 'translate' : 'transcribe'
+  };
+  if (asrWordTimestamps) {
+    try { return { result: await asr(audioChunk, { ...options, return_timestamps: 'word' }), wordMode: true }; }
+    catch (error) {
+      if (error && error.name === 'AbortError') throw error;
+      // Only a model that cannot produce word times is downgraded; any other failure keeps its own recovery path.
+      if (!/cross.?attention|extract timestamps|output_attentions|alignment/i.test(String(error && error.message || error))) throw error;
+      asrWordTimestamps = false;
+    }
+  }
+  return { result: await asr(audioChunk, { ...options, return_timestamps: true }), wordMode: false };
+}
+async function captionFrom(pcm, src, onProgress = () => {}) {
+  // The speech model supplies the words; the audio itself supplies the timing (see mediay-core.js).
+  const Core = window.MediaYCore;
+  if (!Core) throw new Error('mediay-core.js did not load. Reload MediaY.');
+  const duration = pcm.length / CAPTION_SAMPLE_RATE;
+  const activity = Core.analyzeSpeechActivity(pcm, CAPTION_SAMPLE_RATE);
+  const plan = Core.planCaptionChunks(duration, activity, { maxSeconds: CAPTION_CHUNK_SECONDS });
+  const timedWords = [], phraseSegments = [];
+  for (let chunkIndex = 0; chunkIndex < plan.length; chunkIndex++) {
     if (captionCancelRequested) throw abortCaption();
-    const sampleStart = chunkIndex * chunkSamples;
-    const audioChunk = pcm.subarray(sampleStart, Math.min(pcm.length, sampleStart + chunkSamples));
-    if (!audioChunk.length) continue;
+    const [from, to] = plan[chunkIndex];
+    const audioChunk = pcm.subarray(Math.round(from * CAPTION_SAMPLE_RATE), Math.min(pcm.length, Math.round(to * CAPTION_SAMPLE_RATE)));
+    const progress = { chunkIndex, chunkCount: plan.length, percent: (chunkIndex + 1) / plan.length };
+    // Whisper invents text ("Thank you.") on silence, so never feed it a window with no detected speech.
+    if (!audioChunk.length || !Core.hasSpeech(activity, from, to)) { onProgress(progress); continue; }
+    const { result, wordMode } = await transcribeChunk(audioChunk);
+    if (captionCancelRequested) throw abortCaption();
     const chunkDuration = audioChunk.length / CAPTION_SAMPLE_RATE;
-    const result = await asr(audioChunk, {
-      chunk_length_s: CAPTION_CHUNK_SECONDS,
-      stride_length_s: 5,
-      return_timestamps: 'word',
-      ...(lang ? { language: lang } : {}),
-      task: $('capTr').checked ? 'translate' : 'transcribe'
-    });
-    if (captionCancelRequested) throw abortCaption();
-    const timedWords = [];
     for (const chunk of result.chunks || []) {
       const text = String(chunk.text || '').trim();
-      const words = text.split(/\s+/).filter(Boolean);
-      if (!words.length || /^[\[(].*[\])]$/.test(text)) continue;
+      if (!text || /^[\[(].*[\])]$/.test(text)) continue;
       const stamp = Array.isArray(chunk.timestamp) ? chunk.timestamp : [];
-      let s0 = Number.isFinite(stamp[0]) ? stamp[0] : 0;
-      let e0 = Number.isFinite(stamp[1]) ? stamp[1] : Math.min(s0 + Math.max(0.1, words.length * 0.25), chunkDuration);
-      s0 = Math.max(0, Math.min(chunkDuration, s0));
-      e0 = Math.max(s0, Math.min(chunkDuration, e0));
-      if (e0 - s0 < 0.01) continue;
-
-      // Word-level timestamps are preferred. If the model returns a phrase-level
-      // chunk (or a test/older backend does), subdivide only that chunk as fallback.
-      for (let wordIndex = 0; wordIndex < words.length; wordIndex++) {
-        const a = s0 + (e0 - s0) * wordIndex / words.length;
-        const b = s0 + (e0 - s0) * (wordIndex + 1) / words.length;
-        const entry = {
-          word: words[wordIndex],
-          start: sampleStart / CAPTION_SAMPLE_RATE + a,
-          end: sampleStart / CAPTION_SAMPLE_RATE + b
-        };
-        if (/^[,.;:!?%…]+$/.test(entry.word) && timedWords.length) {
-          timedWords[timedWords.length - 1].word += entry.word;
-          timedWords[timedWords.length - 1].end = entry.end;
-        } else {
-          timedWords.push(entry);
-        }
-      }
+      const s0 = Number.isFinite(stamp[0]) ? Math.max(0, Math.min(chunkDuration, stamp[0])) : 0;
+      const e0 = Number.isFinite(stamp[1]) ? Math.max(s0, Math.min(chunkDuration, stamp[1])) : NaN;
+      const entry = { text, start: from + s0, end: Number.isFinite(e0) ? from + e0 : NaN };
+      if (wordMode && text.split(/\s+/).length === 1) timedWords.push(entry); else phraseSegments.push(entry);
     }
-
-    // Group up to four timed words into readable captions while keeping the actual
-    // first-word/last-word boundaries. This prevents phrase timestamps from being
-    // stretched evenly over unrelated words when the recognizer supplies word times.
-    let group = [];
-    const flushGroup = () => {
-      if (!group.length) return;
-      const rawText = group.map(item => item.word).join(' ');
-      const captionText = rawText.replace(/\s+([,.;:!?%…])/g, '$1').replace(/([([{])\s+/g, '$1').trim();
-      const relativeSourceStart = group[0].start;
-      const relativeSourceEnd = group[group.length - 1].end;
-      const speed = Number.isFinite(src.sp) && src.sp > 0 ? src.sp : 1;
-      const timelineStart = Number.isFinite(src.start) ? src.start : 0;
-      if (captionText && relativeSourceEnd > relativeSourceStart) {
-        drafts.push({
-          id: uid(),
-          layer: S.nextLayer + drafts.length,
-          type: 'text',
-          text: captionText,
-          style: txtStyle,
-          start: timelineStart + relativeSourceStart / speed,
-          dur: Math.max(MIN_TIMELINE_FRAME, (relativeSourceEnd - relativeSourceStart) / speed),
-          top: RATIOS[S.ratio][1] * 0.72
-        });
-      }
-      group = [];
-    };
-    for (const entry of timedWords) {
-      if (group.length) {
-        const gap = entry.start - group[group.length - 1].end;
-        const duration = entry.end - group[0].start;
-        if (gap > 0.55 || duration >= 2.6) flushGroup();
-      }
-      group.push(entry);
-      if (group.length >= 4 || /[.!?…]["')\]]?$/.test(entry.word)) flushGroup();
-    }
-    flushGroup();
-    onProgress({ chunkIndex, chunkCount, percent: (chunkIndex + 1) / chunkCount });
+    onProgress(progress);
   }
   if (captionCancelRequested) throw abortCaption();
-  return drafts;
+  const segments = [...phraseSegments, ...Core.groupWordsIntoPhrases(timedWords)].sort((x, y) => x.start - y.start);
+  const speed = Number.isFinite(src.sp) && src.sp > 0 ? src.sp : 1;
+  const timelineStart = Number.isFinite(src.start) ? src.start : 0;
+  return Core.buildCaptionLines(segments, activity, duration).map((line, index) => ({
+    id: uid(),
+    layer: S.nextLayer + index,
+    type: 'text',
+    caption: true, // appears instantly in the preview, exactly like the exported video
+    text: line.text.replace(/\s+([,.;:!?%…])/g, '$1').replace(/([([{])\s+/g, '$1').trim(),
+    style: txtStyle,
+    start: Core.sourceToTimeline(line.start, timelineStart, speed),
+    dur: Math.max(MIN_TIMELINE_FRAME, (line.end - line.start) / speed),
+    top: RATIOS[S.ratio][1] * 0.72
+  }));
 }
 async function commitCaptionDrafts(drafts) {
   if (!drafts.length) return 0;
+  await ensureFontsReady();
   const originalNextLayer = S.nextLayer;
   const staged = drafts.map((draft, index) => ({ ...draft, layer: originalNextLayer + index }));
   const built = [];
@@ -1979,14 +2211,15 @@ $('capCancelBtn').onclick = requestCaptionCancel;
 $('busyCancel').onclick = requestCaptionCancel;
 $('capGo').onclick = async () => {
   const audioSelection = sel && sel.lane === 'audio' ? S.audio.find(x => x.id === sel.id) : null;
-  const selectedVideo = audioSelection ? null : clipNow();
-  const audioCandidate = item => ({ m: item.mediaId, in: item.in, out: item.out, start: item.start, sp: 1, label: item.name || 'audio track' });
-  const candidates = audioSelection
-    ? [audioCandidate(audioSelection)]
-    : [...(selectedVideo ? [{ m: selectedVideo.mediaId, in: selectedVideo.in, out: selectedVideo.out, start: startOf(selectedVideo, 'main'), sp: selectedVideo.speed || 1, label: selectedVideo.name || 'selected video clip' }] : []),
-       ...S.audio.map(audioCandidate)];
+  const explicitVideo = !audioSelection && sel && sel.lane === 'main' ? S.main.find(x => x.id === sel.id) : null;
+  const audioCandidate = item => ({ kind: 'audio', m: item.mediaId, in: item.in, out: item.out, start: item.start, sp: 1, label: item.name || 'audio track' });
+  const videoCandidate = clip => ({ kind: 'video', m: clip.mediaId, in: clip.in, out: clip.out, start: startOf(clip, 'main'), sp: clip.speed || 1, rev: !!clip.rev, label: clip.name || 'video clip' });
+  // A selected clip is captioned alone. With nothing selected, the whole video (every main clip) is captioned.
+  const candidates = audioSelection ? [audioCandidate(audioSelection)] :
+    [...(explicitVideo ? [explicitVideo] : S.main).map(videoCandidate), ...S.audio.map(audioCandidate)];
   if (!candidates.length) return say('Import a video or add audio first.');
   if (captionRunning) return;
+  if (exportInProgress) return say('An export is running. Wait for it to finish, then generate captions.');
   const captionMetric = createMediaYMetric('Automatic captions', {
     selectedSources: candidates.length, language: $('capLang').value || 'auto',
     translateToEnglish: $('capTr').checked, modelWarm: !!asr
@@ -2003,6 +2236,7 @@ $('capGo').onclick = async () => {
   busyCancelButton.textContent = 'Request cancellation';
   captionRunning = true;
   captionCancelRequested = false;
+  await Background.begin(); // keeps captions running if the app goes to the background
   let captionFailed = false, audioContext = null;
   const decodeCache = new Map();
   captionMetric.stage('Load speech model and runtime');
@@ -2033,10 +2267,13 @@ $('capGo').onclick = async () => {
     if (!AudioContextClass) throw new Error('This browser does not support audio decoding for captions.');
     try { audioContext = new AudioContextClass({ sampleRate: CAPTION_SAMPLE_RATE }); }
     catch (_) { audioContext = new AudioContextClass(); }
-    let chosenDrafts = [], used = '';
+    let chosenDrafts = [], usedLabels = [], skippedReversed = 0;
     for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
       const source = candidates[candidateIndex];
       if (captionCancelRequested) throw abortCaption();
+      // Audio tracks are only a fallback when the video clips themselves contain no speech.
+      if (source.kind === 'audio' && chosenDrafts.length) break;
+      if (source.rev) { skippedReversed++; continue; } // reversed audio cannot be transcribed
       say(`Preparing ${source.label} for captions…`);
       captionMetric.stage('Decode and resample audio');
       updateBusy('Decoding audio…', `Preparing the audio from ${source.label}. Large source files can take time to decode.`, 10 + candidateIndex / candidates.length * 5, 'Audio decode');
@@ -2047,16 +2284,17 @@ $('capGo').onclick = async () => {
         updateBusy('Skipping silent audio…', `No useful audio signal was detected in ${source.label}.`, 15 + (candidateIndex + 1) / candidates.length * 5, 'Audio check');
         continue;
       }
+      const candidateBase = 20 + candidateIndex / candidates.length * 70;
+      const candidateSpan = 70 / candidates.length;
+      const onChunk = p => {
+        const detail = `${source.label}: audio chunk ${p.chunkIndex + 1} of ${p.chunkCount}. You can cancel between chunks.`;
+        say(detail);
+        updateBusy('Transcribing speech…', detail, candidateBase + candidateSpan * p.percent, 'Transcription');
+      };
+      let drafts;
       try {
         captionMetric.stage('Whisper inference');
-        const candidateBase = 20 + candidateIndex / candidates.length * 70;
-        const candidateSpan = 70 / candidates.length;
-        chosenDrafts = await captionFrom(pcm, source, p => {
-          const percent = candidateBase + candidateSpan * p.percent;
-          const detail = `${source.label}: audio chunk ${p.chunkIndex + 1} of ${p.chunkCount}. You can cancel between chunks.`;
-          say(detail);
-          updateBusy('Transcribing speech…', detail, percent, 'Transcription');
-        });
+        drafts = await captionFrom(pcm, source, onChunk);
       } catch (inferenceError) {
         if (inferenceError.name === 'AbortError') throw inferenceError;
         if (asrBackend !== 'webgpu') throw inferenceError;
@@ -2065,13 +2303,11 @@ $('capGo').onclick = async () => {
         captionMetric.stage('Load CPU compatibility model');
         asr = await createSpeechPipeline(false);
         captionMetric.stage('Whisper inference (CPU fallback)');
-        chosenDrafts = await captionFrom(pcm, source, p => {
-          const percent = 20 + 70 * p.percent / candidates.length;
-          updateBusy('Transcribing speech…', `${source.label}: audio chunk ${p.chunkIndex + 1} of ${p.chunkCount}.`, percent, 'Transcription');
-        });
+        drafts = await captionFrom(pcm, source, onChunk);
       }
-      if (chosenDrafts.length) { used = source.label; break; }
+      if (drafts.length) { chosenDrafts.push(...drafts); usedLabels.push(source.label); if (source.kind === 'audio') break; }
     }
+    const used = usedLabels.length > 1 ? `${usedLabels.length} clips` : (usedLabels[0] || '');
     if (captionCancelRequested) throw abortCaption();
     if (chosenDrafts.length) {
       updateBusy('Adding captions…', `Adding ${chosenDrafts.length} captions to the timeline.`, 95, 'Finishing captions');
@@ -2080,10 +2316,12 @@ $('capGo').onclick = async () => {
       captionOutcome = 'complete';
       refresh(t);
       closeSheet();
-      say(`Added ${count} captions from ${used}. Tap a caption to restyle or move it.`);
+      // Does by itself what closing and reopening the app and project used to do.
+      const refreshed = await reopenProjectInPlace('captions');
+      say(`Added ${count} captions from ${used}.` + (refreshed.ok ? ' Project refreshed automatically.' : '') + ' Tap a caption to restyle or move it.');
     } else {
       captionOutcome = 'no speech detected';
-      say(S.audio.length || audioSelection ? 'No speech was detected in the selected media.' : 'No audible speech was detected. Add or record audio, then try again.');
+      say(skippedReversed ? 'Captions cannot be generated for a reversed clip.' : (S.audio.length || audioSelection ? 'No speech was detected in the selected media.' : 'No audible speech was detected. Add or record audio, then try again.'));
     }
   } catch (error) {
     if (error && error.name === 'AbortError') {
@@ -2104,6 +2342,7 @@ $('capGo').onclick = async () => {
     }
     captionRunning = false;
     captionCancelRequested = false;
+    await Background.end();
     btn.disabled = false;
     cancelBtn.hidden = true;
     cancelBtn.disabled = false;
