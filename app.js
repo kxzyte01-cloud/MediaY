@@ -403,23 +403,6 @@ const Background = (() => {
   };
 })();
 
-// An export that finishes while the app is hidden cannot open the Android share sheet; remember it and
-// open it the moment the person returns.
-let pendingExportShare = null, appStateActive = null;
-const appInBackground = () => document.visibilityState === 'hidden' || appStateActive === false;
-async function deliverPendingExport() {
-  if (!pendingExportShare || appInBackground()) return;
-  const share = pendingExportShare; pendingExportShare = null;
-  try { await share(); say('Your exported video is ready to save or share.'); }
-  catch (error) { say('Could not open the share sheet: ' + (error && error.message || error)); }
-}
-document.addEventListener('visibilitychange', () => { deliverPendingExport(); });
-try {
-  if (window.Capacitor && Capacitor.Plugins && Capacitor.Plugins.App && Capacitor.Plugins.App.addListener) {
-    Capacitor.Plugins.App.addListener('appStateChange', state => { appStateActive = !!(state && state.isActive); deliverPendingExport(); });
-  }
-} catch (_) { /* not running inside the Android shell */ }
-
 // Frees the two big memory users once a job is finished. Both reload automatically on next use.
 async function releaseHeavyResources({ includeSpeech = true } = {}) {
   const released = [];
@@ -1226,29 +1209,88 @@ async function overlayPNG(o) { // render one overlay alone, full canvas size, tr
   return new Uint8Array(await (await fetch(url)).arrayBuffer());
 }
 
-/* ---------- Saving the finished video (browser download, or Android share sheet in the APK) ---------- */
+/* ---------- Saving the finished video (Movies/MediaY on Android, browser download on web) ---------- */
 const isNative = () => !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform());
+
 async function saveVideo(data) {
-  const name = `ProjectMedia-Y-${Date.now()}.mp4`;
-  if (isNative() && Capacitor.Plugins.Filesystem && Capacitor.Plugins.Share) {
-    const { Filesystem, Share } = Capacitor.Plugins, CHUNK = 3 * 1024 * 1024; // multiple of 3 keeps base64 pieces valid
-    for (let i = 0; i < data.length; i += CHUNK) {
-      let bin = ''; const part = data.subarray(i, i + CHUNK);
-      for (let j = 0; j < part.length; j += 0x8000) bin += String.fromCharCode.apply(null, part.subarray(j, j + 0x8000));
-      const opts = { path: name, directory: 'CACHE', data: btoa(bin) };
-      if (i === 0) await Filesystem.writeFile(opts); else await Filesystem.appendFile(opts);
-    }
-    const { uri } = await Filesystem.getUri({ path: name, directory: 'CACHE' });
-    const openShare = () => Share.share({ title: 'ProjectMedia Y video', url: uri, dialogTitle: 'Save or share your video' });
-    if (appInBackground()) { // Android will not open the share sheet from the background: finish it on return
-      pendingExportShare = openShare;
-      return 'deferred';
-    }
-    await openShare();
-    return;
+  if (!data || !Number.isFinite(data.byteLength) || data.byteLength <= 0) {
+    throw new Error('The encoder returned an empty MP4. Nothing was saved.');
   }
+  const name = `ProjectMedia-Y-${Date.now()}.mp4`;
+
+  if (isNative()) {
+    const plugins = (window.Capacitor && window.Capacitor.Plugins) || {};
+    const Filesystem = plugins.Filesystem;
+    const Share = plugins.Share;
+    const MediaYMediaStore = plugins.MediaYMediaStore;
+    if (!Filesystem) {
+      throw new Error('Android file storage is unavailable in this build. Install the latest MediaY APK and try again.');
+    }
+
+    const CHUNK = 3 * 1024 * 1024; // multiple of 3 keeps base64 pieces valid
+    let cacheWritten = false;
+    try {
+      for (let i = 0; i < data.length; i += CHUNK) {
+        let bin = '';
+        const part = data.subarray(i, i + CHUNK);
+        for (let j = 0; j < part.length; j += 0x8000) {
+          bin += String.fromCharCode.apply(null, part.subarray(j, j + 0x8000));
+        }
+        const options = { path: name, directory: 'CACHE', data: btoa(bin) };
+        if (i === 0) await Filesystem.writeFile(options);
+        else await Filesystem.appendFile(options);
+      }
+      cacheWritten = true;
+
+      if (MediaYMediaStore && typeof MediaYMediaStore.saveVideo === 'function') {
+        try {
+          const saved = await MediaYMediaStore.saveVideo({ fileName: name });
+          await Filesystem.deleteFile({ path: name, directory: 'CACHE' }).catch(() => {});
+          return {
+            method: 'device',
+            filename: (saved && saved.fileName) || name,
+            location: (saved && saved.location) || 'Movies/MediaY'
+          };
+        } catch (saveError) {
+          // Preserve the completed export: offer the Android chooser only when direct saving fails.
+          if (!Share || typeof Share.share !== 'function' || document.visibilityState === 'hidden') {
+            throw new Error('Could not save the MP4 to Movies/MediaY: ' + (saveError && saveError.message || saveError));
+          }
+          const { uri } = await Filesystem.getUri({ path: name, directory: 'CACHE' });
+          say('Direct save to Movies failed. Choose a device-save option in the Android share sheet.');
+          await Share.share({ title: name, url: uri, dialogTitle: 'Save or share your video' });
+          await Filesystem.deleteFile({ path: name, directory: 'CACHE' }).catch(() => {});
+          return { method: 'share-fallback', filename: name, location: 'Android share sheet' };
+        }
+      }
+
+      // Compatibility for older APKs that predate the MediaStore plugin.
+      // The new APK saves directly to Movies/MediaY and does not open the share sheet.
+      if (Share && typeof Share.share === 'function' && document.visibilityState !== 'hidden') {
+        const { uri } = await Filesystem.getUri({ path: name, directory: 'CACHE' });
+        say('This APK cannot save directly to Movies. Choose a device-save option in the Android share sheet.');
+        await Share.share({ title: name, url: uri, dialogTitle: 'Save or share your video' });
+        await Filesystem.deleteFile({ path: name, directory: 'CACHE' }).catch(() => {});
+        return { method: 'share-fallback', filename: name, location: 'Android share sheet' };
+      }
+      throw new Error('This APK cannot save directly to Movies/MediaY. Install the latest MediaY build to enable direct device saving.');
+    } catch (error) {
+      if (cacheWritten) await Filesystem.deleteFile({ path: name, directory: 'CACHE' }).catch(() => {});
+      throw error;
+    }
+  }
+
   const url = URL.createObjectURL(new Blob([data], { type: 'video/mp4' }));
-  Object.assign(document.createElement('a'), { href: url, download: name }).click();
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = name;
+  anchor.style.display = 'none';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  // Keep the blob alive long enough for mobile browsers to begin the file download.
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  return { method: 'browser-download', filename: name, location: 'Downloads' };
 }
 
 // Native Android builds register this plugin during the APK workflow. A foreground
@@ -1286,7 +1328,7 @@ const runExport = async (_event, recoveryAttempt = 0) => {
   exportMetric.stage('Validate project and media');
   if (playing) stop();
   closeSheet(); const btn = $('goExport'); btn.disabled = true;
-  let exportFailed = false, delivered = null;
+  let exportFailed = false, delivered = null, retryAfterCleanup = false, retryAttempt = recoveryAttempt;
   ffLogs = [];
   const exportWorkspaceFiles = new Set();
   const exportSourceCache = new Map();
@@ -1536,15 +1578,22 @@ const runExport = async (_event, recoveryAttempt = 0) => {
       pieces.push(name);
     }
     exportProgressHandler = null;
-    exportMetric.stage('Join rendered clips');
-    updateBusy('Joining clips…', 'Combining the rendered clips into one MP4.', 84, 'Final assembly');
-    say('Joining clips…');
-    await ff.writeFile('list.txt', new TextEncoder().encode(pieces.map(s => `file '${s}'`).join('\n')));
-    exportWorkspaceFiles.add('list.txt');
-    exportWorkspaceFiles.add('joined.mp4');
-    await run(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', 'joined.mp4']);
-    for (const s of new Set([...segs, ...pieces])) await ff.deleteFile(s).catch(() => {});
-    let out = 'joined.mp4';
+    let out;
+    if (pieces.length === 1) {
+      // Avoid an unnecessary concat pass for a single rendered group. Audio mixing must
+      // read this actual file, not assume a joined.mp4 was created.
+      out = pieces[0];
+    } else {
+      exportMetric.stage('Join rendered clips');
+      updateBusy('Joining clips…', 'Combining the rendered clips into one MP4.', 84, 'Final assembly');
+      say('Joining clips…');
+      await ff.writeFile('list.txt', new TextEncoder().encode(pieces.map(s => `file '${s}'`).join('\n')));
+      exportWorkspaceFiles.add('list.txt');
+      exportWorkspaceFiles.add('joined.mp4');
+      await run(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', 'joined.mp4']);
+      for (const s of new Set([...segs, ...pieces])) await ff.deleteFile(s).catch(() => {});
+      out = 'joined.mp4';
+    }
     const ovA = S.overlays.filter(o => o.type === 'video');
     if (S.audio.length || ovA.length) { // mix music, voice-over and overlay-video sound on top
       exportMetric.stage('Mix audio tracks');
@@ -1554,7 +1603,7 @@ const runExport = async (_event, recoveryAttempt = 0) => {
       for (let k = 0; k < trk.length; k++) { const audioFile = `aud${k}`; exportWorkspaceFiles.add(audioFile); await ff.writeFile(audioFile, new Uint8Array(await files[trk[k].m].arrayBuffer())); ins.push('-i', audioFile); }
       const tryMix = (idx, withOrig) => {
         const parts = idx.map(k => { const a = trk[k], ms = Math.round(a.st * 1000); return `[${k + 1}:a]atrim=start=${a.in}:end=${a.out},asetpts=PTS-STARTPTS${(a.vol ?? 1) !== 1 ? `,volume=${a.vol}` : ''}${a.fade ? ',afade=type=in:duration=1,afade=type=out:start_time=' + Math.max(0, a.out - a.in - 1).toFixed(2) + ':duration=1' : ''},adelay=${ms}|${ms}[a${k}]`; });
-        exportWorkspaceFiles.add('final.mp4'); return run(['-i', 'joined.mp4', ...ins, '-filter_complex', `${parts.join(';')};${withOrig ? '[0:a]' : ''}${idx.map(k => `[a${k}]`).join('')}amix=inputs=${idx.length + (withOrig ? 1 : 0)}:duration=first:normalize=0[m]`, '-map', '0:v', '-map', '[m]', '-c:v', 'copy', '-c:a', 'aac', 'final.mp4']);
+        exportWorkspaceFiles.add('final.mp4'); return run(['-i', out, ...ins, '-filter_complex', `${parts.join(';')};${withOrig ? '[0:a]' : ''}${idx.map(k => `[a${k}]`).join('')}amix=inputs=${idx.length + (withOrig ? 1 : 0)}:duration=first:normalize=0[m]`, '-map', '0:v', '-map', '[m]', '-c:v', 'copy', '-c:a', 'aac', 'final.mp4']);
       };
       const all = trk.map((_, k) => k), music = all.filter(k => !trk[k].ov); let done = false;
       for (const [idx, wo] of [[all, true], [all, false], [music, true], [music, false]]) { // a video with no sound falls back to the next combination
@@ -1568,10 +1617,16 @@ const runExport = async (_event, recoveryAttempt = 0) => {
     updateBusy('Preparing your MP4…', 'Writing the final video file.', 97, 'Finishing');
     const data = await ff.readFile(out);
     const delivery = await saveVideo(data);
-    delivered = delivery || 'shared';
+    delivered = delivery;
     ['joined.mp4', 'final.mp4', 'list.txt'].forEach(n => ff.deleteFile(n).catch(() => {}));
     exportOutcome = 'complete';
-    say(delivery === 'deferred' ? 'Export finished in the background. Open MediaY to save your MP4.' : 'Export complete — your MP4 is ready.');
+    if (delivery.method === 'device') {
+      say(`Export complete — saved to ${delivery.location}/${delivery.filename}. Open Gallery or Files to find it.`);
+    } else if (delivery.method === 'browser-download') {
+      say(`Export complete — download started for ${delivery.filename}. Check your Downloads folder.`);
+    } else {
+      say('Export rendered, but direct saving was unavailable. Check the Android share sheet to choose a save destination.');
+    }
   } catch (err) {
     exportMetric.stage('Handle export error or recovery');
     console.error(err);
@@ -1586,13 +1641,20 @@ const runExport = async (_event, recoveryAttempt = 0) => {
       updateBusy('Restarting video engine…', 'The encoder worker stopped responding. MediaY is reloading it and retrying once.', 2, 'Recovery');
       exportOutcome = 'retried after worker failure';
       say('Video engine stopped responding; reloading it and retrying once…');
-      btn.disabled = false;
-      return $('goExport').onclick(null, recoveryAttempt + 1);
+      retryAfterCleanup = true;
+      retryAttempt = recoveryAttempt + 1;
     }
     const memoryProblem = /out of memory|memory access out of bounds|failed to grow memory|cannot allocate|allocation failed|out of memory|oom/i.test(errText + ' ' + ffLogs.join(' '));
-    if (EXP.res > 1080 && memoryProblem) { // only downgrade resolution when there is evidence of a memory failure
-      EXP.res = 1080; [...$('resList').children].forEach(b => b.classList.toggle('on', +b.dataset.v === 1080));
-      exportProgressHandler = null; disposeFFmpeg(); updateBusy('Retrying at 1080p…', 'The selected resolution used too much memory. Retrying at a lower resolution.', 3, 'Retry'); say('That size ran out of memory. Trying again at 1080p…'); btn.disabled = false; return $('goExport').onclick();
+    const fallbackResolution = EXP.res > 1080 ? 1080 : (EXP.res > 720 ? 720 : null);
+    if (fallbackResolution && memoryProblem && recoveryAttempt < 1) {
+      EXP.res = fallbackResolution;
+      [...$('resList').children].forEach(b => b.classList.toggle('on', +b.dataset.v === fallbackResolution));
+      exportProgressHandler = null;
+      disposeFFmpeg();
+      updateBusy(`Retrying at ${fallbackResolution}p…`, 'The selected resolution used too much memory. Retrying at a lower resolution.', 3, 'Retry');
+      say(`That size ran out of memory. Trying again at ${fallbackResolution}p…`);
+      retryAfterCleanup = true;
+      retryAttempt = recoveryAttempt + 1;
     }
     exportFailed = true;
     exportProgressHandler = null;
@@ -1623,6 +1685,11 @@ const runExport = async (_event, recoveryAttempt = 0) => {
   }
   exportProgressHandler = null;
   btn.disabled = false;
+  if (retryAfterCleanup) {
+    // The previous FFmpeg job, workspace, wake lock, and foreground-service hold are now
+    // cleaned up. Only now is it safe to create a replacement worker and retry once.
+    return await $('goExport').onclick(null, retryAttempt);
+  }
   if (!exportFailed) hideBusy();
   return delivered;
 };

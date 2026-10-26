@@ -38,6 +38,14 @@ jobs:
 
       - run: python3 -m pip install pillow
 
+      - name: Validate JavaScript and core tests
+        run: |
+          node --check mediay-core.js
+          node --check app.js
+          node --check setup.js
+          node --check sw.js
+          node --test tests/*.test.js
+
       - run: python3 make_icons.py before
 
       - run: |
@@ -229,6 +237,153 @@ jobs:
           }
           JAVA
 
+          cat > "$APP_SRC/MediaYMediaStorePlugin.java" <<'JAVA'
+          package com.projectmediay.app;
+
+          import android.Manifest;
+          import android.content.ContentResolver;
+          import android.content.ContentValues;
+          import android.media.MediaScannerConnection;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Environment;
+          import android.provider.MediaStore;
+
+          import com.getcapacitor.JSObject;
+          import com.getcapacitor.PermissionState;
+          import com.getcapacitor.Plugin;
+          import com.getcapacitor.PluginCall;
+          import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.CapacitorPlugin;
+          import com.getcapacitor.annotation.Permission;
+          import com.getcapacitor.annotation.PermissionCallback;
+
+          import java.io.BufferedInputStream;
+          import java.io.BufferedOutputStream;
+          import java.io.File;
+          import java.io.FileInputStream;
+          import java.io.FileOutputStream;
+          import java.io.IOException;
+          import java.io.InputStream;
+          import java.io.OutputStream;
+
+          @CapacitorPlugin(
+              name = "MediaYMediaStore",
+              permissions = {
+                  @Permission(alias = "legacyStorage", strings = { Manifest.permission.WRITE_EXTERNAL_STORAGE })
+              }
+          )
+          public final class MediaYMediaStorePlugin extends Plugin {
+              @PluginMethod
+              public void saveVideo(PluginCall call) {
+                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+                      && getPermissionState("legacyStorage") != PermissionState.GRANTED) {
+                      requestPermissionForAlias("legacyStorage", call, "legacyStoragePermissionCallback");
+                      return;
+                  }
+                  saveVideoInternal(call);
+              }
+
+              @PermissionCallback
+              private void legacyStoragePermissionCallback(PluginCall call) {
+                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+                      && getPermissionState("legacyStorage") != PermissionState.GRANTED) {
+                      call.reject("Storage permission was denied. MediaY could not save the MP4.");
+                      return;
+                  }
+                  saveVideoInternal(call);
+              }
+
+              private void saveVideoInternal(PluginCall call) {
+                  String fileName = call.getString("fileName");
+                  if (fileName == null || !fileName.matches("ProjectMedia-Y-[0-9]+\\.mp4")) {
+                      call.reject("Invalid exported video filename.");
+                      return;
+                  }
+
+                  File source = new File(getContext().getCacheDir(), fileName);
+                  if (!source.isFile() || source.length() <= 0L) {
+                      call.reject("The temporary exported MP4 is missing or empty.");
+                      return;
+                  }
+
+                  ContentResolver resolver = getContext().getContentResolver();
+                  Uri insertedUri = null;
+                  File legacyFile = null;
+                  try {
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                          ContentValues values = new ContentValues();
+                          values.put(MediaStore.Video.Media.DISPLAY_NAME, fileName);
+                          values.put(MediaStore.Video.Media.MIME_TYPE, "video/mp4");
+                          values.put(
+                              MediaStore.Video.Media.RELATIVE_PATH,
+                              Environment.DIRECTORY_MOVIES + "/MediaY"
+                          );
+                          values.put(MediaStore.Video.Media.IS_PENDING, 1);
+                          insertedUri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
+                          if (insertedUri == null) {
+                              throw new IOException("Android did not create a Movies/MediaY media entry.");
+                          }
+
+                          try (InputStream input = new BufferedInputStream(new FileInputStream(source));
+                               OutputStream output = resolver.openOutputStream(insertedUri, "w")) {
+                              if (output == null) throw new IOException("Android did not open the destination file.");
+                              copy(input, output);
+                          }
+
+                          ContentValues published = new ContentValues();
+                          published.put(MediaStore.Video.Media.IS_PENDING, 0);
+                          if (resolver.update(insertedUri, published, null, null) <= 0) {
+                              throw new IOException("Android could not publish the exported video to Gallery.");
+                          }
+                      } else {
+                          File movies = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES);
+                          File folder = new File(movies, "MediaY");
+                          if (!folder.isDirectory() && !folder.mkdirs() && !folder.isDirectory()) {
+                              throw new IOException("Could not create the Movies/MediaY folder.");
+                          }
+                          legacyFile = new File(folder, fileName);
+                          if (legacyFile.exists()) throw new IOException("A video with this name already exists.");
+                          try (InputStream input = new BufferedInputStream(new FileInputStream(source));
+                               OutputStream output = new BufferedOutputStream(new FileOutputStream(legacyFile))) {
+                              copy(input, output);
+                          }
+                          MediaScannerConnection.scanFile(
+                              getContext(),
+                              new String[] { legacyFile.getAbsolutePath() },
+                              new String[] { "video/mp4" },
+                              null
+                          );
+                      }
+
+                      JSObject result = new JSObject();
+                      result.put("fileName", fileName);
+                      result.put("location", "Movies/MediaY");
+                      result.put("uri", insertedUri != null ? insertedUri.toString() : legacyFile.getAbsolutePath());
+                      result.put("bytes", source.length());
+                      call.resolve(result);
+                  } catch (Exception error) {
+                      if (insertedUri != null) {
+                          try { resolver.delete(insertedUri, null, null); } catch (Exception ignored) {}
+                      }
+                      if (legacyFile != null && legacyFile.exists()) {
+                          try { legacyFile.delete(); } catch (Exception ignored) {}
+                      }
+                      call.reject("Could not save the MP4 to Movies/MediaY: " + error.getMessage(), error);
+                  }
+              }
+
+              private static void copy(InputStream input, OutputStream output) throws IOException {
+                  byte[] buffer = new byte[256 * 1024];
+                  int count;
+                  while ((count = input.read(buffer)) != -1) {
+                      output.write(buffer, 0, count);
+                  }
+                  output.flush();
+              }
+          }
+          JAVA
+
           cat > "$APP_SRC/MainActivity.java" <<'JAVA'
           package com.projectmediay.app;
 
@@ -239,6 +394,7 @@ jobs:
               @Override
               public void onCreate(Bundle savedInstanceState) {
                   registerPlugin(MediaYExportServicePlugin.class);
+                  registerPlugin(MediaYMediaStorePlugin.class);
                   super.onCreate(savedInstanceState);
               }
           }
@@ -247,6 +403,7 @@ jobs:
           M="android/app/src/main/AndroidManifest.xml"
           grep -q 'android.permission.FOREGROUND_SERVICE"' "$M" || sed -i 's#<application#<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <application#' "$M"
           grep -q 'android.permission.WAKE_LOCK"' "$M" || sed -i 's#<application#<uses-permission android:name="android.permission.WAKE_LOCK" />\n    <application#' "$M"
+          grep -q 'android.permission.WRITE_EXTERNAL_STORAGE' "$M" || sed -i 's#<application#<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />\n    <application#' "$M"
           grep -q 'MediaYExportService' "$M" || sed -i 's#</application>#        <service android:name=".MediaYExportService" android:exported="false" android:foregroundServiceType="dataSync" />\n    </application>#' "$M"
 
       - run: python3 make_icons.py after
