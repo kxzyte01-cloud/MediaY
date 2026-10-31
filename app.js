@@ -1099,6 +1099,7 @@ function createMediaYMetric(kind, metadata = {}) {
     return 'other FFmpeg commands';
   };
   return {
+    note(key, value) { if (!finished) metadata[key] = value; }, // extra facts for the report, e.g. which video engine was used
     stage(name) {
       if (finished) return;
       const now = performance.now();
@@ -1476,6 +1477,118 @@ const runExport = async (_event, recoveryAttempt = 0) => {
       return entry;
     };
     const TD = S.main.map((c, i) => (i && c.tr ? Math.min(c.trDur || 0.5, dur(S.main[i - 1]) * 0.45, dur(c) * 0.45) : 0)); // overlap length at each clip's start
+    // ---- Device video encoder path (WebCodecs) -------------------------------------------------------------------
+    // Decoding and encoding video inside WebAssembly is what makes phone exports slow. When the device has its own H.264
+    // decoder/encoder and the project is simple (cuts, speed, fades, text/sticker overlays), the video is rendered with them and
+    // FFmpeg only does the sound and the final MP4. Returns the finished file name, or null to use the FFmpeg-only path below.
+    // ANY problem (unsupported file, slow or failing encoder, memory) cleans up and returns null: this path can never fail an export.
+    const tryDeviceEncoderExport = async () => {
+      const Fast = window.MediaYFast;
+      const note = (key, value) => { if (exportMetric.note) exportMetric.note(key, value); };
+      const decline = reason => {
+        note('deviceEncoder', 'not used: ' + reason);
+        console.info('MediaY: device video encoder not used:', reason);
+        return null;
+      };
+      const savedHandler = exportProgressHandler, mine = new Set(), overlayBitmaps = [];
+      try {
+        if (!Fast) return decline('engine script not loaded');
+        const toggle = $('useDeviceEncoder');
+        if (toggle && !toggle.checked) return decline('turned off in the export settings');
+        const why = Fast.ineligibleReason({
+          clips: S.main.map((c, i) => ({ reverse: !!c.rev, effect: !!FX[c.fx || 0].f, adjust: !!adjustmentFilter(c), transition: TD[i] > 0 })),
+          overlays: S.overlays.map(o => ({ type: o.type, blend: o.blend }))
+        });
+        if (why) return decline(why);
+        if (S.main.some(c => (c.speed || 1) < 0.5 || (c.speed || 1) > 2)) return decline('unusual playback speed');
+        // Sources must be plain MP4/MOV files this device can decode. They are read in pieces, never loaded whole.
+        const sources = new Map();
+        for (const c of S.main) {
+          if (sources.has(c.mediaId)) continue;
+          const info = await Fast.demux(files[c.mediaId]);
+          if (!(await Fast.checkDecoder(info.video))) return decline('this device cannot decode ' + info.video.codec);
+          sources.set(c.mediaId, info);
+        }
+        const audioFlags = S.main.map(c => sources.get(c.mediaId).hasAudio);
+        if (audioFlags.some(Boolean) && !audioFlags.every(Boolean)) return decline('some clips have no sound track');
+        const hasAudio = audioFlags[0];
+
+        exportMetric.stage('Check device video encoder');
+        updateBusy('Checking this phone’s video encoder…', 'Looking for a hardware video encoder.', 7, 'Preparing');
+        const choice = await Fast.chooseEncoderConfig({ W, H, fps: EXP.fps });
+        const bench = await Fast.benchmarkEncoder(choice);
+        note('deviceEncoderSelfTest', `${choice.codec}, ${choice.acceleration}, ${Math.round(bench.fps)} fps`);
+        if (bench.fps < 2) return decline(`encoder self-test too slow (${bench.fps.toFixed(1)} fps)`);
+
+        exportMetric.stage('Render video on device');
+        say('Rendering with this phone’s video encoder…');
+        updateBusy('Preparing overlays…', 'Rendering captions and stickers.', 8, 'Rendering');
+        const totalSeconds = S.main.reduce((sum, c) => sum + dur(c), 0), overlays = [];
+        for (const o of [...S.overlays].sort((x, y) => x.layer - y.layer)) {
+          if (!(o.start < totalSeconds && o.start + o.dur > 0)) continue;
+          const part = await Fast.overlayFromPng(await overlayPNG(o), W, H);
+          if (part) { overlayBitmaps.push(part.bitmap); overlays.push({ ...part, start: o.start, end: o.start + o.dur }); }
+        }
+        const sink = new Fast.AnnexBSink();
+        exportProgressHandler = null;
+        const result = await Fast.renderTimeline({
+          clips: S.main.map(c => ({ file: files[c.mediaId], track: sources.get(c.mediaId).video, in: c.in, out: c.out, speed: c.speed || 1, fade: !!c.fade })),
+          overlays, W, H, fps: EXP.fps, choice, sink,
+          onProgress: f => updateBusy('Rendering video…', `Encoding with this phone’s video encoder: ${Math.round(f * 100)}%.`, 8 + f * 50, 'Rendering')
+        });
+        overlayBitmaps.splice(0).forEach(b => { try { b.close(); } catch (_) { /* already closed */ } });
+        await ff.writeFile('fastvideo.h264', sink.finish());
+        exportWorkspaceFiles.add('fastvideo.h264'); mine.add('fastvideo.h264');
+
+        // Sound: one small FFmpeg command per clip (trim, speed, volume, fade), padded to the exact video length of the clip.
+        const audioNames = [];
+        if (hasAudio) {
+          exportMetric.stage('Prepare clip sound');
+          for (let i = 0; i < S.main.length; i++) {
+            const c = S.main[i], sp = c.speed || 1, td = (c.out - c.in) / sp, seconds = result.clipFrames[i] / EXP.fps;
+            updateBusy('Preparing sound…', `Clip ${i + 1} of ${S.main.length}.`, 58 + (i / S.main.length) * 8, 'Audio');
+            const entry = await ensureExportSource(c.mediaId, new Set([c.mediaId]), new Map());
+            const fd = Math.min(0.4, Math.max(0.05, td / 2));
+            const chain = [sp !== 1 && `atempo=${sp}`, (c.vol ?? 1) !== 1 && `volume=${c.vol}`,
+              c.fade && `afade=type=in:duration=${fd.toFixed(3)},afade=type=out:start_time=${Math.max(0, td - fd).toFixed(3)}:duration=${fd.toFixed(3)}`,
+              `apad=whole_dur=${seconds.toFixed(4)}`].filter(Boolean).join(',');
+            const name = `aseg${i}.wav`;
+            exportWorkspaceFiles.add(name); mine.add(name);
+            await run(['-ss', String(c.in), '-t', String(c.out - c.in), '-i', entry.name, '-map', '0:a:0', '-vn', '-af', chain,
+              '-ar', '44100', '-ac', '2', '-c:a', 'pcm_s16le', '-t', seconds.toFixed(4), name]);
+            audioNames.push(name);
+            if (!entry.cached) await removeExportFile(entry.name);
+          }
+        }
+
+        exportMetric.stage('Join rendered clips');
+        updateBusy('Assembling the video…', 'Combining picture and sound into one MP4.', 67, 'Final assembly');
+        exportWorkspaceFiles.add('joined.mp4'); mine.add('joined.mp4');
+        const rate = String(EXP.fps);
+        if (audioNames.length) {
+          await ff.writeFile('alist.txt', new TextEncoder().encode(audioNames.map(n => `file '${n}'`).join('\n')));
+          exportWorkspaceFiles.add('alist.txt'); mine.add('alist.txt');
+          await run(['-f', 'h264', '-framerate', rate, '-i', 'fastvideo.h264', '-f', 'concat', '-safe', '0', '-i', 'alist.txt',
+            '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-ar', '44100', '-ac', '2', 'joined.mp4']);
+        } else {
+          await run(['-f', 'h264', '-framerate', rate, '-i', 'fastvideo.h264', '-c:v', 'copy', 'joined.mp4']);
+        }
+        for (const n of ['fastvideo.h264', 'alist.txt', ...audioNames]) await removeExportFile(n);
+        for (const entry of exportSourceCache.values()) await removeExportFile(entry.name);
+        exportSourceCache.clear(); exportSourceCacheBytes = 0;
+        note('deviceEncoder', `used (${choice.codec}, ${choice.acceleration}): ${result.frames} frames in ${(result.ms / 1000).toFixed(1)} s`);
+        return 'joined.mp4';
+      } catch (error) {
+        console.warn('MediaY: device video encoder failed, using the standard encoder:', error);
+        for (const n of mine) await removeExportFile(n);
+        exportProgressHandler = savedHandler;
+        return decline((error && error.name === 'Unsupported' ? '' : 'failed: ') + String(error && error.message || error).slice(0, 160));
+      } finally {
+        overlayBitmaps.forEach(b => { try { b.close(); } catch (_) { /* already closed */ } });
+      }
+    };
+    let out = await tryDeviceEncoderExport();
+    if (!out) { // ---- FFmpeg-only path (unchanged): every clip, transition and join runs in WebAssembly ----
     for (let i = 0; i < S.main.length; i++) {
       exportClipIndex = i;
       updateBusy(`Rendering clip ${i + 1} of ${S.main.length}…`, 'Encoding video, effects, and overlays.', 8 + (i / Math.max(1, S.main.length)) * 58, 'Rendering');
@@ -1578,7 +1691,6 @@ const runExport = async (_event, recoveryAttempt = 0) => {
       pieces.push(name);
     }
     exportProgressHandler = null;
-    let out;
     if (pieces.length === 1) {
       // Avoid an unnecessary concat pass for a single rendered group. Audio mixing must
       // read this actual file, not assume a joined.mp4 was created.
@@ -1594,6 +1706,7 @@ const runExport = async (_event, recoveryAttempt = 0) => {
       for (const s of new Set([...segs, ...pieces])) await ff.deleteFile(s).catch(() => {});
       out = 'joined.mp4';
     }
+    } // end of the FFmpeg-only video path
     const ovA = S.overlays.filter(o => o.type === 'video');
     if (S.audio.length || ovA.length) { // mix music, voice-over and overlay-video sound on top
       exportMetric.stage('Mix audio tracks');
