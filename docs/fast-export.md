@@ -65,3 +65,8 @@ performance report records `deviceEncoder: used (...)` or `not used: <reason>` p
 Export the same project twice, once with the checkbox on and once off, at the same resolution and fps, and copy the performance
 report (Export pane -> Performance diagnostics) for each. Record device model, chipset, RAM, source resolution/codec and the
 `deviceEncoder` line. Only then state a speed-up.
+
+
+## Encoder self-test safety
+
+The device encoder capability check has a shared 15-second deadline covering queue drain and encoder flush. If either stalls, the probe rejects, closes the encoder in a `finally` block, and lets the normal FFmpeg export path continue. This is a safety timeout, not a performance guarantee: actual speed and hardware support must still be verified on the target Android device.
