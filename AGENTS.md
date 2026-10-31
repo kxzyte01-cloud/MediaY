@@ -17,7 +17,7 @@ Treat timeline edits as transactions:
 3. Commit one complete valid state as one Undo operation, or leave the project unchanged.
 4. Keep preview timing, audio timing, export timing, autosave, and Undo/Redo consistent.
 
-The FFmpeg export runs in WebAssembly. Memory usage is a first-class constraint on Android. Keep source/overlay asset caches bounded and clean generated FFmpeg virtual-filesystem files on both success and failure.
+The FFmpeg export runs in WebAssembly (unless the device-encoder path in `docs/fast-export.md` handles the video). Memory usage is a first-class constraint on Android. Keep source/overlay asset caches bounded and clean generated FFmpeg virtual-filesystem files on both success and failure.
 
 Auto captions use Transformers.js Whisper. A first run downloads the model; browser model caching is enabled by the library. Caption inference is chunked, but source audio decoding still uses whole-buffer `decodeAudioData`, which is a known long-file latency bottleneck. Do not claim performance improvements without recording measurements on real media.
 
@@ -56,6 +56,7 @@ Never commit the keystore, print the secrets, or replace an established app sign
 ## Known scope gaps
 
 - Physical-device export performance has not yet been benchmarked.
+- The device-encoder (WebCodecs) export path in `mediay-fast.js` is new and has not run on a physical Android device. See `docs/fast-export.md`; it falls back to the FFmpeg-only path on any problem, and its H.264 encode/decode is untested in CI (Playwright's Chromium has no H.264).
 - No full app-level automated test validates export duration, frame/audio sync, and repeat export after Undo/Redo.
 - Export cancellation is not implemented. Export/caption stage timing diagnostics are available in the Export pane, but physical-device benchmark data is still missing.
 - Whole-media caption audio decoding is still slow for long videos.

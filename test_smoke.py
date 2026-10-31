@@ -7,6 +7,7 @@ html=(root/'index.html').read_text()
 html=html.replace('<script src="./vendor/ffmpeg/ffmpeg.js"></script>', '<script>window.FFmpegWASM={};</script>')
 style=(root/'style.css').read_text()
 setup_style=(root/'setup.css').read_text()
+core=(root/'mediay-core.js').read_text()
 app=(root/'app.js').read_text()
 setup=(root/'setup.js').read_text()
 FABRIC_STUB = r'''window.fabric = (function(){
@@ -41,6 +42,7 @@ html=html.replace('<script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js
 html=html.replace('<script src="https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.2/anime.min.js"></script>', '<script>'+ANIME_STUB+'</script>')
 html=html.replace('<script src="https://unpkg.com/dexie@3.2.7/dist/dexie.min.js"></script>', '<script>'+DEXIE_STUB+'</script>')
 html=html.replace('<script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>', '<script>'+LUCIDE_STUB+'</script>')
+html=html.replace('<script src="./mediay-core.js"></script>', '<script>'+core+'</script>')
 html=html.replace('<script src="./app.js"></script>', '<script>'+app+'</script>')
 html=html.replace('<script src="./setup.js"></script>', '<script>'+setup+'</script>')
 html=html.replace('<script>'+app+'</script>', '<script>try{localStorage.setItem("pmy-consent-v1","yes")}catch(e){}</script><script>'+app+'</script>')
@@ -319,8 +321,9 @@ with sync_playwright() as p:
     }""")
     assert caption_chunks['sizes'] == [30*16000,30*16000,16000], caption_chunks
     assert caption_chunks['count'] == 3, caption_chunks
-    assert all(abs(a-b) < 0.001 for a,b in zip(caption_chunks['starts'],[5,20,35])), caption_chunks
-    assert all(abs(d-.5) < 0.001 for d in caption_chunks['durations']), caption_chunks
+    # Captions lead their speech by 0.04 s and are held 0.14 s after it (mediay-core.js CAPTION), at 2x speed.
+    assert all(abs(a-b) < 0.03 for a,b in zip(caption_chunks['starts'],[5,20,35])), caption_chunks
+    assert all(0.45 < d < 0.65 for d in caption_chunks['durations']), caption_chunks
     assert caption_chunks['progress'] == [1/3,2/3,1], caption_chunks
     assert caption_chunks['timestampModes'] == ['word','word','word'], caption_chunks
     print('PASS: auto captions stream 30-second inference chunks, request word timestamps, and retain source-time offsets')
@@ -346,10 +349,10 @@ with sync_playwright() as p:
     }""")
     assert len(word_aligned) == 2, word_aligned
     assert word_aligned[0]['text'] == 'Hello there, this works.', word_aligned
-    assert abs(word_aligned[0]['start'] - 10.5) < 0.001, word_aligned
-    assert abs(word_aligned[0]['dur'] - .75) < 0.001, word_aligned
+    assert abs(word_aligned[0]['start'] - 10.5) < 0.03, word_aligned
+    assert 0.7 < word_aligned[0]['dur'] < 0.95, word_aligned
     assert word_aligned[1]['text'] == 'Again', word_aligned
-    assert abs(word_aligned[1]['start'] - 12) < 0.001 and abs(word_aligned[1]['dur'] - .15) < 0.001, word_aligned
+    assert abs(word_aligned[1]['start'] - 12) < 0.03 and 0.15 < word_aligned[1]['dur'] < 0.3, word_aligned
     print('PASS: word-level subtitle grouping preserves real speech boundaries and clip-speed mapping')
 
     caption_persistence = page.evaluate("""async () => {
@@ -441,6 +444,115 @@ with sync_playwright() as p:
       document.body.removeAttribute('aria-busy');
     }""")
     print('PASS: caption cancellation remains clickable above the blocking progress overlay')
+    # ---- background service bookkeeping: one start, one stop, never leaked ----
+    service_calls = page.evaluate("""async () => {
+      const calls = [];
+      const old = window.Capacitor;
+      window.Capacitor = { isNativePlatform: () => true, Plugins: { MediaYExportService: {
+        start: async () => { calls.push('start'); }, stop: async () => { calls.push('stop'); } } } };
+      try {
+        const both = await Promise.all([Background.begin(), Background.begin()]);   // export + captions overlap
+        await Background.end(); const afterFirstEnd = calls.slice();
+        await Background.end(); const afterSecondEnd = calls.slice();
+        await Background.end();                                                      // extra end must be harmless
+        window.Capacitor.Plugins.MediaYExportService.start = async () => { throw new Error('denied'); };
+        const failed = await Background.begin(); await Background.end();
+        return { both, afterFirstEnd, afterSecondEnd, final: calls, failed, active: Background.active };
+      } finally { window.Capacitor = old; }
+    }""")
+    assert service_calls['both'] == [True, True], service_calls
+    assert service_calls['afterFirstEnd'] == ['start'], service_calls          # still held by the second job
+    assert service_calls['afterSecondEnd'] == ['start', 'stop'], service_calls
+    assert service_calls['final'] == ['start', 'stop'], service_calls          # unbalanced end() never stops anything twice
+    assert service_calls['failed'] is False and service_calls['active'] is False, service_calls
+    print('PASS: native background service is started once, stopped once, and survives overlapping jobs and start failures')
+
+    # ---- in-place project refresh (replaces "close and reopen the app and the project") ----
+    refresh_result = page.evaluate("""async () => {
+      const cap = {id:'refresh-check',layer:S.nextLayer,type:'text',caption:true,text:'Refresh me',style:0,start:0.5,dur:1,top:250};
+      await commitCaptionDrafts([cap]);
+      const before = snap();
+      let disposed = 0;
+      asr = async () => ({chunks:[]}); asr.dispose = async () => { disposed++; };
+      const outcome = await reopenProjectInPlace('smoke test');
+      const objects = canvas.getObjects().filter(o => o.text === 'Refresh me').length;
+      return { ok: outcome.ok, same: snap() === before, objects, asrReleased: asr === null, disposed,
+               ffReleased: !ff, overlays: S.overlays.filter(o => o.id === 'refresh-check').length };
+    }""")
+    assert refresh_result['ok'] and refresh_result['same'] and refresh_result['objects'] == 1, refresh_result
+    assert refresh_result['asrReleased'] and refresh_result['disposed'] == 1 and refresh_result['ffReleased'], refresh_result
+    assert refresh_result['overlays'] == 1, refresh_result
+    print('PASS: in-place refresh keeps the project identical, rebuilds the preview, and releases the speech model and video engine')
+
+    guards = page.evaluate("""async () => {
+      const out = {};
+      captionRunning = true; exportInProgress = 0;
+      const before = S.overlays.length;
+      await $('goExport').onclick(null, 0);                      // export must refuse while captions run
+      out.exportBlockedDuringCaptions = !$('busyOverlay') || $('busyOverlay').hidden === true;
+      captionRunning = false;
+      exportInProgress = 1;
+      await $('capGo').onclick();                                // captions must refuse while an export runs
+      out.captionsBlockedDuringExport = !captionRunning;
+      exportInProgress = 0;
+      out.untouched = S.overlays.length === before;
+      return out;
+    }""")
+    assert guards['exportBlockedDuringCaptions'] and guards['captionsBlockedDuringExport'] and guards['untouched'], guards
+    print('PASS: exports and caption generation never run at the same time')
+
+    # ---- speech engine loading: retry, corrupt-cache recovery, honest offline errors, cancellation ----
+    speech = page.evaluate("""async () => {
+      speechRetryDelayMs = 0;
+      const out = {}; const events = [];
+      const realUpdate = updateBusy;
+      const seed = pipelineImpl => speechModules.set('cpu', { env: { backends: { onnx: { wasm: {} } } }, pipeline: pipelineImpl });
+      // (a) two network failures, then success
+      let calls = 0; seed(async () => { calls++; if (calls < 3) throw new Error('Failed to fetch'); return { fake: 'model' }; });
+      captionCancelRequested = false;
+      const model = await createSpeechPipeline(false);
+      out.retry = { calls, ok: model.fake === 'model', backend: asrBackend };
+      // (b) a damaged cached file is deleted once, then the download is retried
+      const deleted = []; const realCaches = window.caches;
+      Object.defineProperty(window, 'caches', { configurable: true, value: { delete: async name => { deleted.push(name); return true; } } });
+      let corruptCalls = 0; seed(async () => { corruptCalls++; if (corruptCalls === 1) throw new Error('protobuf parsing failed'); return { fake: 'model2' }; });
+      const model2 = await createSpeechPipeline(false);
+      out.corrupt = { calls: corruptCalls, deleted, ok: model2.fake === 'model2' };
+      Object.defineProperty(window, 'caches', { configurable: true, value: realCaches });
+      // (c) never reachable: the message must say offline + how big + that it works offline afterwards
+      const onlineDesc = Object.getOwnPropertyDescriptor(Navigator.prototype, 'onLine');
+      Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => false });
+      seed(async () => { throw new Error('Failed to fetch'); });
+      try { await createSpeechPipeline(false); out.offline = 'no error'; } catch (e) { out.offline = e.message; }
+      delete navigator.onLine;
+      // (d) cancellation is honoured before any download is attempted
+      let cancelCalls = 0; seed(async () => { cancelCalls++; return {}; });
+      captionCancelRequested = true;
+      try { await createSpeechPipeline(false); out.cancel = 'no error'; } catch (e) { out.cancel = e.name; }
+      out.cancelCalls = cancelCalls; captionCancelRequested = false;
+      // (e) progress across several files is one overall percentage that never goes backwards
+      const percents = [];
+      updateBusy = (title, detail, pct) => { if (typeof pct === 'number') percents.push(pct); };
+      seed(async (task, id, options) => {
+        const cb = options.progress_callback;
+        cb({ status: 'progress', file: 'a.onnx', loaded: 10, total: 100 }); cb({ status: 'progress', file: 'b.onnx', loaded: 0, total: 100 });
+        cb({ status: 'progress', file: 'a.onnx', loaded: 100, total: 100 }); cb({ status: 'progress', file: 'b.onnx', loaded: 100, total: 100 });
+        return {};
+      });
+      await createSpeechPipeline(false);
+      updateBusy = realUpdate;
+      out.percents = percents.filter(x => x !== 0);
+      speechModules.clear();
+      hideBusy();
+      return out;
+    }""")
+    assert speech['retry'] == {'calls': 3, 'ok': True, 'backend': 'wasm'}, speech
+    assert speech['corrupt']['calls'] == 2 and speech['corrupt']['deleted'] == ['transformers-cache'] and speech['corrupt']['ok'], speech
+    assert 'offline' in speech['offline'] and '40 MB' in speech['offline'], speech
+    assert speech['cancel'] == 'AbortError' and speech['cancelCalls'] == 0, speech
+    assert speech['percents'] == sorted(speech['percents']) and speech['percents'][-1] == 100, speech
+    print('PASS: speech engine loading retries, repairs a damaged cache, reports offline honestly, honours cancel and reports one overall percentage')
+
     def handle_dialog(d): d.accept('Smoke test project')
     page.on('dialog',handle_dialog)
     page.locator('#saveBtn').click(); page.wait_for_timeout(100)

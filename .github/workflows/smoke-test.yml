@@ -22,14 +22,30 @@ jobs:
           python-version: '3.11'
       - name: Check JavaScript syntax
         run: |
+          node --check mediay-core.js
+          node --check mediay-fast.js
           node --check app.js
           node --check setup.js
           node --check sw.js
+      - name: Download and verify the bundled speech engine (pinned npm version, SHA-256 checked)
+        run: bash scripts/fetch_speech_engine.sh
+      - name: Run caption timing unit tests
+        run: node --test tests/core.test.js
+      - name: Install ffmpeg (test media for the fast-export tests)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Run fast-export unit tests (MP4 parsing, Annex B, planning)
+        run: node --test tests/fast.test.js
       - name: Install Playwright
         run: python -m pip install playwright
       - name: Install Chromium
         run: python -m playwright install --with-deps chromium
       - name: Run browser smoke tests
         run: python test_smoke.py
+      - name: Run fast-export pipeline test (WebCodecs, VP9 stand-in for H.264)
+        run: python tests/fast_pipeline.py
+      - name: Run device-encoder integration test (real app.js function, real ffmpeg commands)
+        run: python tests/fast_integration.py
       - name: Run FFmpeg worker integration test
         run: python test_ffmpeg_worker.py
+      - name: Prove the bundled speech engine runs with the network blocked
+        run: python tests/offline_speech_runtime.py
