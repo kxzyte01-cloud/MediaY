@@ -11,7 +11,8 @@ const Fast = require('../mediay-fast.js');
 
 const haveFfmpeg = spawnSync('ffmpeg', ['-version']).status === 0 && spawnSync('ffprobe', ['-version']).status === 0;
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mediay-fast-'));
-const sh = (cmd, args) => { const r = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 1 << 28 }); if (r.status !== 0) throw new Error(cmd + ' failed: ' + r.stderr); return r.stdout; };+const blobOf = file => new Blob([fs.readFileSync(file)]);
+const sh = (cmd, args) => { const r = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 1 << 28 }); if (r.status !== 0) throw new Error(cmd + ' failed: ' + r.stderr); return r.stdout; };
+const blobOf = file => new Blob([fs.readFileSync(file)]);
 const gen = (name, extra, vcodec = ['-c:v', 'libx264', '-preset', 'veryfast', '-bf', '2', '-g', '15', '-pix_fmt', 'yuv420p']) => {
   const out = path.join(tmp, name);
   sh('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=30:duration=2', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100:duration=2',
