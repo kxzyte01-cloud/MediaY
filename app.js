@@ -2340,7 +2340,7 @@ function hasAudibleSignal(pcm) {
   const rms = Math.sqrt(sum / Math.max(1, count));
   return !(rms < 0.0012 && peak < 0.006);
 }
-let asrWordTimestamps = true; // becomes false for this session if the speech model cannot return word times
+let asrWordTimestamps = false; // Whisper tiny's bundled DTW word alignment is unreliable; use native segment timestamps
 async function transcribeChunk(audioChunk) {
   const lang = $('capLang').value;
   const options = {
@@ -2368,6 +2368,7 @@ async function captionFrom(pcm, src, onProgress = () => {}) {
   const activity = Core.analyzeSpeechActivity(pcm, CAPTION_SAMPLE_RATE);
   const plan = Core.planCaptionChunks(duration, activity, { maxSeconds: CAPTION_CHUNK_SECONDS });
   const mixedSegments = [];
+  let lastCaptionStart = 0;
   for (let chunkIndex = 0; chunkIndex < plan.length; chunkIndex++) {
     if (captionCancelRequested) throw abortCaption();
     const [from, to] = plan[chunkIndex];
@@ -2382,9 +2383,11 @@ async function captionFrom(pcm, src, onProgress = () => {}) {
       const text = String(chunk.text || '').trim();
       if (!text || /^[\[(].*[\])]$/.test(text)) continue;
       const stamp = Array.isArray(chunk.timestamp) ? chunk.timestamp : [];
-      const s0 = Number.isFinite(stamp[0]) ? Math.max(0, Math.min(chunkDuration, stamp[0])) : 0;
+      const rawStart = Number.isFinite(stamp[0]) ? Math.max(0, Math.min(chunkDuration, stamp[0])) : 0;
+      const s0 = Math.max(rawStart, lastCaptionStart - from);
       const e0 = Number.isFinite(stamp[1]) ? Math.max(s0, Math.min(chunkDuration, stamp[1])) : NaN;
       const entry = { text, start: from + s0, end: Number.isFinite(e0) ? from + e0 : NaN };
+      lastCaptionStart = entry.start;
       mixedSegments.push({ ...entry, word: wordMode && text.split(/\s+/).length === 1 });
     }
     onProgress(progress);
