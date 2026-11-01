@@ -422,6 +422,8 @@ function dropMediaCaches() {
   delete video.dataset.mid; video.removeAttribute('src'); try { video.load(); } catch (_) {}
   for (const id of Object.keys(urls)) { try { URL.revokeObjectURL(urls[id]); } catch (_) {} delete urls[id]; }
   for (const id of Object.keys(files)) delete files[id];
+  for (const id of Object.keys(decoded)) delete decoded[id];
+  for (const id of Object.keys(thumbs)) delete thumbs[id];
 }
 // Does by itself what closing and reopening the app and the project used to do: saves the project, frees the
 // heavy engines, forgets cached media handles, then rebuilds preview and timeline from the saved copy.
