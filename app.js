@@ -2296,7 +2296,7 @@ function normalizeQuietCaptionAudio(pcm) {
   for (let i = 0; i < pcm.length; i++) peak = Math.max(peak, Math.abs(pcm[i]));
   // Avoid boosting near-silence/noise or changing already healthy levels.
   if (!(peak > 0.006 && peak < 0.5)) return pcm;
-  const gain = 0.8 / peak;
+  const gain = Math.min(12, 0.8 / peak);
   const normalized = new Float32Array(pcm.length);
   for (let i = 0; i < pcm.length; i++) normalized[i] = pcm[i] * gain;
   return normalized;
