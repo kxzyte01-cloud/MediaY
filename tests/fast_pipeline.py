@@ -229,11 +229,13 @@ def main():
             h264_out, h264_file = render("M", dict(W=640, H=360, fps=30, codec="h264", clips=[clip("a.mp4", 0, 2)]))
             if h264_out["error"] and "no usable video encoder" in h264_out["error"]:
                 print("SKIP M: this Chromium build does not expose an H.264 WebCodecs encoder")
+            elif h264_out["error"] or not h264_out["result"]:
+                check("M: H.264 WebCodecs output is valid Annex B and preserves all 60 frames", False, h264_out["error"])
             else:
                 h264_ids, _ = ids(h264_file, 640, 360)
                 check("M: H.264 WebCodecs output is valid Annex B and preserves all 60 frames",
-                      h264_out["error"] is None and h264_out["result"] and h264_out["result"]["frames"] == 60 and h264_ids == list(range(60)),
-                      f"{h264_out['error']} frames={len(h264_ids)} ids={h264_ids[:8]}...{h264_ids[-4:]}")
+                      h264_out["result"]["frames"] == 60 and h264_ids == list(range(60)),
+                      f"frames={len(h264_ids)} ids={h264_ids[:8]}...{h264_ids[-4:]}")
 
             check("no page errors", not errors, str(errors))
             browser.close()
