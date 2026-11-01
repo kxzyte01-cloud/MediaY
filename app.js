@@ -1041,7 +1041,7 @@ async function loadFFmpegEngine() {
   ff = new FFmpegWASM.FFmpeg();
   ff.on('log', ({ message }) => {
     const line = String(message || '');
-    if (/error|invalid|failed|not found|unsupported|could not|unable|aborted/i.test(line)) {
+    if (/error|invalid|failed|not found|unsupported|could not|unable|aborted|matches no streams|does not contain any stream/i.test(line)) {
       ffLogs.push(line);
       if (ffLogs.length > 30) ffLogs.shift();
     }
@@ -1407,6 +1407,20 @@ const runExport = async (_event, recoveryAttempt = 0) => {
     };
     const [bw, bh] = RATIOS[S.ratio], kk = EXP.res / Math.min(bw, bh), W = Math.round(bw * kk / 2) * 2, H = Math.round(bh * kk / 2) * 2, segs = []; let offset = 0;
     const touchLru = (map, key, value) => { map.delete(key); map.set(key, value); };
+    const hasAudioStream = async name => {
+      const previousLogs = ffLogs;
+      ffLogs = [];
+      try {
+        await run(['-i', name, '-map', '0:a:0', '-t', '0.1', '-f', 'null', '-']);
+        return true;
+      } catch (error) {
+        const diagnostics = ffLogs.join(' ');
+        if (/matches no streams|does not contain any stream/i.test(diagnostics)) return false;
+        throw new Error('Could not inspect the audio stream in ' + name + ': ' + String(error && error.message || error));
+      } finally {
+        ffLogs = [...previousLogs, ...ffLogs].slice(-30);
+      }
+    };
     const ensureExportSource = async (mediaId, pinnedMediaIds, clipSources) => {
       if (clipSources.has(mediaId)) return clipSources.get(mediaId);
       const cached = exportSourceCache.get(mediaId);
@@ -1512,9 +1526,8 @@ const runExport = async (_event, recoveryAttempt = 0) => {
           if (!(await Fast.checkDecoder(info.video))) return decline('this device cannot decode ' + info.video.codec);
           sources.set(c.mediaId, info);
         }
-        const audioFlags = S.main.map(c => sources.get(c.mediaId).hasAudio);
-        if (audioFlags.some(Boolean) && !audioFlags.every(Boolean)) return decline('some clips have no sound track');
-        const hasAudio = audioFlags[0];
+        const audioFlags = S.main.map(c => !!sources.get(c.mediaId).hasAudio);
+        const hasAudio = audioFlags.some(Boolean);
 
         exportMetric.stage('Check device video encoder');
         updateBusy('Checking this phone’s video encoder…', 'Looking for a hardware video encoder.', 7, 'Preparing');
@@ -1559,17 +1572,26 @@ const runExport = async (_event, recoveryAttempt = 0) => {
           for (let i = 0; i < S.main.length; i++) {
             const c = S.main[i], sp = c.speed || 1, td = (c.out - c.in) / sp, seconds = result.clipFrames[i] / EXP.fps;
             updateBusy('Preparing sound…', `Clip ${i + 1} of ${S.main.length}.`, 58 + (i / S.main.length) * 8, 'Audio');
+            const name = `aseg${i}.wav`;
+            exportWorkspaceFiles.add(name); mine.add(name);
+            if (!audioFlags[i]) {
+              await run(['-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', '-t', seconds.toFixed(4),
+                '-ar', '44100', '-ac', '2', '-c:a', 'pcm_s16le', name]);
+              audioNames.push(name);
+              continue;
+            }
             const entry = await ensureExportSource(c.mediaId, new Set([c.mediaId]), new Map());
             const fd = Math.min(0.4, Math.max(0.05, td / 2));
             const chain = [sp !== 1 && `atempo=${sp}`, (c.vol ?? 1) !== 1 && `volume=${c.vol}`,
               c.fade && `afade=type=in:duration=${fd.toFixed(3)},afade=type=out:start_time=${Math.max(0, td - fd).toFixed(3)}:duration=${fd.toFixed(3)}`,
               `apad=whole_dur=${seconds.toFixed(4)}`].filter(Boolean).join(',');
-            const name = `aseg${i}.wav`;
-            exportWorkspaceFiles.add(name); mine.add(name);
-            await run(['-ss', String(c.in), '-t', String(c.out - c.in), '-i', entry.name, '-map', '0:a:0', '-vn', '-af', chain,
-              '-ar', '44100', '-ac', '2', '-c:a', 'pcm_s16le', '-t', seconds.toFixed(4), name]);
+            try {
+              await run(['-ss', String(c.in), '-t', String(c.out - c.in), '-i', entry.name, '-map', '0:a:0', '-vn', '-af', chain,
+                '-ar', '44100', '-ac', '2', '-c:a', 'pcm_s16le', '-t', seconds.toFixed(4), name]);
+            } finally {
+              if (!entry.cached) await removeExportFile(entry.name);
+            }
             audioNames.push(name);
-            if (!entry.cached) await removeExportFile(entry.name);
           }
         }
 
@@ -1600,7 +1622,16 @@ const runExport = async (_event, recoveryAttempt = 0) => {
       }
     };
     let out = await tryDeviceEncoderExport();
-    if (!out) { // ---- FFmpeg-only path (unchanged): every clip, transition and join runs in WebAssembly ----
+    if (!out) { // ---- FFmpeg-only path: every clip, transition and join runs in WebAssembly ----
+    const mainAudioFlags = new Map();
+    for (const c of S.main) {
+      if (mainAudioFlags.has(c.mediaId)) continue;
+      const probeSources = new Map();
+      const entry = await ensureExportSource(c.mediaId, new Set([c.mediaId]), probeSources);
+      mainAudioFlags.set(c.mediaId, await hasAudioStream(entry.name));
+      if (!entry.cached) await removeExportFile(entry.name);
+    }
+    const hasMainAudio = [...mainAudioFlags.values()].some(Boolean);
     for (let i = 0; i < S.main.length; i++) {
       exportClipIndex = i;
       updateBusy(`Rendering clip ${i + 1} of ${S.main.length}…`, 'Encoding video, effects, and overlays.', 8 + (i / Math.max(1, S.main.length)) * 58, 'Rendering');
@@ -1653,16 +1684,22 @@ const runExport = async (_event, recoveryAttempt = 0) => {
       if (tx) { g += `;[${last}]tpad=stop_mode=clone:stop_duration=${tx.toFixed(2)}[bt]`; last = 'bt'; }
       const seg = `seg${i}.mp4`;
       exportWorkspaceFiles.add(seg);
-      const af = [c.rev && 'areverse', sp !== 1 && `atempo=${sp}`, (c.vol ?? 1) !== 1 && `volume=${c.vol}`, c.fade && audioFadeFilter, tx > 0 && `apad=pad_dur=${tx.toFixed(2)}`].filter(Boolean).join(','), enc = (a, fast) => ['-ss', String(c.in), '-t', String(d), ...(fast ? ['-skip_loop_filter', 'all'] : []), '-i', src, ...inputs, '-filter_complex', g, '-map', `[${last}]`, '-map', '0:a:0?', ...a, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-t', (td + tx).toFixed(3), seg]; // -t: a long overlay video must not stretch the clip
-      // Footage at 10+ Mbps is expensive to decode and its deblocking is invisible after downscaling, so skip it (~15% faster decode).
-      // If that attempt fails for any reason, fall back to the original behaviour: normal decode, then no audio.
-      const hiRate = (files[c.mediaId].size * 8) / Math.max(1, c.src || dur(c)) > 10e6, withAudio = af ? ['-af', af] : [], tries = [];
-      if (hiRate) tries.push([withAudio, true]);
-      tries.push([withAudio, false]);
-      if (af) tries.push([['-an'], false]);
+      const segDur = (td + tx).toFixed(3);
+      const af = [c.rev && 'areverse', sp !== 1 && `atempo=${sp}`, (c.vol ?? 1) !== 1 && `volume=${c.vol}`, c.fade && audioFadeFilter, tx > 0 && `apad=pad_dur=${tx.toFixed(2)}`].filter(Boolean).join(',');
+      const sourceHasAudio = !!mainAudioFlags.get(c.mediaId);
+      const addSilence = hasMainAudio && !sourceHasAudio;
+      const audioInput = addSilence ? ['-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo'] : [];
+      const audioMap = sourceHasAudio ? ['-map', '0:a:0', ...(af ? ['-af', af] : [])]
+        : addSilence ? ['-map', `${live.length + 1}:a:0`] : ['-an'];
+      const enc = fast => ['-ss', String(c.in), '-t', String(d), ...(fast ? ['-skip_loop_filter', 'all'] : []),
+        '-i', src, ...inputs, ...audioInput, '-filter_complex', g, '-map', `[${last}]`, ...audioMap,
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p',
+        ...(hasMainAudio ? ['-c:a', 'aac', '-ar', '44100', '-ac', '2'] : []), '-t', segDur, seg]; // -t bounds long overlays and synthetic silence to the segment duration
+      // High-bitrate sources can skip loop filtering for faster decode; retry with normal decode if needed.
+      const hiRate = (files[c.mediaId].size * 8) / Math.max(1, c.src || dur(c)) > 10e6, tries = hiRate ? [true, false] : [false];
       let encErr = null;
-      for (const [a, fast] of tries) {
-        try { await run(enc(a, fast)); encErr = null; break; } catch (e) { encErr = e; await ff.deleteFile(seg).catch(() => {}); }
+      for (const fast of tries) {
+        try { await run(enc(fast)); encErr = null; break; } catch (e) { encErr = e; await ff.deleteFile(seg).catch(() => {}); }
       }
       if (encErr) throw encErr;
       for (const n of names) await removeExportFile(n);
@@ -1695,11 +1732,12 @@ const runExport = async (_event, recoveryAttempt = 0) => {
       grp.slice(1).forEach((i, j) => {
         const d = TD[i], k = j + 1;
         fv += `${pv}[${k}:v]xfade=transition=${S.main[i].tr}:duration=${d.toFixed(2)}:offset=${(cur - d).toFixed(2)}[v${k}];`;
-        fa += `${pa}[${k}:a]acrossfade=d=${d.toFixed(2)}[a${k}];`;
+        if (hasMainAudio) fa += `${pa}[${k}:a]acrossfade=d=${d.toFixed(2)}[a${k}];`;
         cur += dur(S.main[i]) + (TD[i + 1] || 0) - d; pv = `[v${k}]`; pa = `[a${k}]`;
       });
-      const enc2 = (fc, m) => run([...ins, '-filter_complex', fc, ...m, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '44100', '-ac', '2', name]);
-      try { await enc2(fv + fa.slice(0, -1), ['-map', pv, '-map', pa]); } catch (e) { await enc2(fv.slice(0, -1), ['-map', pv, '-an']); }
+      const enc2 = (fc, m) => run([...ins, '-filter_complex', fc, ...m, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p',
+        ...(hasMainAudio ? ['-c:a', 'aac', '-ar', '44100', '-ac', '2'] : []), name]);
+      await enc2(hasMainAudio ? fv + fa.slice(0, -1) : fv.slice(0, -1), hasMainAudio ? ['-map', pv, '-map', pa] : ['-map', pv, '-an']);
       pieces.push(name);
     }
     exportProgressHandler = null;
@@ -1720,23 +1758,46 @@ const runExport = async (_event, recoveryAttempt = 0) => {
     }
     } // end of the FFmpeg-only video path
     const ovA = S.overlays.filter(o => o.type === 'video');
-    if (S.audio.length || ovA.length) { // mix music, voice-over and overlay-video sound on top
-      exportMetric.stage('Mix audio tracks');
-      updateBusy('Mixing audio tracks…', 'Combining the original sound, music, and voice-over.', 90, 'Audio');
-      say('Mixing audio…');
-      const trk = [...S.audio.map(a => ({ m: a.mediaId, st: a.start, in: a.in, out: a.out, vol: a.vol, fade: a.fade, ov: false })), ...ovA.map(o => ({ m: o.mediaId, st: o.start, in: Number(o.sourceIn) || 0, out: (Number(o.sourceIn) || 0) + o.dur, ov: true }))], ins = [];
-      for (let k = 0; k < trk.length; k++) { const audioFile = `aud${k}`; exportWorkspaceFiles.add(audioFile); await ff.writeFile(audioFile, new Uint8Array(await files[trk[k].m].arrayBuffer())); ins.push('-i', audioFile); }
-      const tryMix = (idx, withOrig) => {
-        const parts = idx.map(k => { const a = trk[k], ms = Math.round(a.st * 1000); return `[${k + 1}:a]atrim=start=${a.in}:end=${a.out},asetpts=PTS-STARTPTS${(a.vol ?? 1) !== 1 ? `,volume=${a.vol}` : ''}${a.fade ? ',afade=type=in:duration=1,afade=type=out:start_time=' + Math.max(0, a.out - a.in - 1).toFixed(2) + ':duration=1' : ''},adelay=${ms}|${ms}[a${k}]`; });
-        exportWorkspaceFiles.add('final.mp4'); return run(['-i', out, ...ins, '-filter_complex', `${parts.join(';')};${withOrig ? '[0:a]' : ''}${idx.map(k => `[a${k}]`).join('')}amix=inputs=${idx.length + (withOrig ? 1 : 0)}:duration=first:normalize=0[m]`, '-map', '0:v', '-map', '[m]', '-c:v', 'copy', '-c:a', 'aac', 'final.mp4']);
-      };
-      const all = trk.map((_, k) => k), music = all.filter(k => !trk[k].ov); let done = false;
-      for (const [idx, wo] of [[all, true], [all, false], [music, true], [music, false]]) { // a video with no sound falls back to the next combination
-        if (!idx.length || (idx === music && music.length === all.length)) continue;
-        try { await tryMix(idx, wo); done = true; break; } catch (e) { /* try the next one */ }
+    if (S.audio.length || ovA.length) {
+      const trk = [
+        ...S.audio.map(a => ({ m: a.mediaId, st: a.start, in: a.in, out: a.out, vol: a.vol, fade: a.fade })),
+        ...ovA.map(o => ({ m: o.mediaId, st: o.start, in: Number(o.sourceIn) || 0, out: (Number(o.sourceIn) || 0) + o.dur }))
+      ];
+      const activeTracks = [], ins = [];
+      for (let k = 0; k < trk.length; k++) {
+        const track = trk[k], f = files[track.m];
+        if (!f || !f.size) throw new Error('An audio or picture-in-picture source is missing during export.');
+        const ext = ((f.name || 'media.mp4').split('.').pop() || 'mp4').toLowerCase();
+        const audioFile = `aud${k}.${ext}`;
+        exportWorkspaceFiles.add(audioFile);
+        await ff.writeFile(audioFile, new Uint8Array(await f.arrayBuffer()));
+        if (await hasAudioStream(audioFile)) {
+          activeTracks.push({ ...track, inputIndex: activeTracks.length + 1 });
+          ins.push('-i', audioFile);
+        } else {
+          await removeExportFile(audioFile);
+        }
       }
-      if (!done) throw new Error('Could not mix the audio tracks.');
-      out = 'final.mp4';
+      const originalHasAudio = await hasAudioStream(out);
+      if (activeTracks.length) {
+        exportMetric.stage('Mix audio tracks');
+        updateBusy('Mixing audio tracks…', 'Combining the original sound, music, and voice-over.', 90, 'Audio');
+        say('Mixing audio…');
+        const timelineDur = Math.max(0.05, total()).toFixed(3);
+        const parts = activeTracks.map((a, i) => {
+          const clipLen = Math.max(0.05, a.out - a.in);
+          const fd = Math.min(1, Math.max(0.05, clipLen / 2));
+          const ms = Math.max(0, Math.round(a.st * 1000));
+          return `[${a.inputIndex}:a]atrim=start=${a.in}:end=${a.out},asetpts=PTS-STARTPTS${(a.vol ?? 1) !== 1 ? `,volume=${a.vol}` : ''}${a.fade ? ',afade=type=in:duration=' + fd.toFixed(3) + ',afade=type=out:start_time=' + Math.max(0, clipLen - fd).toFixed(3) + ':duration=' + fd.toFixed(3) : ''},adelay=${ms}|${ms}[a${i}]`;
+        });
+        const mixInputs = (originalHasAudio ? '[0:a]' : '') + activeTracks.map((_, i) => `[a${i}]`).join('');
+        const mixCount = activeTracks.length + (originalHasAudio ? 1 : 0);
+        const filter = `${parts.join(';')};${mixInputs}amix=inputs=${mixCount}:duration=longest:normalize=0,apad=whole_dur=${timelineDur},atrim=duration=${timelineDur}[m]`;
+        exportWorkspaceFiles.add('final.mp4');
+        await run(['-i', out, ...ins, '-filter_complex', filter, '-map', '0:v', '-map', '[m]',
+          '-c:v', 'copy', '-c:a', 'aac', '-t', timelineDur, 'final.mp4']);
+        out = 'final.mp4';
+      }
     }
     exportMetric.stage('Read and save final MP4');
     updateBusy('Preparing your MP4…', 'Writing the final video file.', 97, 'Finishing');

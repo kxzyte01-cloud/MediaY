@@ -28,9 +28,44 @@ def make_clips(folder):
     sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "rgbtestsrc=size=640x360:rate=30:duration=3", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=44100:duration=3", *common, str(b))
     return str(a), str(b)
 
+def make_silent_clip(folder, name="silent.webm", duration=2, size="640x360"):
+    out = Path(folder) / name
+    sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=navy:s={size}:r=30:d={duration}",
+       "-vf", "format=yuv420p", "-c:v", "libvpx", "-b:v", "200k", "-deadline", "realtime", "-cpu-used", "8", "-an", str(out))
+    return str(out)
+
+def make_tone(folder, name, freq, duration=1.5):
+    out = Path(folder) / name
+    sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"sine=frequency={freq}:sample_rate=44100:duration={duration}",
+       "-c:a", "libopus", str(out))
+    return str(out)
+
+def make_voiced_clip(folder, name="pip_voiced.webm", duration=2):
+    out = Path(folder) / name
+    sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=blue:s=320x180:r=30:d={duration}",
+       "-f", "lavfi", "-i", f"sine=frequency=880:sample_rate=44100:duration={duration}",
+       "-vf", "format=yuv420p", "-c:v", "libvpx", "-b:v", "200k", "-deadline", "realtime", "-cpu-used", "8",
+       "-c:a", "libopus", "-shortest", str(out))
+    return str(out)
+
 def probe(path):
     j = json.loads(sh("ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type,codec_name,width,height", "-of", "json", path).stdout)
     return float(j["format"]["duration"]), [(s["codec_type"], s["codec_name"], s.get("width"), s.get("height")) for s in j["streams"]]
+
+def rms_db(path, start, length):
+    output = sh("ffmpeg", "-v", "info", "-ss", str(start), "-t", str(length), "-i", path,
+                "-af", "astats=metadata=1:reset=0", "-f", "null", "-").stderr
+    values = []
+    for line in output.splitlines():
+        if "RMS level dB:" not in line:
+            continue
+        value = line.rsplit(":", 1)[-1].strip()
+        if value.lower() != "-inf":
+            try:
+                values.append(float(value))
+            except ValueError:
+                pass
+    return max(values) if values else -120.0
 
 def overlay_window(path, quiet_time, start, length, w=120, h=214):
     """Seconds at which text appears/disappears in the bottom third, found from frame differences."""
@@ -43,11 +78,13 @@ def overlay_window(path, quiet_time, start, length, w=120, h=214):
     on = [i for i, d in enumerate(diffs) if d > 4]
     return start + on[0] / 30, start + (on[-1] + 1) / 30
 
-def run_export(base, files, setup_js, route_libs):
+def run_export(base, files, setup_js, route_libs, assets=None):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
         context = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True, service_workers="block")
         route_libs(context)
+        for asset_name, asset_path in (assets or {}).items():
+            context.route(f"**/{asset_name.lstrip('/')}", lambda route, path=str(asset_path): route.fulfill(path=path))
         context.add_init_script("try{localStorage.setItem('pmy-consent-v1','yes')}catch(e){}")
         page = context.new_page(); errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
@@ -122,6 +159,79 @@ def main():
     frame = 1 / FPS
     assert abs(on - 4.0) <= 2.5 * frame and abs(off - 5.0) <= 2.5 * frame, (on, off)
     print(f"PASS: two-clip export keeps the timeline length ({duration:.2f} s vs {total:.2f} s) and shows the overlay at {on:.2f}-{off:.2f} s (timeline 4.00-5.00 s) in {time.time() - t0:.0f} s")
+
+    # 3) Silent intro + voiced clip + fade transition + silent video PiP.
+    # The main audio from clip_a must survive both the silent segment and silent PiP.
+    t0 = time.time()
+    silent_intro = make_silent_clip(folder, "intro_silent.webm", duration=2)
+    pip_silent = make_silent_clip(folder, "pip_silent.webm", duration=1, size="320x180")
+    setup = fast + """(async () => {
+      S.main[1].tr = 'fade'; S.main[1].trDur = 0.5;
+      const blob = await (await fetch('/pip_silent.webm')).blob();
+      const file = new File([blob], 'pip_silent.webm', { type: 'video/webm' });
+      const mediaId = await storeMedia(file);
+      await addOverlay({ type: 'video', mediaId, name: file.name, start: 0.5, dur: 1.0, sourceIn: 0, srcDur: 1.0 });
+    })()"""
+    path, status, total, errors = run_export(base, [silent_intro, clip_a], setup, route_libs,
+                                             assets={"pip_silent.webm": pip_silent})
+    duration, streams = probe(path)
+    assert "Export complete" in status and not errors, (status, errors)
+    assert abs(duration - total) < 0.2, (duration, total)
+    assert any(s[0] == "audio" for s in streams), f"missing AAC after silent intro: {streams}"
+    assert rms_db(path, 2.5, 1.5) > -30.0, "voiced main clip audio was lost after silent intro / silent PiP"
+    print(f"PASS: silent main segment and silent PiP preserve the voiced clip's audio ({duration:.2f} s) in {time.time() - t0:.0f} s")
+
+    # 4) Two external voice-overs on a silent main clip. The later track must not be
+    # truncated by the duration of the first (earlier) track.
+    t0 = time.time()
+    silent_main = make_silent_clip(folder, "silent_main.webm", duration=3)
+    voice_early = make_tone(folder, "voice_early.webm", 440, duration=0.8)
+    voice_late = make_tone(folder, "voice_late.webm", 880, duration=0.8)
+    setup = fast + """(async () => {
+      for (const [url, name, start] of [
+        ['/voice_early.webm', 'voice_early.webm', 0.2],
+        ['/voice_late.webm', 'voice_late.webm', 1.8]
+      ]) {
+        const blob = await (await fetch(url)).blob();
+        const file = new File([blob], name, { type: 'audio/webm' });
+        const mediaId = await storeMedia(file);
+        S.audio.push({ id: uid(), mediaId, name, start, in: 0, out: 0.8, src: 0.8 });
+      }
+    })()"""
+    path, status, total, errors = run_export(base, [silent_main], setup, route_libs,
+        assets={"voice_early.webm": voice_early, "voice_late.webm": voice_late})
+    duration, streams = probe(path)
+    assert "Export complete" in status and not errors, (status, errors)
+    assert abs(duration - total) < 0.15 and abs(duration - 3.0) < 0.15, (duration, total)
+    assert any(s[0] == "audio" for s in streams), f"missing mixed audio stream: {streams}"
+    assert rms_db(path, 1.9, 0.6) > -30.0, "second external voice-over was truncated"
+    print(f"PASS: both delayed voice-overs remain audible and output stays within {duration:.2f} s timeline in {time.time() - t0:.0f} s")
+
+    # 5) A silent PiP followed by a voiced PiP. Ignore only the silent overlay;
+    # retain the voiced PiP audio, including its non-zero sourceIn trim.
+    t0 = time.time()
+    silent_main = make_silent_clip(folder, "pip_main_silent.webm", duration=3)
+    pip_silent = make_silent_clip(folder, "pip_only_silent.webm", duration=1, size="320x180")
+    pip_voiced = make_voiced_clip(folder, duration=2)
+    setup = fast + """(async () => {
+      const silentBlob = await (await fetch('/pip_only_silent.webm')).blob();
+      const silentFile = new File([silentBlob], 'pip_only_silent.webm', { type: 'video/webm' });
+      const silentId = await storeMedia(silentFile);
+      await addOverlay({ type: 'video', mediaId: silentId, name: silentFile.name, start: 0.2, dur: 0.8, sourceIn: 0, srcDur: 1.0 });
+      const voicedBlob = await (await fetch('/pip_voiced.webm')).blob();
+      const voicedFile = new File([voicedBlob], 'pip_voiced.webm', { type: 'video/webm' });
+      const voicedId = await storeMedia(voicedFile);
+      await addOverlay({ type: 'video', mediaId: voicedId, name: voicedFile.name, start: 1.0, dur: 0.8, sourceIn: 0.5, srcDur: 2.0 });
+    })()"""
+    path, status, total, errors = run_export(base, [silent_main], setup, route_libs,
+        assets={"pip_only_silent.webm": pip_silent, "pip_voiced.webm": pip_voiced})
+    duration, streams = probe(path)
+    assert "Export complete" in status and not errors, (status, errors)
+    assert abs(duration - total) < 0.15, (duration, total)
+    assert any(s[0] == "audio" for s in streams), f"voiced PiP audio was omitted: {streams}"
+    assert rms_db(path, 1.1, 0.6) > -30.0, "voiced PiP audio was lost when a silent PiP was also present"
+    print(f"PASS: silent PiP is ignored while delayed voiced PiP audio survives ({duration:.2f} s) in {time.time() - t0:.0f} s")
+
     server.shutdown()
 
 if __name__ == "__main__":
