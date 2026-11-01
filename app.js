@@ -1229,7 +1229,7 @@ async function saveVideo(data) {
     }
 
     const CHUNK = 3 * 1024 * 1024; // multiple of 3 keeps base64 pieces valid
-    let cacheWritten = false;
+    let cacheFileCreated = false;
     try {
       for (let i = 0; i < data.length; i += CHUNK) {
         let bin = '';
@@ -1238,10 +1238,13 @@ async function saveVideo(data) {
           bin += String.fromCharCode.apply(null, part.subarray(j, j + 0x8000));
         }
         const options = { path: name, directory: 'CACHE', data: btoa(bin) };
-        if (i === 0) await Filesystem.writeFile(options);
-        else await Filesystem.appendFile(options);
+        if (i === 0) {
+          await Filesystem.writeFile(options);
+          // Mark the partial file immediately: a later append can fail (for example,
+          // when the device runs out of storage) and must not leave a cache orphan.
+          cacheFileCreated = true;
+        } else await Filesystem.appendFile(options);
       }
-      cacheWritten = true;
 
       if (MediaYMediaStore && typeof MediaYMediaStore.saveVideo === 'function') {
         try {
@@ -1276,7 +1279,7 @@ async function saveVideo(data) {
       }
       throw new Error('This APK cannot save directly to Movies/MediaY. Install the latest MediaY build to enable direct device saving.');
     } catch (error) {
-      if (cacheWritten) await Filesystem.deleteFile({ path: name, directory: 'CACHE' }).catch(() => {});
+      if (cacheFileCreated) await Filesystem.deleteFile({ path: name, directory: 'CACHE' }).catch(() => {});
       throw error;
     }
   }
