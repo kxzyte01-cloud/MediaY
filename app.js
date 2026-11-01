@@ -1623,6 +1623,8 @@ const runExport = async (_event, recoveryAttempt = 0) => {
         overlayBitmaps.forEach(b => { try { b.close(); } catch (_) { /* already closed */ } });
       }
     };
+    // PiP audio is intentionally excluded: preview is muted and there is no overlay-volume control.
+
     let out = await tryDeviceEncoderExport();
     if (!out) { // ---- FFmpeg-only path: every clip, transition and join runs in WebAssembly ----
     const mainAudioFlags = new Map();
