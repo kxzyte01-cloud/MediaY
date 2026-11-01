@@ -84,7 +84,7 @@ def run_export(base, files, setup_js, route_libs, assets=None):
         context = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True, service_workers="block")
         route_libs(context)
         for asset_name, asset_path in (assets or {}).items():
-            context.route(f"**/{asset_name.lstrip('/')}", lambda route, path=str(asset_path): route.fulfill(path=path))
+            context.route(f"**/{asset_name.lstrip('/')}", lambda route, _request, path=str(asset_path): route.fulfill(path=path))
         context.add_init_script("try{localStorage.setItem('pmy-consent-v1','yes')}catch(e){}")
         page = context.new_page(); errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
