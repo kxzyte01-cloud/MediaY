@@ -194,8 +194,7 @@
   /** Merge mixed Whisper output without moving phrase segments across neighbouring word runs. */
   function mergeCaptionSegments(entries) {
     const ordered = (entries || []).filter(entry => entry && String(entry.text || '').trim())
-      .map(entry => ({ ...entry, text: String(entry.text).trim() }))
-      .sort((a, b) => 0);
+      .map(entry => ({ ...entry, text: String(entry.text).trim() }));
     const output = [];
     let wordRun = [];
     const flushWords = () => {
