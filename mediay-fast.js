@@ -559,8 +559,10 @@
         await decoder.start();
         const rot = track.rotation, swap = rot === 90 || rot === 270;
         const fd = Math.min(0.4, Math.max(0.05, p.td / 2));
-        let cur = null, nxt = await decoder.next();
-        for (let k = 0; k < p.frames; k++) {
+        let cur = null, nxt = null;
+        try {
+          nxt = await decoder.next();
+          for (let k = 0; k < p.frames; k++) {
           if (isCancelled()) throw new Error('Export cancelled');
           if (encErr) throw encErr;
           const limit = sourceLimit(c, k, fps);
@@ -598,9 +600,14 @@
           }
           if (globalFrame % 8 === 0 || globalFrame === totalFrames) onProgress(globalFrame / totalFrames);
         }
-        if (cur) cur.frame.close();
-        if (nxt) nxt.frame.close();
-        decoder.close();
+          }
+        } finally {
+          // Frames already handed out by decoder.next() are no longer in its internal queue.
+          // Close both even when rendering is cancelled or a later decode/encode operation throws.
+          if (cur) { try { cur.frame.close(); } catch (_) { /* already closed */ } }
+          if (nxt) { try { nxt.frame.close(); } catch (_) { /* already closed */ } }
+          decoder.close();
+        }
         timelineOffset += p.td;
       }
       await withTimeout(encoder.flush(), timeoutMs * 2, 'video encoder flush');
