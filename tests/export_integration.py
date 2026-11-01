@@ -219,8 +219,8 @@ def main():
     assert rms_db(path, 1.9, 0.6) > -30.0, "second external voice-over was truncated"
     print(f"PASS: both delayed voice-overs remain audible and output stays within {duration:.2f} s timeline in {time.time() - t0:.0f} s")
 
-    # 5) A silent PiP followed by a voiced PiP. Ignore only the silent overlay;
-    # retain the voiced PiP audio, including its non-zero sourceIn trim.
+    # 5) PiP videos are intentionally muted in preview and export because there is no
+    # overlay-volume control. A voiced PiP must not add a hidden audio track.
     t0 = time.time()
     silent_main = make_silent_clip(folder, "pip_main_silent.webm", duration=3)
     pip_silent = make_silent_clip(folder, "pip_only_silent.webm", duration=1, size="320x180")
@@ -240,9 +240,8 @@ def main():
     duration, streams = probe(path)
     assert "Export complete" in status and not errors, (status, errors)
     assert abs(duration - total) < 0.15, (duration, total)
-    assert any(s[0] == "audio" for s in streams), f"voiced PiP audio was omitted: {streams}"
-    assert rms_db(path, 1.1, 0.6) > -30.0, "voiced PiP audio was lost when a silent PiP was also present"
-    print(f"PASS: silent PiP is ignored while delayed voiced PiP audio survives ({duration:.2f} s) in {time.time() - t0:.0f} s")
+    assert not any(s[0] == "audio" for s in streams), f"muted PiP unexpectedly added an audio track: {streams}"
+    print(f"PASS: silent and voiced PiP overlays remain muted; no hidden PiP audio is exported ({duration:.2f} s) in {time.time() - t0:.0f} s")
 
     server.shutdown()
 
