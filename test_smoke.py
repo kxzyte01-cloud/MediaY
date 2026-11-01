@@ -325,7 +325,7 @@ with sync_playwright() as p:
     assert all(abs(a-b) < 0.03 for a,b in zip(caption_chunks['starts'],[5,20,35])), caption_chunks
     assert all(0.45 < d < 0.65 for d in caption_chunks['durations']), caption_chunks
     assert caption_chunks['progress'] == [1/3,2/3,1], caption_chunks
-    assert caption_chunks['timestampModes'] == ['word','word','word'], caption_chunks
+    assert caption_chunks['timestampModes'] == [True,True,True], caption_chunks
     print('PASS: auto captions stream 30-second inference chunks, request word timestamps, and retain source-time offsets')
 
     word_aligned = page.evaluate("""async () => {
