@@ -1759,7 +1759,7 @@ const runExport = async (_event, recoveryAttempt = 0) => {
       out = 'joined.mp4';
     }
     } // end of the FFmpeg-only video path
-    const ovA = S.overlays.filter(o => o.type === 'video');
+    // Picture-in-picture videos are muted in preview and have no overlay-volume control.\n    // Do not unexpectedly mix their hidden audio into the exported soundtrack.\n    const ovA = [];
     if (S.audio.length || ovA.length) {
       const trk = [
         ...S.audio.map(a => ({ m: a.mediaId, st: a.start, in: a.in, out: a.out, vol: a.vol, fade: a.fade })),
