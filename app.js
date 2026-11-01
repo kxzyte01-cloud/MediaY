@@ -2257,7 +2257,10 @@ async function createSpeechPipeline(useWebGPU) {
     updateBusy('Downloading speech model…', detail, percent, 'Model download');
   };
   const options = { progress_callback };
-  if (useWebGPU) options.device = 'webgpu';
+  if (useWebGPU) {
+    options.device = 'webgpu';
+    options.dtype = { encoder_model: 'fp32', decoder_model_merged: 'q4' };
+  }
   const modelId = useWebGPU ? 'onnx-community/whisper-tiny' : 'Xenova/whisper-tiny';
   let model = null, lastError = null, clearedCache = false;
   for (let attempt = 1; attempt <= 3 && !model; attempt++) {
@@ -2284,6 +2287,17 @@ async function createSpeechPipeline(useWebGPU) {
   }
   asrBackend = useWebGPU ? 'webgpu' : 'wasm';
   return model;
+}
+function normalizeQuietCaptionAudio(pcm) {
+  if (!pcm || !pcm.length) return pcm;
+  let peak = 0;
+  for (let i = 0; i < pcm.length; i++) peak = Math.max(peak, Math.abs(pcm[i]));
+  // Avoid boosting near-silence/noise or changing already healthy levels.
+  if (!(peak > 0.006 && peak < 0.5)) return pcm;
+  const gain = 0.8 / peak;
+  const normalized = new Float32Array(pcm.length);
+  for (let i = 0; i < pcm.length; i++) normalized[i] = pcm[i] * gain;
+  return normalized;
 }
 async function pcmOf(src, audioContext, decodeCache) {
   // Reuse at most one decoded source buffer. This avoids decoding the same source twice
@@ -2318,7 +2332,7 @@ async function pcmOf(src, audioContext, decodeCache) {
       for (let i = 0, source = start; source < end; i++, source++) mono[i] += data[source] / buf.numberOfChannels;
     }
   }
-  if (inputRate === CAPTION_SAMPLE_RATE) return mono;
+  if (inputRate === CAPTION_SAMPLE_RATE) return normalizeQuietCaptionAudio(mono);
   const outLength = Math.max(1, Math.round(mono.length * CAPTION_SAMPLE_RATE / inputRate));
   const resampled = new Float32Array(outLength);
   const ratio = inputRate / CAPTION_SAMPLE_RATE;
@@ -2326,7 +2340,7 @@ async function pcmOf(src, audioContext, decodeCache) {
     const position = i * ratio, lo = Math.min(Math.floor(position), mono.length - 1), hi = Math.min(lo + 1, mono.length - 1), f = position - lo;
     resampled[i] = mono[lo] * (1 - f) + mono[hi] * f;
   }
-  return resampled;
+  return normalizeQuietCaptionAudio(resampled);
 }
 function hasAudibleSignal(pcm) {
   if (!pcm || !pcm.length) return false;
