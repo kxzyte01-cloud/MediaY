@@ -56,7 +56,7 @@ Never commit the keystore, print the secrets, or replace an established app sign
 ## Known scope gaps
 
 - Physical-device export performance has not yet been benchmarked.
-- The device-encoder (WebCodecs) export path in `mediay-fast.js` is new and has not run on a physical Android device. See `docs/fast-export.md`; it falls back to the FFmpeg-only path on any problem, and its H.264 encode/decode is untested in CI (Playwright's Chromium has no H.264).
+- The device-encoder (WebCodecs) export path in `mediay-fast.js` is new and has not run on a physical Android device. See `docs/fast-export.md`; it falls back to the FFmpeg-only path on any problem. CI exercises H.264 WebCodecs output when its Chromium build supports it, but Android WebView hardware support and speed still require a phone test.
 - No full app-level automated test validates export duration, frame/audio sync, and repeat export after Undo/Redo.
 - Export cancellation is not implemented. Export/caption stage timing diagnostics are available in the Export pane, but physical-device benchmark data is still missing.
 - Whole-media caption audio decoding is still slow for long videos.
