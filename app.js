@@ -2367,7 +2367,7 @@ async function captionFrom(pcm, src, onProgress = () => {}) {
   const duration = pcm.length / CAPTION_SAMPLE_RATE;
   const activity = Core.analyzeSpeechActivity(pcm, CAPTION_SAMPLE_RATE);
   const plan = Core.planCaptionChunks(duration, activity, { maxSeconds: CAPTION_CHUNK_SECONDS });
-  const timedWords = [], phraseSegments = [];
+  const mixedSegments = [];
   for (let chunkIndex = 0; chunkIndex < plan.length; chunkIndex++) {
     if (captionCancelRequested) throw abortCaption();
     const [from, to] = plan[chunkIndex];
@@ -2385,12 +2385,12 @@ async function captionFrom(pcm, src, onProgress = () => {}) {
       const s0 = Number.isFinite(stamp[0]) ? Math.max(0, Math.min(chunkDuration, stamp[0])) : 0;
       const e0 = Number.isFinite(stamp[1]) ? Math.max(s0, Math.min(chunkDuration, stamp[1])) : NaN;
       const entry = { text, start: from + s0, end: Number.isFinite(e0) ? from + e0 : NaN };
-      if (wordMode && text.split(/\s+/).length === 1) timedWords.push(entry); else phraseSegments.push(entry);
+      mixedSegments.push({ ...entry, word: wordMode && text.split(/\s+/).length === 1 });
     }
     onProgress(progress);
   }
   if (captionCancelRequested) throw abortCaption();
-  const segments = [...phraseSegments, ...Core.groupWordsIntoPhrases(timedWords)].sort((x, y) => x.start - y.start);
+  const segments = Core.mergeCaptionSegments(mixedSegments);
   const speed = Number.isFinite(src.sp) && src.sp > 0 ? src.sp : 1;
   const timelineStart = Number.isFinite(src.start) ? src.start : 0;
   return Core.buildCaptionLines(segments, activity, duration).map((line, index) => ({
