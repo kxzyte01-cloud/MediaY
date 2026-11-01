@@ -599,7 +599,6 @@
             await withTimeout(new Promise(res => encoderWaiters.push(res)), timeoutMs, 'video encoder stopped accepting frames');
           }
           if (globalFrame % 8 === 0 || globalFrame === totalFrames) onProgress(globalFrame / totalFrames);
-        }
           }
         } finally {
           // Frames already handed out by decoder.next() are no longer in its internal queue.
