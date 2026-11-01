@@ -58,19 +58,20 @@ def run_export(base, files, setup_js, route_libs):
         page.set_input_files("#mediaInput", files)
         page.wait_for_function(f"S.main.length === {len(files)}", timeout=60000)
         page.wait_for_function("document.querySelector('#busyOverlay').hidden === true", timeout=60000)
-        saved = {}
-        def on_download(d):
-            saved["path"] = tempfile.mktemp(suffix=".mp4"); d.save_as(saved["path"])
-        page.on("download", on_download)
         page.evaluate(setup_js)
-        page.evaluate("$('goExport').onclick(null, 0)")
-        for _ in range(40):
-            if "path" in saved: break
-            page.wait_for_timeout(250)
+        # Wait for the browser download itself, then save it before closing Chromium.
+        # A page.on("download") callback can still be saving the artifact when browser.close()
+        # runs, which cancels Download.save_as and makes a successful export look like a failure.
+        with page.expect_download(timeout=180000) as download_info:
+            page.evaluate("$('goExport').onclick(null, 0)")
+        download = download_info.value
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as output:
+            saved_path = output.name
+        download.save_as(saved_path)
         status = page.evaluate("document.getElementById('status').textContent")
         total = page.evaluate("total()")
         browser.close()
-    return saved.get("path"), status, total, errors
+    return saved_path, status, total, errors
 
 def main():
     class Quiet(http.server.SimpleHTTPRequestHandler):
