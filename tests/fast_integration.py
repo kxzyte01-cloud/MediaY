@@ -18,7 +18,7 @@ from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parent.parent
 APP = (ROOT / "app.js").read_text(encoding="utf-8")
 START = APP.index("const tryDeviceEncoderExport = async () => {")
-END = APP.index("let out = await tryDeviceEncoderExport();")
+END = APP.index("\n    };", START) + len("\n    };")
 FN_SOURCE = APP[START:END].strip()
 FN_SOURCE = FN_SOURCE[len("const tryDeviceEncoderExport = "):].rstrip(";")
 
