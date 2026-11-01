@@ -326,17 +326,14 @@ with sync_playwright() as p:
     assert all(0.45 < d < 0.65 for d in caption_chunks['durations']), caption_chunks
     assert caption_chunks['progress'] == [1/3,2/3,1], caption_chunks
     assert caption_chunks['timestampModes'] == [True,True,True], caption_chunks
-    print('PASS: auto captions stream 30-second inference chunks, request word timestamps, and retain source-time offsets')
+    print('PASS: auto captions stream 30-second inference chunks, use native segment timestamps, and retain source-time offsets')
 
     word_aligned = page.evaluate("""async () => {
       const oldAsr = asr, oldCancel = captionCancelRequested;
       asr = async (_pcm, options) => {
-        if (options.return_timestamps !== 'word') throw new Error('word timestamps were not requested');
+        if (options.return_timestamps !== true) throw new Error('native segment timestamps were not requested');
         return {chunks:[
-          {text:'Hello', timestamp:[1.0,1.1]},
-          {text:'there,', timestamp:[1.3,1.55]},
-          {text:'this', timestamp:[2.0,2.2]},
-          {text:'works.', timestamp:[2.25,2.5]},
+          {text:'Hello there, this works.', timestamp:[1.0,2.5]},
           {text:'Again', timestamp:[4.0,4.3]}
         ]};
       };
@@ -353,7 +350,7 @@ with sync_playwright() as p:
     assert 0.7 < word_aligned[0]['dur'] < 0.95, word_aligned
     assert word_aligned[1]['text'] == 'Again', word_aligned
     assert abs(word_aligned[1]['start'] - 12) < 0.03 and 0.15 < word_aligned[1]['dur'] < 0.3, word_aligned
-    print('PASS: word-level subtitle grouping preserves real speech boundaries and clip-speed mapping')
+    print('PASS: segment-level subtitle timing preserves speech boundaries and clip-speed mapping')
 
     caption_persistence = page.evaluate("""async () => {
       const draft = {id:'persist-caption-check',layer:S.nextLayer,type:'text',text:'Saved caption',style:0,start:1.25,dur:.75,top:250};
