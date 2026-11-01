@@ -2335,14 +2335,9 @@ async function pcmOf(src, audioContext, decodeCache) {
     }
   }
   if (inputRate === CAPTION_SAMPLE_RATE) return normalizeQuietCaptionAudio(mono);
-  const outLength = Math.max(1, Math.round(mono.length * CAPTION_SAMPLE_RATE / inputRate));
-  const resampled = new Float32Array(outLength);
-  const ratio = inputRate / CAPTION_SAMPLE_RATE;
-  for (let i = 0; i < outLength; i++) {
-    const position = i * ratio, lo = Math.min(Math.floor(position), mono.length - 1), hi = Math.min(lo + 1, mono.length - 1), f = position - lo;
-    resampled[i] = mono[lo] * (1 - f) + mono[hi] * f;
-  }
-  return normalizeQuietCaptionAudio(resampled);
+  const Core = window.MediaYCore;
+  if (!Core || typeof Core.resamplePcm !== 'function') throw new Error('MediaY audio resampler did not load.');
+  return normalizeQuietCaptionAudio(Core.resamplePcm(mono, inputRate, CAPTION_SAMPLE_RATE));
 }
 function hasAudibleSignal(pcm) {
   if (!pcm || !pcm.length) return false;
