@@ -131,3 +131,30 @@ test('word grouping joins stray punctuation and breaks on pauses and sentence en
   ]);
   assert.deepEqual(phrases.map(p => p.text), ['Hello there, friend.', 'Again', 'later']);
 });
+
+
+test('mixed word and phrase output keeps phrase segments between adjacent word runs', () => {
+  const merged = Core.mergeCaptionSegments([
+    { text: 'one', start: 1, end: 1.2, word: true },
+    { text: 'two', start: 1.25, end: 1.45, word: true },
+    { text: 'middle phrase here', start: 1.5, end: 2.2, word: false },
+    { text: 'three', start: 2.25, end: 2.5, word: true },
+    { text: 'four', start: 2.55, end: 2.8, word: true }
+  ]);
+  assert.deepEqual(merged.map(segment => segment.text), ['one two', 'middle phrase here', 'three four']);
+  assert.ok(merged[0].end <= merged[1].start);
+  assert.ok(merged[1].end <= merged[2].start);
+});
+
+test('caption lines break at real speech-interval boundaries and never bridge a long silence', () => {
+  const activity = { reliable: true, intervals: [[1, 1.8], [5, 5.8]] };
+  const lines = Core.buildCaptionLines([
+    { text: 'first sentence', start: 1, end: 5.8 }
+  ], activity, 7, { startSlackBefore: 0, endSlackAfter: 0, lead: 0, hold: 0, minDuration: 0.05, bridgeGap: 0 });
+  assert.equal(lines.length, 2);
+  assert.match(lines[0].text, /first/);
+  assert.match(lines[1].text, /sentence/);
+  assert.ok(lines[0].end <= 1.8 + 1e-9);
+  assert.ok(lines[1].start >= 5 - 1e-9);
+  assert.ok(lines[1].start - lines[0].end >= 3);
+});
