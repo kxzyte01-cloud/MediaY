@@ -2347,7 +2347,9 @@ async function transcribeChunk(audioChunk) {
     chunk_length_s: CAPTION_CHUNK_SECONDS,
     stride_length_s: 5,
     ...(lang ? { language: lang } : {}),
-    ...($('capTr').checked ? { task: 'translate' } : {})
+    ...($('capTr').checked
+      ? (lang ? { task: 'translate' } : { forced_decoder_ids: [[1, null], [2, 50358]] })
+      : {})
   };
   if (asrWordTimestamps) {
     try { return { result: await asr(audioChunk, { ...options, return_timestamps: 'word' }), wordMode: true }; }
