@@ -20,7 +20,7 @@
     closeGapSeconds: 0.15,   // bridge short pauses inside a phrase
     minRunSeconds: 0.06,     // ignore clicks/pops shorter than this
     minDynamicRangeDb: 14,   // below this the signal has no usable speech/noise contrast
-    maxVoicedRatio: 0.92     // above this it is music/noise everywhere: do not trust it
+    maxVoicedRatio: 0.98     // above this it is music/noise everywhere: do not trust it
   });
 
   function percentile(sortedAscending, q) {
@@ -45,7 +45,7 @@
       db[f] = 20 * Math.log10(Math.sqrt(sum / hopSamples) + 1e-9);
     }
     const sorted = Array.from(db).sort((a, b) => a - b);
-    const low = percentile(sorted, 0.10), high = percentile(sorted, 0.95);
+    const low = percentile(sorted, 0.05), high = percentile(sorted, 0.95);
     result.dynamicRangeDb = high - low;
     // Threshold: above the noise floor, but always well below the loud speech level.
     const threshold = Math.min(Math.max(low + 10, -55), high - 18);
@@ -195,7 +195,7 @@
   function mergeCaptionSegments(entries) {
     const ordered = (entries || []).filter(entry => entry && String(entry.text || '').trim())
       .map(entry => ({ ...entry, text: String(entry.text).trim() }))
-      .sort((a, b) => num(a.start) - num(b.start));
+      .sort((a, b) => 0);
     const output = [];
     let wordRun = [];
     const flushWords = () => {
@@ -207,7 +207,7 @@
       else { flushWords(); output.push({ text: entry.text, start: num(entry.start), end: Number.isFinite(Number(entry.end)) ? Number(entry.end) : NaN }); }
     }
     flushWords();
-    return output.sort((a, b) => a.start - b.start);
+    return output;
   }
 
   /**
