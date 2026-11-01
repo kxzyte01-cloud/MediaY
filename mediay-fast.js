@@ -533,13 +533,7 @@
     const ctx = canvas.getContext('2d', { alpha: false });
     ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
 
-    let encErr = null, encoderWaiters = [];
-    const encoder = new VideoEncoder({
-      output: (chunk, meta) => { try { sink.onChunk(chunk, meta); } catch (e) { encErr = e; } },
-      error: e => { encErr = e; }
-    });
-    encoder.ondequeue = () => { const w = encoderWaiters; encoderWaiters = []; for (const r of w) r(); };
-    encoder.configure(choice.config);
+    let encErr = null, encoderWaiters = [], encoder = null;
 
     const plan = clips.map(c => ({ c, td: (c.out - c.in) / (c.speed || 1) }));
     plan.forEach(p => { p.frames = frameCount(p.td, fps); });
@@ -550,6 +544,13 @@
     const t0 = performance.now();
     const cleanup = [];
     try {
+      // Configure inside the guarded region so even a rejected configuration closes the encoder.
+      encoder = new VideoEncoder({
+        output: (chunk, meta) => { try { sink.onChunk(chunk, meta); } catch (e) { encErr = e; } },
+        error: e => { encErr = e; }
+      });
+      encoder.ondequeue = () => { const w = encoderWaiters; encoderWaiters = []; for (const r of w) r(); };
+      encoder.configure(choice.config);
       for (const p of plan) {
         const { c } = p;
         const track = c.track, reader = new RangeReader(c.file);
@@ -613,7 +614,7 @@
       if (encErr) throw encErr;
     } finally {
       for (const fn of cleanup) { try { fn(); } catch (_) { /* ignore */ } }
-      try { if (encoder.state !== 'closed') encoder.close(); } catch (_) { /* ignore */ }
+      try { if (encoder && encoder.state !== 'closed') encoder.close(); } catch (_) { /* ignore */ }
     }
     return { frames: globalFrame, clipFrames: plan.map(p => p.frames), ms: performance.now() - t0, totalFrames };
   }
