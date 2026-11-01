@@ -165,7 +165,7 @@ def main():
             mixed_audio_cmds = [c for c in mixed_log["commands"] if c[-1].endswith(".wav")]
             check("mixed-sound project: fast path stays enabled and creates one audio piece per clip",
                   r["returned"] == "joined.mp4" and r["error"] is None and len(mixed_audio_cmds) == 2
-                  and any("anullsrc" in c for c in mixed_audio_cmds) and "alist.txt" in mixed_log["written"],
+                  and any(any("anullsrc" in arg for arg in c) for c in mixed_audio_cmds) and "alist.txt" in mixed_log["written"],
                   f"returned={r['returned']} error={r['error']} commands={mixed_log['commands']}")
             for cmd in mixed_audio_cmds:
                 subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *cmd], cwd=work, check=True)
