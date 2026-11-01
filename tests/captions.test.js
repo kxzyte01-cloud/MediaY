@@ -33,3 +33,16 @@ test('quiet selected audio is peak-normalized without amplifying near-silence', 
   assert.match(app, /peak > 0\.006 && peak < 0\.5/);
   assert.match(app, /Math\.min\(12, 0\.8 \/ peak\)/);
 });
+
+
+test('an explicitly selected audio track is the only caption source', () => {
+  assert.match(app, /const candidates = audioSelection \? \[audioCandidate\(audioSelection\)\]/);
+});
+
+test('an explicitly selected video clip does not silently switch to another lane', () => {
+  assert.match(app, /explicitVideo \? \[videoCandidate\(explicitVideo\)\]/);
+});
+
+test('with no selection, separate audio tracks remain fallback sources after main video clips', () => {
+  assert.match(app, /\[\.\.\.S\.main\.map\(videoCandidate\), \.\.\.S\.audio\.map\(audioCandidate\)\]/);
+});
