@@ -1685,7 +1685,7 @@ const runExport = async (_event, recoveryAttempt = 0) => {
       const seg = `seg${i}.mp4`;
       exportWorkspaceFiles.add(seg);
       const segDur = (td + tx).toFixed(3);
-      const af = [c.rev && 'areverse', sp !== 1 && `atempo=${sp}`, (c.vol ?? 1) !== 1 && `volume=${c.vol}`, c.fade && audioFadeFilter, tx > 0 && `apad=pad_dur=${tx.toFixed(2)}`].filter(Boolean).join(',');
+      const af = [c.rev && 'areverse', sp !== 1 && `atempo=${sp}`, (c.vol ?? 1) !== 1 && `volume=${c.vol}`, c.fade && audioFadeFilter, `apad=whole_dur=${segDur}`].filter(Boolean).join(',');
       const sourceHasAudio = !!mainAudioFlags.get(c.mediaId);
       const addSilence = hasMainAudio && !sourceHasAudio;
       const audioInput = addSilence ? ['-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo'] : [];
