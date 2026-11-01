@@ -1515,6 +1515,15 @@ const runExport = async (_event, recoveryAttempt = 0) => {
 
         exportMetric.stage('Check device video encoder');
         updateBusy('Checking this phone’s video encoder…', 'Looking for a hardware video encoder.', 7, 'Preparing');
+        // The H.264 stream is buffered in JS chunks, flattened into one Uint8Array,
+        // and copied into FFmpeg.wasm. Keep this accelerator for short jobs only;
+        // longer videos use the FFmpeg segment path instead of risking WebView OOM.
+        const totalSeconds = S.main.reduce((sum, c) => sum + dur(c), 0);
+        const maxBufferedVideoBytes = 32 * 1024 * 1024;
+        const estimatedVideoBytes = Math.ceil(Fast.targetBitrate(W, H, EXP.fps) * totalSeconds / 8 * 1.2);
+        if (estimatedVideoBytes > maxBufferedVideoBytes) {
+          return decline('projected video stream exceeds the safe in-memory device-export budget');
+        }
         const choice = await Fast.chooseEncoderConfig({ W, H, fps: EXP.fps });
         const bench = await Fast.benchmarkEncoder(choice);
         note('deviceEncoderSelfTest', `${choice.codec}, ${choice.acceleration}, ${Math.round(bench.fps)} fps`);
@@ -1523,13 +1532,13 @@ const runExport = async (_event, recoveryAttempt = 0) => {
         exportMetric.stage('Render video on device');
         say('Rendering with this phone’s video encoder…');
         updateBusy('Preparing overlays…', 'Rendering captions and stickers.', 8, 'Rendering');
-        const totalSeconds = S.main.reduce((sum, c) => sum + dur(c), 0), overlays = [];
+        const overlays = [];
         for (const o of [...S.overlays].sort((x, y) => x.layer - y.layer)) {
           if (!(o.start < totalSeconds && o.start + o.dur > 0)) continue;
           const part = await Fast.overlayFromPng(await overlayPNG(o), W, H);
           if (part) { overlayBitmaps.push(part.bitmap); overlays.push({ ...part, start: o.start, end: o.start + o.dur }); }
         }
-        const sink = new Fast.AnnexBSink();
+        const sink = new Fast.AnnexBSink(maxBufferedVideoBytes);
         exportProgressHandler = null;
         const result = await Fast.renderTimeline({
           clips: S.main.map(c => ({ file: files[c.mediaId], track: sources.get(c.mediaId).video, in: c.in, out: c.out, speed: c.speed || 1, fade: !!c.fade })),
