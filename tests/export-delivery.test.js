@@ -21,6 +21,19 @@ test('Android export saves to Movies/MediaY before offering a share fallback', (
   assert.doesNotMatch(app, /pendingExportShare/, 'successful background exports must not queue an automatic share sheet');
 });
 
+test('failed Android cache appends remove the partially written MP4', () => {
+  const start = app.indexOf('async function saveVideo');
+  const end = app.indexOf('// Native Android builds register this plugin', start);
+  const save = app.slice(start, end);
+  const firstWrite = save.indexOf('await Filesystem.writeFile(options)');
+  const markCreated = save.indexOf('cacheFileCreated = true', firstWrite);
+  const append = save.indexOf('await Filesystem.appendFile(options)');
+  const cleanup = save.lastIndexOf('if (cacheFileCreated) await Filesystem.deleteFile');
+  assert.ok(firstWrite >= 0 && markCreated > firstWrite, 'cache creation must be recorded after the first successful write');
+  assert.ok(append > markCreated, 'the partial cache must be marked before a later append can fail');
+  assert.ok(cleanup > append, 'the catch path must delete a partial cache file');
+});
+
 test('Android build registers a MediaStore plugin that publishes MP4s to public Movies/MediaY', () => {
   assert.match(workflow, /registerPlugin\(MediaYMediaStorePlugin\.class\)/);
   assert.match(workflow, /MediaStore\.Video\.Media\.RELATIVE_PATH/);
