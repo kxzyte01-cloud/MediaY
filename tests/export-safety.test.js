@@ -17,6 +17,6 @@ test('dropping media caches releases decoded audio buffers and thumbnail data', 
   const end = app.indexOf('// Does by itself what closing', start);
   assert.ok(start >= 0 && end > start);
   const source = app.slice(start, end);
-  assert.match(source, /Object\.keys\(decoded\)\.forEach/);
-  assert.match(source, /Object\.keys\(thumbs\)\.forEach/);
+  assert.match(source, /for \(const id of Object\.keys\(decoded\)\) delete decoded\[id\]/);
+  assert.match(source, /for \(const id of Object\.keys\(thumbs\)\) delete thumbs\[id\]/);
 });
