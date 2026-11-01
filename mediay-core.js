@@ -334,6 +334,35 @@
     return lines.filter(l => l.end - l.start >= MIN_FRAME * 0.99 && l.start < duration);
   }
 
+  /** Windowed-sinc resampling with a low-pass cutoff to suppress aliasing when downsampling. */
+  function resamplePcm(pcm, inputRate, outputRate) {
+    if (!pcm || !pcm.length || !(inputRate > 0) || !(outputRate > 0)) return new Float32Array(0);
+    if (inputRate === outputRate) return Float32Array.from(pcm);
+    const ratio = inputRate / outputRate;
+    const outputLength = Math.max(1, Math.round(pcm.length / ratio));
+    const output = new Float32Array(outputLength);
+    const radius = 12;
+    const cutoff = Math.min(0.5, 0.5 / ratio) * 0.92;
+    const sinc = x => Math.abs(x) < 1e-8 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x);
+    for (let i = 0; i < outputLength; i++) {
+      const position = i * ratio;
+      const center = Math.floor(position);
+      let sum = 0, weightSum = 0;
+      for (let sample = center - radius + 1; sample <= center + radius; sample++) {
+        if (sample < 0 || sample >= pcm.length) continue;
+        const distance = sample - position;
+        const normalized = distance / radius;
+        if (Math.abs(normalized) >= 1) continue;
+        const window = 0.5 + 0.5 * Math.cos(Math.PI * normalized);
+        const weight = 2 * cutoff * sinc(2 * cutoff * distance) * window;
+        sum += pcm[sample] * weight;
+        weightSum += weight;
+      }
+      output[i] = weightSum ? sum / weightSum : 0;
+    }
+    return output;
+  }
+
   /* ------------------------------------------------------------------
      4. Source time -> timeline time
      ------------------------------------------------------------------ */
@@ -346,6 +375,6 @@
 
   return {
     TIMELINE_FPS, MIN_FRAME, ACTIVITY, CAPTION,
-    analyzeSpeechActivity, planCaptionChunks, buildCaptionLines, groupWordsIntoPhrases, mergeCaptionSegments, hasSpeech, sourceToTimeline
+    analyzeSpeechActivity, planCaptionChunks, buildCaptionLines, groupWordsIntoPhrases, mergeCaptionSegments, hasSpeech, resamplePcm, sourceToTimeline
   };
 }));
