@@ -191,6 +191,25 @@
     return intervals.length ? intervals[intervals.length - 1][1] : 0;
   }
 
+  /** Merge mixed Whisper output without moving phrase segments across neighbouring word runs. */
+  function mergeCaptionSegments(entries) {
+    const ordered = (entries || []).filter(entry => entry && String(entry.text || '').trim())
+      .map(entry => ({ ...entry, text: String(entry.text).trim() }))
+      .sort((a, b) => num(a.start) - num(b.start));
+    const output = [];
+    let wordRun = [];
+    const flushWords = () => {
+      if (wordRun.length) output.push(...groupWordsIntoPhrases(wordRun));
+      wordRun = [];
+    };
+    for (const entry of ordered) {
+      if (entry.word) wordRun.push(entry);
+      else { flushWords(); output.push({ text: entry.text, start: num(entry.start), end: Number.isFinite(Number(entry.end)) ? Number(entry.end) : NaN }); }
+    }
+    flushWords();
+    return output.sort((a, b) => a.start - b.start);
+  }
+
   /**
    * segments: [{ text, start, end }] in seconds relative to the same origin as `activity`.
    * Returns lines: [{ text, start, end }] — sorted, non-overlapping, inside [0,duration].
@@ -250,12 +269,32 @@
         acc += weights[i];
         const to = acc / totalWeight * axisLength;
         let ws = voicedToTime(axis, from), we = voicedToTime(axis, to);
+        let speechInterval = 0;
+        if (voiced && voiced.length) {
+          let remaining = (from + to) / 2;
+          for (let intervalIndex = 0; intervalIndex < axis.length; intervalIndex++) {
+            const intervalLength = axis[intervalIndex][1] - axis[intervalIndex][0];
+            if (remaining <= intervalLength || intervalIndex === axis.length - 1) {
+              speechInterval = intervalIndex;
+              const [intervalStart, intervalEnd] = axis[intervalIndex];
+              ws = clamp(ws, intervalStart, intervalEnd);
+              we = clamp(we, intervalStart, intervalEnd);
+              if (we - ws < 0.04) {
+                const center = clamp((ws + we) / 2, intervalStart, intervalEnd);
+                ws = Math.max(intervalStart, center - 0.02);
+                we = Math.min(intervalEnd, Math.max(ws + 0.04, center + 0.02));
+              }
+              break;
+            }
+            remaining -= intervalLength;
+          }
+        }
         if (modelWords) {
           const ms = rs + (num(modelWords[i].start) - modelFrom) / modelSpan * (re - rs);
           const me = rs + (num(modelWords[i].end) - modelFrom) / modelSpan * (re - rs);
           ws = trust * ms + (1 - trust) * ws; we = trust * me + (1 - trust) * we;
         }
-        words.push({ text: token, start: ws, end: Math.max(we, ws + 0.04), segmentIndex: index });
+        words.push({ text: token, start: ws, end: Math.max(we, ws + 0.04), segmentIndex: index, speechInterval });
       });
     });
 
@@ -270,7 +309,7 @@
     words.forEach((word, i) => {
       const prev = current[current.length - 1];
       const chars = current.reduce((a, w) => a + w.text.length + 1, 0) + word.text.length;
-      if (prev && (word.start - prev.end > cfg.pauseBreakSeconds || current.length >= cfg.maxWords || chars > cfg.maxChars)) flush();
+      if (prev && (word.speechInterval !== prev.speechInterval || word.start - prev.end > cfg.pauseBreakSeconds || current.length >= cfg.maxWords || chars > cfg.maxChars)) flush();
       current.push(word);
       if (/[.!?…]$/.test(word.text) && words[i + 1]) flush();
     });
@@ -308,6 +347,6 @@
 
   return {
     TIMELINE_FPS, MIN_FRAME, ACTIVITY, CAPTION,
-    analyzeSpeechActivity, planCaptionChunks, buildCaptionLines, groupWordsIntoPhrases, hasSpeech, sourceToTimeline
+    analyzeSpeechActivity, planCaptionChunks, buildCaptionLines, groupWordsIntoPhrases, mergeCaptionSegments, hasSpeech, sourceToTimeline
   };
 }));
