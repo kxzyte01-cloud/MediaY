@@ -474,8 +474,17 @@
      ------------------------------------------------------------------ */
   /** Collects H.264 as an Annex B elementary stream (what `ffmpeg -f h264` reads). */
   class AnnexBSink {
-    constructor() { this.parts = []; this.bytes = 0; this.params = null; this.nalLength = 4; }
+    constructor(maxBytes = Infinity) {
+      this.parts = []; this.bytes = 0; this.params = null; this.nalLength = 4;
+      this.maxBytes = Number.isFinite(maxBytes) && maxBytes > 0 ? maxBytes : Infinity;
+    }
     onChunk(chunk, meta) {
+      // A rendered stream is temporarily held as individual JS chunks, then as one
+      // contiguous Uint8Array, and then copied into FFmpeg.wasm. Refuse to grow
+      // beyond the caller's memory budget rather than risking a WebView OOM.
+      if (this.bytes + chunk.byteLength > this.maxBytes) {
+        throw new Unsupported('device video output exceeded its safe in-memory buffer budget');
+      }
       if (meta && meta.decoderConfig && meta.decoderConfig.description) {
         const parsed = parseAvcC(meta.decoderConfig.description);
         this.params = parsed; this.nalLength = parsed.nalLength;
@@ -485,6 +494,9 @@
       let out;
       if (this.params) out = avccToAnnexB(raw, this.nalLength, chunk.type === 'key' ? this.params : null);
       else out = raw; // encoder already produced Annex B
+      if (this.bytes + out.length > this.maxBytes) {
+        throw new Unsupported('device video output exceeded its safe in-memory buffer budget');
+      }
       this.parts.push(out); this.bytes += out.length;
     }
     finish() {
