@@ -102,7 +102,7 @@ def run_export(base, files, setup_js, route_libs, assets=None):
         # runs, which cancels Download.save_as and makes a successful export look like a failure.
         try:
             with page.expect_download(timeout=180000) as download_info:
-                page.evaluate("$('goExport').onclick(null, 0)", timeout=180000)
+                page.evaluate("() => { $('goExport').onclick(null, 0); return true; }")
             download = download_info.value
         except Exception as error:
             diagnostics = page.evaluate("""() => ({
