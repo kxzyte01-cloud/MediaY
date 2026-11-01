@@ -5,8 +5,9 @@ The real `tryDeviceEncoderExport` function is cut out of app.js and run in Chrom
 resulting MP4 is inspected. It also checks that every reason to decline (and any mid-way failure) returns null and cleans up,
 because that is what lets the export fall back to the FFmpeg-only path.
 
-CODEC NOTE: Playwright's Chromium has no H.264, so the harness swaps in VP9 for the picture. The H.264 specifics are covered by
-tests/fast.test.js; the sound/assembly commands are codec independent and run for real here.
+CODEC NOTE: The main integration path uses VP9 so it runs consistently across Chromium builds. The negative capability test
+explicitly makes H.264 configurations unsupported; it must not depend on which codecs happen to ship with the CI browser.
+H.264 bitstream specifics are covered by tests/fast.test.js; sound/assembly commands run with real FFmpeg.
 
 Run: python tests/fast_integration.py   (needs ffmpeg, ffprobe, Playwright + Chromium)
 """
@@ -42,6 +43,11 @@ HARNESS = r"""
 async (a) => {
   const real = window.MediaYFast;
   const useVp9 = !a.realCodecs;
+  const originalIsConfigSupported = window.VideoEncoder.isConfigSupported;
+  if (a.noH264) {
+    // Make this test deterministic: newer Chromium builds may include H.264 even when older CI images did not.
+    window.VideoEncoder.isConfigSupported = async config => ({ supported: false, config });
+  }
   const Fast = useVp9 ? Object.assign({}, real, {
     chooseEncoderConfig: o => real.chooseEncoderConfig(Object.assign({}, o, { codecs: ['vp09.00.10.08'], acceleration: ['no-preference'] })),
     AnnexBSink: function () { return new real.IvfSink('VP90', 640, 360, 30); }
@@ -73,6 +79,7 @@ async (a) => {
   let returned, error = null;
   try { returned = await fn(); } catch (e) { error = String(e && e.message || e); }
   window.MediaYFast = real;
+  window.VideoEncoder.isConfigSupported = originalIsConfigSupported;
   return { returned, error, log, handlerAfter: ctx.exportProgressHandler, workspace: [...ctx.exportWorkspaceFiles] };
 }
 """
@@ -167,7 +174,7 @@ def main():
             declines("odd speed", {"main": [clip("m1", 0, 2, speed=4)], "overlays": []}, "speed")
             declines("some clips silent", {"main": [clip("m1", 0, 1), clip("m2", 0, 1)], "overlays": []}, "no sound track")
             declines("switched off by the user", {"main": [clip("m1", 0, 1)], "overlays": []}, "turned off", toggle=False)
-            declines("device has no H.264 encoder (this Chromium has none)", {"main": [clip("m1", 0, 1)], "overlays": []}, "no usable video encoder", realCodecs=True)
+            declines("device has no H.264 encoder (capability explicitly unavailable)", {"main": [clip("m1", 0, 1)], "overlays": []}, "no usable video encoder", realCodecs=True, noH264=True)
 
             # 4. failure half way: must clean up everything it created and hand back the original handler
             r = go({"main": [clip("m1", 0, 1), clip("m1", 1, 2)], "overlays": [overlay]}, failOn="aseg1.wav")
