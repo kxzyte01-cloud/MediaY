@@ -6,10 +6,10 @@ the result is decoded by ffmpeg and checked frame by frame.
 Source frames carry a 12-bit "barcode" of their frame number in the top-left corner, so the test can tell exactly
 which source frame ended up in which output frame.
 
-CODEC NOTE: Playwright's bundled Chromium has no H.264 (licensing), but it does have VP9 in WebCodecs. This test therefore
-runs the whole pipeline with VP9 in an MP4 container. Everything except the H.264-specific parts is exercised here; the
-H.264 parts (avcC parsing, Annex B conversion) are covered by tests/fast.test.js. Real H.264 encode/decode is only
-exercised on a device (or desktop Chrome): see docs/fast-export.md.
+CODEC NOTE: The main frame-accuracy matrix uses VP9 for deterministic coverage. A separate test also attempts a real H.264
+WebCodecs encode and validates the Annex B output with FFmpeg when the installed Chromium build exposes an H.264 encoder.
+That desktop-browser check does not prove that Android WebView exposes a hardware encoder; physical-device validation remains
+required. See docs/fast-export.md.
 
 Needs: ffmpeg + ffprobe on PATH, Playwright with Chromium.
 Run: python tests/fast_pipeline.py
@@ -38,8 +38,12 @@ def make_source(path, offset=0, rot=None, seconds=4):
         sh("ffmpeg", "-y", "-loglevel", "error", "-display_rotation", str(rot), "-i", tmp, "-c", "copy", str(path))
 
 
-def decode_gray(path, w, h):
-    raw = sh("ffmpeg", "-v", "error", "-i", str(path), "-vf", "format=gray", "-f", "rawvideo", "-", binary=True)
+def decode_gray(path, w, h, input_format=None):
+    args = ["ffmpeg", "-v", "error"]
+    if input_format:
+        args += ["-f", input_format]
+    args += ["-i", str(path), "-vf", "format=gray", "-f", "rawvideo", "-"]
+    raw = sh(*args, binary=True)
     n = len(raw) // (w * h)
     return [raw[i * w * h:(i + 1) * w * h] for i in range(n)]
 
@@ -63,8 +67,9 @@ async (spec) => {
     const { video } = await Fast.demux(blob);
     clips.push({ file: blob, track: video, in: c.in, out: c.out, speed: c.speed || 1, fade: !!c.fade });
   }
-  const choice = await Fast.chooseEncoderConfig({ W: spec.W, H: spec.H, fps: spec.fps, codecs: ['vp09.00.10.08'], acceleration: ['no-preference'], bitrate: 6e6 });
-  const sink = new Fast.IvfSink('VP90', spec.W, spec.H, spec.fps);
+  const h264 = spec.codec === 'h264';
+  const sink = h264 ? new Fast.AnnexBSink() : new Fast.IvfSink('VP90', spec.W, spec.H, spec.fps);
+  let choice;
   const overlays = (spec.overlays || []).map(o => {
     const c = new OffscreenCanvas(o.w, o.h), x = c.getContext('2d');
     x.fillStyle = '#fff'; x.fillRect(0, 0, o.w, o.h);
@@ -74,13 +79,17 @@ async (spec) => {
   const progress = [];
   let result, error = null;
   try {
+    choice = await Fast.chooseEncoderConfig({
+      W: spec.W, H: spec.H, fps: spec.fps, bitrate: 6e6,
+      ...(h264 ? {} : { codecs: ['vp09.00.10.08'], acceleration: ['no-preference'] })
+    });
     result = await Fast.renderTimeline({ clips, W: spec.W, H: spec.H, fps: spec.fps, choice, sink, overlays,
       isCancelled: () => spec.cancelAfter != null && ++polled > spec.cancelAfter, onProgress: p => progress.push(p) });
   } catch (e) { error = String(e && e.message || e); }
   const bytes = sink.finish();
   let bin = '';
   for (let i = 0; i < bytes.length; i += 32768) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 32768));
-  return { error, result, progress, b64: btoa(bin) };
+  return { error, result, progress, format: h264 ? 'h264' : 'ivf', b64: btoa(bin) };
 }
 """
 
@@ -126,12 +135,12 @@ def main():
 
             def render(case_id, spec):
                 out = page.evaluate(HARNESS, spec)
-                ivf = work / f"{case_id}.ivf"
-                ivf.write_bytes(base64.b64decode(out["b64"]))
-                return out, ivf
+                output = work / f"{case_id}.h264" if spec.get("codec") == "h264" else work / f"{case_id}.ivf"
+                output.write_bytes(base64.b64decode(out["b64"]))
+                return out, output
 
-            def ids(ivf, w, h):
-                frames = decode_gray(ivf, w, h)
+            def ids(output, w, h):
+                frames = decode_gray(output, w, h, "h264" if output.suffix == ".h264" else None)
                 return [barcode(f, w) for f in frames], frames
 
             def clip(url, a, b, **kw):
@@ -215,6 +224,16 @@ def main():
             bench = page.evaluate(BENCH)
             check("L: encoder self-test reports a speed", bench["fps"] > 1, str(bench))
             print(f"   (info) software VP9 encoder self-test here: {bench['fps']:.0f} fps at 640x360")
+
+            # M. Exercise the actual H.264 WebCodecs encoder and Annex B sink where Chromium supports it.
+            h264_out, h264_file = render("M", dict(W=640, H=360, fps=30, codec="h264", clips=[clip("a.mp4", 0, 2)]))
+            if h264_out["error"] and "no usable video encoder" in h264_out["error"]:
+                print("SKIP M: this Chromium build does not expose an H.264 WebCodecs encoder")
+            else:
+                h264_ids, _ = ids(h264_file, 640, 360)
+                check("M: H.264 WebCodecs output is valid Annex B and preserves all 60 frames",
+                      h264_out["error"] is None and h264_out["result"] and h264_out["result"]["frames"] == 60 and h264_ids == list(range(60)),
+                      f"{h264_out['error']} frames={len(h264_ids)} ids={h264_ids[:8]}...{h264_ids[-4:]}")
 
             check("no page errors", not errors, str(errors))
             browser.close()
