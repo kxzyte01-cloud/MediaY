@@ -1788,11 +1788,13 @@ const runExport = async (_event, recoveryAttempt = 0) => {
           const clipLen = Math.max(0.05, a.out - a.in);
           const fd = Math.min(1, Math.max(0.05, clipLen / 2));
           const ms = Math.max(0, Math.round(a.st * 1000));
-          return `[${a.inputIndex}:a]atrim=start=${a.in}:end=${a.out},asetpts=PTS-STARTPTS${(a.vol ?? 1) !== 1 ? `,volume=${a.vol}` : ''}${a.fade ? ',afade=type=in:duration=' + fd.toFixed(3) + ',afade=type=out:start_time=' + Math.max(0, clipLen - fd).toFixed(3) + ':duration=' + fd.toFixed(3) : ''},adelay=${ms}|${ms}[a${i}]`;
+          return `[${a.inputIndex}:a]atrim=start=${a.in}:end=${a.out},asetpts=PTS-STARTPTS${(a.vol ?? 1) !== 1 ? `,volume=${a.vol}` : ''}${a.fade ? ',afade=type=in:duration=' + fd.toFixed(3) + ',afade=type=out:start_time=' + Math.max(0, clipLen - fd).toFixed(3) + ':duration=' + fd.toFixed(3) : ''},adelay=${ms}:all=1[a${i}]`;
         });
         const mixInputs = (originalHasAudio ? '[0:a]' : '') + activeTracks.map((_, i) => `[a${i}]`).join('');
         const mixCount = activeTracks.length + (originalHasAudio ? 1 : 0);
-        const filter = `${parts.join(';')};${mixInputs}amix=inputs=${mixCount}:duration=longest:normalize=0,apad=whole_dur=${timelineDur},atrim=duration=${timelineDur}[m]`;
+        const mix = mixCount === 1 ? `${mixInputs}anull[mixed]`
+          : `${mixInputs}amix=inputs=${mixCount}:duration=longest:normalize=0[mixed]`;
+        const filter = `${parts.join(';')};${mix};[mixed]apad=whole_dur=${timelineDur}[m]`;
         exportWorkspaceFiles.add('final.mp4');
         await run(['-i', out, ...ins, '-filter_complex', filter, '-map', '0:v', '-map', '[m]',
           '-c:v', 'copy', '-c:a', 'aac', '-t', timelineDur, 'final.mp4']);
