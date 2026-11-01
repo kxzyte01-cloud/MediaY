@@ -158,6 +158,31 @@ def main():
             mux = r["log"]["commands"][-1] if r["log"]["commands"] else []
             check("silent project: no sound commands, picture-only assembly", r["returned"] == "joined.mp4" and len(r["log"]["commands"]) == 1 and "-map" not in mux and "alist.txt" not in " ".join(mux), str(r["log"]["commands"]))
 
+            # 2b. mixed voiced + silent clips: the fast path must remain eligible and
+            # synthesize a silent WAV for the silent clip so concat has matching tracks.
+            r = go({"main": [clip("m1", 0, 1), clip("m2", 0, 1)], "overlays": []})
+            mixed_log = r["log"]
+            mixed_audio_cmds = [c for c in mixed_log["commands"] if c[-1].endswith(".wav")]
+            check("mixed-sound project: fast path stays enabled and creates one audio piece per clip",
+                  r["returned"] == "joined.mp4" and r["error"] is None and len(mixed_audio_cmds) == 2
+                  and any("anullsrc" in c for c in mixed_audio_cmds) and "alist.txt" in mixed_log["written"],
+                  f"returned={r['returned']} error={r['error']} commands={mixed_log['commands']}")
+            for cmd in mixed_audio_cmds:
+                subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *cmd], cwd=work, check=True)
+            mixed_lens = [float(sh("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                                   str(work / c[-1])).strip()) for c in mixed_audio_cmds]
+            check("mixed-sound project: voiced and synthetic-silence WAVs have matching 1.0 s durations",
+                  len(mixed_lens) == 2 and all(abs(x - 1.0) < 0.003 for x in mixed_lens), str(mixed_lens))
+            sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30",
+               "-frames:v", "60", "-c:v", "libx264", "-bf", "0", "-pix_fmt", "yuv420p", "-f", "h264",
+               str(work / "fastvideo.h264"))
+            (work / "alist.txt").write_text(mixed_log["alist"])
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *mixed_log["commands"][-1]], cwd=work, check=True)
+            mixed_dur, mixed_streams = ffprobe(work / "joined.mp4")
+            check("mixed-sound project: final MP4 keeps AAC and full 2.0 s duration",
+                  mixed_streams.get("video", ("", 0))[0] == "h264" and mixed_streams.get("audio", ("",))[0] == "aac"
+                  and abs(mixed_dur - 2.0) < 0.05, f"{mixed_dur} {mixed_streams}")
+
             # 3. reasons to decline: all must return null, write nothing, keep the original progress handler
             def declines(name, S, expect, **kw):
                 r = go(S, **kw)
@@ -172,7 +197,6 @@ def main():
             declines("video overlay", {"main": [clip("m1", 0, 1)], "overlays": [{"id": "v", "type": "video", "start": 0, "dur": 1, "layer": 1}]}, "video overlay")
             declines("blend mode", {"main": [clip("m1", 0, 1)], "overlays": [{"id": "b", "type": "image", "start": 0, "dur": 1, "layer": 1, "blend": "multiply"}]}, "blend")
             declines("odd speed", {"main": [clip("m1", 0, 2, speed=4)], "overlays": []}, "speed")
-            declines("some clips silent", {"main": [clip("m1", 0, 1), clip("m2", 0, 1)], "overlays": []}, "no sound track")
             declines("switched off by the user", {"main": [clip("m1", 0, 1)], "overlays": []}, "turned off", toggle=False)
             declines("device has no H.264 encoder (capability explicitly unavailable)", {"main": [clip("m1", 0, 1)], "overlays": []}, "no usable video encoder", realCodecs=True, noH264=True)
 
