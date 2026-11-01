@@ -2305,7 +2305,7 @@ function normalizeQuietCaptionAudio(pcm) {
   for (let i = 0; i < pcm.length; i++) normalized[i] = pcm[i] * gain;
   return normalized;
 }
-async function pcmOf(src, audioContext, decodeCache) {
+async function pcmOf(src, audioContext, decodeCache, onDecoded = () => {}) {
   // Reuse at most one decoded source buffer. This avoids decoding the same source twice
   // when a video and its audio track reference the same media without retaining many hours of PCM.
   await loadMedia(src.m);
@@ -2324,6 +2324,7 @@ async function pcmOf(src, audioContext, decodeCache) {
     throw error;
   }
   const inputRate = buf.sampleRate || audioContext.sampleRate || CAPTION_SAMPLE_RATE;
+  onDecoded({ sampleRate: inputRate, channels: buf.numberOfChannels || 1, sourceDurationSeconds: buf.duration || (buf.length / inputRate) });
   const start = Math.max(0, Math.min(buf.length, Math.floor(src.in * inputRate)));
   const end = Math.max(start, Math.min(buf.length, Math.ceil(src.out * inputRate)));
   if (end - start < Math.floor(inputRate * 0.1)) throw new Error('The selected audio range is too short.');
@@ -2355,6 +2356,18 @@ function hasAudibleSignal(pcm) {
   const rms = Math.sqrt(sum / Math.max(1, count));
   return !(rms < 0.0012 && peak < 0.006);
 }
+function captionPcmStats(pcm) {
+  if (!pcm || !pcm.length) return { durationSeconds: 0, rms: 0, peak: 0 };
+  const stride = Math.max(1, Math.floor(pcm.length / 200000));
+  let sum = 0, peak = 0, count = 0;
+  for (let i = 0; i < pcm.length; i += stride) {
+    const value = pcm[i], magnitude = Math.abs(value);
+    sum += value * value;
+    peak = Math.max(peak, magnitude);
+    count++;
+  }
+  return { durationSeconds: Number((pcm.length / CAPTION_SAMPLE_RATE).toFixed(3)), rms: Number(Math.sqrt(sum / Math.max(1, count)).toFixed(6)), peak: Number(peak.toFixed(6)) };
+}
 let asrWordTimestamps = false; // Whisper tiny's bundled DTW word alignment is unreliable; use native segment timestamps
 async function transcribeChunk(audioChunk) {
   const lang = $('capLang').value;
@@ -2377,13 +2390,23 @@ async function transcribeChunk(audioChunk) {
   }
   return { result: await asr(audioChunk, { ...options, return_timestamps: true }), wordMode: false };
 }
-async function captionFrom(pcm, src, onProgress = () => {}) {
+async function captionFrom(pcm, src, onProgress = () => {}, diagnostics = null) {
   // The speech model supplies the words; the audio itself supplies the timing (see mediay-core.js).
   const Core = window.MediaYCore;
   if (!Core) throw new Error('mediay-core.js did not load. Reload MediaY.');
   const duration = pcm.length / CAPTION_SAMPLE_RATE;
   const activity = Core.analyzeSpeechActivity(pcm, CAPTION_SAMPLE_RATE);
   const plan = Core.planCaptionChunks(duration, activity, { maxSeconds: CAPTION_CHUNK_SECONDS });
+  if (diagnostics) Object.assign(diagnostics, {
+    speechThresholdDb: Number(activity.thresholdDb.toFixed(2)),
+    speechDynamicRangeDb: Number((activity.dynamicRangeDb || 0).toFixed(2)),
+    speechVoicedRatio: Number((activity.voicedRatio || 0).toFixed(4)),
+    speechIntervals: activity.intervals.length,
+    speechAnalysisReliable: !!activity.reliable,
+    plannedChunks: plan.length,
+    chunksSentToWhisper: 0,
+    rawWhisperSegments: 0
+  });
   const mixedSegments = [];
   let lastCaptionStart = 0;
   for (let chunkIndex = 0; chunkIndex < plan.length; chunkIndex++) {
@@ -2394,6 +2417,10 @@ async function captionFrom(pcm, src, onProgress = () => {}) {
     // Whisper invents text ("Thank you.") on silence, so never feed it a window with no detected speech.
     if (!audioChunk.length || !Core.hasSpeech(activity, from, to)) { onProgress(progress); continue; }
     const { result, wordMode } = await transcribeChunk(audioChunk);
+    if (diagnostics) {
+      diagnostics.chunksSentToWhisper++;
+      diagnostics.rawWhisperSegments += (result.chunks || []).length;
+    }
     if (captionCancelRequested) throw abortCaption();
     const chunkDuration = audioChunk.length / CAPTION_SAMPLE_RATE;
     for (const chunk of result.chunks || []) {
@@ -2413,7 +2440,9 @@ async function captionFrom(pcm, src, onProgress = () => {}) {
   const segments = Core.mergeCaptionSegments(mixedSegments);
   const speed = Number.isFinite(src.sp) && src.sp > 0 ? src.sp : 1;
   const timelineStart = Number.isFinite(src.start) ? src.start : 0;
-  return Core.buildCaptionLines(segments, activity, duration).map((line, index) => ({
+  const lines = Core.buildCaptionLines(segments, activity, duration);
+  if (diagnostics) diagnostics.finalCaptionLines = lines.length;
+  return lines.map((line, index) => ({
     id: uid(),
     layer: S.nextLayer + index,
     type: 'text',
@@ -2545,19 +2574,37 @@ $('capGo').onclick = async () => {
     try { audioContext = new AudioContextClass({ sampleRate: CAPTION_SAMPLE_RATE }); }
     catch (_) { audioContext = new AudioContextClass(); }
     let chosenDrafts = [], usedLabels = [], skippedReversed = 0;
+    const sourceDiagnostics = [];
     for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
       const source = candidates[candidateIndex];
       if (captionCancelRequested) throw abortCaption();
       // Audio tracks are only a fallback when the video clips themselves contain no speech.
-      if (source.kind === 'audio' && chosenDrafts.length) break;
+      if (source.kind === 'audio' && chosenDrafts.length) {
+        sourceDiagnostics.push({ kind: source.kind, label: source.label, decode: 'not attempted', transcription: 'skipped: video source already produced captions' });
+        break;
+      }
       if (source.rev) { skippedReversed++; continue; } // reversed audio cannot be transcribed
       say(`Preparing ${source.label} for captions…`);
       captionMetric.stage('Decode and resample audio');
       updateBusy('Decoding audio…', `Preparing the audio from ${source.label}. Large source files can take time to decode.`, 10 + candidateIndex / candidates.length * 5, 'Audio decode');
+      const sourceDiagnostic = {
+        kind: source.kind, label: source.label,
+        selectedRangeSeconds: Number(Math.max(0, source.out - source.in).toFixed(3)),
+        decode: 'pending', transcription: 'not attempted'
+      };
+      sourceDiagnostics.push(sourceDiagnostic);
       let pcm;
-      try { pcm = await pcmOf(source, audioContext, decodeCache); }
-      catch (_) { continue; }
+      try {
+        pcm = await pcmOf(source, audioContext, decodeCache, info => Object.assign(sourceDiagnostic, info));
+        sourceDiagnostic.decode = 'success';
+        Object.assign(sourceDiagnostic, captionPcmStats(pcm));
+      } catch (decodeError) {
+        sourceDiagnostic.decode = 'failed';
+        sourceDiagnostic.decodeError = String(decodeError && decodeError.name || 'Error');
+        continue;
+      }
       if (!hasAudibleSignal(pcm)) {
+        sourceDiagnostic.transcription = 'skipped: no audible signal';
         updateBusy('Skipping silent audio…', `No useful audio signal was detected in ${source.label}.`, 15 + (candidateIndex + 1) / candidates.length * 5, 'Audio check');
         continue;
       }
@@ -2571,7 +2618,8 @@ $('capGo').onclick = async () => {
       let drafts;
       try {
         captionMetric.stage('Whisper inference');
-        drafts = await captionFrom(pcm, source, onChunk);
+        drafts = await captionFrom(pcm, source, onChunk, sourceDiagnostic);
+        sourceDiagnostic.transcription = drafts.length ? 'captions generated' : 'no caption lines';
       } catch (inferenceError) {
         if (inferenceError.name === 'AbortError') throw inferenceError;
         if (asrBackend !== 'webgpu') throw inferenceError;
@@ -2580,10 +2628,13 @@ $('capGo').onclick = async () => {
         captionMetric.stage('Load CPU compatibility model');
         asr = await createSpeechPipeline(false);
         captionMetric.stage('Whisper inference (CPU fallback)');
-        drafts = await captionFrom(pcm, source, onChunk);
+        drafts = await captionFrom(pcm, source, onChunk, sourceDiagnostic);
+        sourceDiagnostic.transcription = drafts.length ? 'captions generated (CPU fallback)' : 'no caption lines (CPU fallback)';
       }
       if (drafts.length) { chosenDrafts.push(...drafts); usedLabels.push(source.label); if (source.kind === 'audio') break; }
     }
+    captionMetric.note('sourceDiagnostics', sourceDiagnostics);
+    captionMetric.note('usedCaptionSources', usedLabels);
     const used = usedLabels.length > 1 ? `${usedLabels.length} clips` : (usedLabels[0] || '');
     if (captionCancelRequested) throw abortCaption();
     if (chosenDrafts.length) {
