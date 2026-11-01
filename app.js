@@ -2489,9 +2489,11 @@ $('capGo').onclick = async () => {
   const explicitVideo = !audioSelection && sel && sel.lane === 'main' ? S.main.find(x => x.id === sel.id) : null;
   const audioCandidate = item => ({ kind: 'audio', m: item.mediaId, in: item.in, out: item.out, start: item.start, sp: 1, label: item.name || 'audio track' });
   const videoCandidate = clip => ({ kind: 'video', m: clip.mediaId, in: clip.in, out: clip.out, start: startOf(clip, 'main'), sp: clip.speed || 1, rev: !!clip.rev, label: clip.name || 'video clip' });
-  // A selected clip is captioned alone. With nothing selected, the whole video (every main clip) is captioned.
+  // An explicit selection is authoritative: never silently switch to another lane.
+  // With no selection, try the main video first and use separate audio tracks only as fallback.
   const candidates = audioSelection ? [audioCandidate(audioSelection)] :
-    [...(explicitVideo ? [explicitVideo] : S.main).map(videoCandidate), ...S.audio.map(audioCandidate)];
+    explicitVideo ? [videoCandidate(explicitVideo)] :
+    [...S.main.map(videoCandidate), ...S.audio.map(audioCandidate)];
   if (!candidates.length) return say('Import a video or add audio first.');
   if (captionRunning) return;
   if (exportInProgress) return say('An export is running. Wait for it to finish, then generate captions.');
