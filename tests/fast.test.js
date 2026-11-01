@@ -60,6 +60,18 @@ test('avcC / Annex B conversion on a synthetic sample', () => {
   assert.deepEqual(Array.from(Fast.avccToAnnexB(sample, 4, p)).slice(0, 12), [0, 0, 0, 1, 0x67, 1, 2, 0, 0, 0, 1, 0x68]);
 });
 
+test('Annex B sink enforces a bounded output buffer before copying oversized chunks', () => {
+  let copied = false;
+  const limited = new Fast.AnnexBSink(4);
+  assert.throws(() => limited.onChunk({ byteLength: 5, copyTo() { copied = true; } }), Fast.Unsupported);
+  assert.equal(copied, false, 'an over-budget chunk must be rejected before allocating its copy');
+  assert.equal(limited.bytes, 0);
+
+  const exact = new Fast.AnnexBSink(5);
+  exact.onChunk({ byteLength: 5, copyTo(target) { target.fill(7); } });
+  assert.deepEqual(Array.from(exact.finish()), [7, 7, 7, 7, 7]);
+});
+
 test('demux matches ffprobe: sample table, key frames, timing (B-frames, moov at end and at start)', { skip: !haveFfmpeg }, async () => {
   for (const [name, extra] of [['plain.mp4', []], ['faststart.mp4', ['-movflags', '+faststart']]]) {
     const file = gen(name, extra);
