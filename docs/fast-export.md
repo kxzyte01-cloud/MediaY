@@ -41,9 +41,9 @@ performance report records `deviceEncoder: used (...)` or `not used: <reason>` p
 
 ## Known limits
 
-- Real H.264 encode/decode has only been exercised through unit tests on the container/bitstream side
-  (`tests/fast.test.js`). The browser pipeline tests use VP9 because Playwright's Chromium has no H.264. Whether Android WebView
-  exposes a hardware (or fast software) H.264 encoder is device dependent and must be checked on a phone.
+- The browser pipeline runs its deterministic frame-accuracy matrix with VP9 and also exercises the actual H.264 WebCodecs
+  encoder/Annex B output when the installed Chromium build exposes it (`tests/fast_pipeline.py`). This is desktop CI coverage,
+  not proof that a particular Android WebView exposes a working or fast hardware H.264 encoder; that must still be checked on a phone.
 - The finished picture stream (about the output bitrate x duration) is held in memory before being handed to FFmpeg.
 - Filters, colour adjustments, transitions, reverse, video overlays and blend modes still use the FFmpeg-only path (slow).
   Porting the filters to canvas, or a native Android encoder, are the next steps if those matter.
