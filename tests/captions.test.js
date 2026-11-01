@@ -46,3 +46,15 @@ test('an explicitly selected video clip does not silently switch to another lane
 test('with no selection, separate audio tracks remain fallback sources after main video clips', () => {
   assert.match(app, /\[\.\.\.S\.main\.map\(videoCandidate\), \.\.\.S\.audio\.map\(audioCandidate\)\]/);
 });
+
+
+test('caption diagnostics record decoded audio format and signal measurements without storing transcript text', () => {
+  assert.match(app, /function captionPcmStats\(pcm\)/);
+  assert.match(app, /sampleRate: inputRate, channels: buf\.numberOfChannels/);
+  assert.match(app, /Object\.assign\(sourceDiagnostic, captionPcmStats\(pcm\)\)/);
+  assert.match(app, /speechVoicedRatio:/);
+  assert.match(app, /chunksSentToWhisper\+\+/);
+  assert.match(app, /rawWhisperSegments \+= \(result\.chunks \|\| \[\]\)\.length/);
+  assert.match(app, /captionMetric\.note\('sourceDiagnostics', sourceDiagnostics\)/);
+  assert.doesNotMatch(app, /sourceDiagnostic\.rawText\s*=|sourceDiagnostic\.transcript\s*=/);
+});
