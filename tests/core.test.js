@@ -169,3 +169,23 @@ test('short continuous speech remains usable when voiced frames exceed 92 percen
   assert.ok(activity.voicedRatio > 0.92, `expected mostly voiced audio, got ${activity.voicedRatio}`);
   assert.equal(activity.reliable, true, `dynamic range ${activity.dynamicRangeDb} dB, voiced ratio ${activity.voicedRatio}`);
 });
+
+
+test('speech resampling suppresses frequencies above the new Nyquist limit', () => {
+  const inputRate = 48000, outputRate = 16000, seconds = 1;
+  const input = new Float32Array(inputRate * seconds);
+  for (let i = 0; i < input.length; i++) input[i] = Math.sin(2 * Math.PI * 12000 * i / inputRate);
+  const output = Core.resamplePcm(input, inputRate, outputRate);
+  const rms = Math.sqrt(output.reduce((sum, value) => sum + value * value, 0) / output.length);
+  assert.ok(output.length === outputRate * seconds);
+  assert.ok(rms < 0.08, `aliased 12 kHz tone RMS was ${rms}`);
+});
+
+test('speech resampling preserves a voice-band tone', () => {
+  const inputRate = 48000, outputRate = 16000, seconds = 1;
+  const input = new Float32Array(inputRate * seconds);
+  for (let i = 0; i < input.length; i++) input[i] = 0.5 * Math.sin(2 * Math.PI * 1000 * i / inputRate);
+  const output = Core.resamplePcm(input, inputRate, outputRate);
+  const rms = Math.sqrt(output.reduce((sum, value) => sum + value * value, 0) / output.length);
+  assert.ok(rms > 0.3 && rms < 0.4, `1 kHz tone RMS was ${rms}`);
+});
