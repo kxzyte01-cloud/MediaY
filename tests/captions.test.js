@@ -31,4 +31,5 @@ test('WebGPU speech inference selects explicit encoder and decoder precision', (
 test('quiet selected audio is peak-normalized without amplifying near-silence', () => {
   assert.match(app, /function normalizeQuietCaptionAudio\(pcm\)/);
   assert.match(app, /peak > 0\.006 && peak < 0\.5/);
+  assert.match(app, /Math\.min\(12, 0\.8 \/ peak\)/);
 });
