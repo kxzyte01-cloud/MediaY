@@ -158,3 +158,14 @@ test('caption lines break at real speech-interval boundaries and never bridge a 
   assert.ok(lines[1].start >= 5 - 1e-9);
   assert.ok(lines[1].start - lines[0].end >= 3);
 });
+
+
+test('short continuous speech remains usable when voiced frames exceed 92 percent', () => {
+  const words = [];
+  for (let start = 0; start < 13; start += 4) {
+    words.push({ text: 'continuous speech sample', start: start + 0.1, end: Math.min(13, start + 3.85) });
+  }
+  const activity = Core.analyzeSpeechActivity(makeSpeech(words, 13, 29), SR);
+  assert.ok(activity.voicedRatio > 0.92, `expected mostly voiced audio, got ${activity.voicedRatio}`);
+  assert.equal(activity.reliable, true, `dynamic range ${activity.dynamicRangeDb} dB, voiced ratio ${activity.voicedRatio}`);
+});
