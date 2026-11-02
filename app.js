@@ -309,7 +309,24 @@ async function buildObject(o, { restackAfter = true } = {}) {
   if (o.key && obj.applyFilters) { obj.filters = [keyFilter(o.key)]; obj.applyFilters(); }
   canvas.add(obj); syncOverlayControls(); if (restackAfter) restack(); return obj;
 }
+function disposeOverlayObject(object, overlay) {
+  if (object) {
+    try { canvas.remove(object); } catch (_) { /* already detached */ }
+    try { if (typeof object.dispose === 'function') object.dispose(); } catch (_) { /* release best-effort */ }
+  }
+  const element = overlay && overlay.el;
+  if (element) {
+    try { element.pause(); } catch (_) {}
+    try { element.removeAttribute('src'); element.load(); } catch (_) {}
+    delete overlay.el;
+  }
+}
 async function rebuildCanvas() {
+  // Dispose Fabric objects and their backing video elements before rebuilding.
+  for (const object of canvas.getObjects().slice()) {
+    const overlay = S.overlays.find(item => item.id === object.pmId);
+    disposeOverlayObject(object, overlay);
+  }
   canvas.clear(); sizeCanvas();
   for (const o of [...S.overlays].sort((a, b) => a.layer - b.layer)) await buildObject(o);
   refresh(t);
@@ -319,7 +336,7 @@ const objOf = id => canvas.getObjects().find(x => x.pmId === id);
 /* ---------- Undo / save ---------- */
 const snap = () => JSON.stringify(S, (k, v) => (k === 'el' ? undefined : v));
 function commit() {
-  undoStack.push(snap()); if (undoStack.length > 50) undoStack.shift(); redoStack = [];
+  undoStack.push(snap()); if (undoStack.length > (isNative() ? 10 : 50)) undoStack.shift(); redoStack = [];
   drawTimeline(); clearTimeout(saveTimer); saveTimer = setTimeout(() => saveProject().catch(err => { console.warn('Auto-save failed:', err); say('Auto-save failed. Check available storage on this device.'); }), 800);
 }
 function normalizeState(value) {
@@ -525,7 +542,7 @@ pipInput.onchange = async () => {
       if (type === 'video' && (!Number.isFinite(replacementDuration) || replacementDuration <= 0)) {
         throw new Error('Could not read this replacement overlay video. Try converting it to MP4.');
       }
-      const old = objOf(rid); if (old) canvas.remove(old);
+      const old = objOf(rid); disposeOverlayObject(old, o);
       Object.assign(o, { mediaId, type, name: f.name }); delete o.el; delete o.scaleX; delete o.scaleY;
       if (type === 'video') {
         o.sourceIn = 0;
@@ -973,7 +990,7 @@ $('trimStartBtn').onclick = () => trimSelectionAtPlayhead('start');
 $('trimEndBtn').onclick = () => trimSelectionAtPlayhead('end');
 $('deleteBtn').onclick = () => {
   if (!sel) return say('Tap a clip first.');
-  if (sel.lane === 'overlay') { const ob = objOf(sel.id); if (ob) canvas.remove(ob); }
+  if (sel.lane === 'overlay') { const overlay = S.overlays.find(x => x.id === sel.id); disposeOverlayObject(objOf(sel.id), overlay); }
   S[sel.lane === 'main' ? 'main' : sel.lane === 'audio' ? 'audio' : 'overlays'] = S[sel.lane === 'main' ? 'main' : sel.lane === 'audio' ? 'audio' : 'overlays'].filter(x => x.id !== sel.id);
   sel = null; commit(); refresh(Math.min(t, total()));
 };
@@ -2002,14 +2019,14 @@ $('styleList').onclick = async e => {
   const b = e.target.closest('[data-ts]'); if (!b) return;
   txtStyle = +b.dataset.ts; [...$('styleList').children].forEach(x => x.classList.toggle('on', x === b));
   const o = sel && sel.lane === 'overlay' && S.overlays.find(x => x.id === sel.id && x.type === 'text');
-  if (o) { const old = objOf(o.id); if (old) canvas.remove(old); o.style = txtStyle; await buildObject(o); refresh(t); commit(); }
+  if (o) { const old = objOf(o.id); disposeOverlayObject(old, o); o.style = txtStyle; await buildObject(o); refresh(t); commit(); }
 };
 const textSel = () => { const o = sel && sel.lane === 'overlay' && S.overlays.find(x => x.id === sel.id); return o && o.type === 'text' ? o : null; };
 function markText() { const o = textSel(); $('textInput').value = o ? o.text : ''; $('addText').textContent = o ? 'Update text' : 'Add to video'; }
 $('addText').onclick = async () => {
   const s = $('textInput').value.trim(); if (!s) return say('Type your text first.');
   const o = textSel();
-  if (o) { const old = objOf(o.id); if (old) canvas.remove(old); o.text = s; await buildObject(o); restack(); commit(); refresh(t); closeSheet(); return; }
+  if (o) { const old = objOf(o.id); disposeOverlayObject(old, o); o.text = s; await buildObject(o); restack(); commit(); refresh(t); closeSheet(); return; }
   addOverlay({ type: 'text', text: s, style: txtStyle, top: RATIOS[S.ratio][1] * 0.7 }); $('textInput').value = ''; closeSheet();
 };
 
@@ -2492,7 +2509,7 @@ async function commitCaptionDrafts(drafts) {
   } catch (error) {
     for (const id of built) {
       const object = objOf(id);
-      if (object) canvas.remove(object);
+      if (object) disposeOverlayObject(object, staged.find(overlay => overlay.id === id));
     }
     canvas.requestRenderAll();
     S.overlays = S.overlays.filter(overlay => !staged.some(draft => draft.id === overlay.id));
