@@ -105,6 +105,7 @@
       <p class="lbl">Frames per second</p><div id="fpsList" class="pills"></div>
       <button id="fastExportBtn" class="wide" type="button">⚡ Fast draft — 480p / 24 fps</button>
       <p class="lbl">Fast draft prioritizes speed for review copies. Choose a higher resolution or frame rate for your final export.</p>
+      <label class="lbl" style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" id="useDeviceEncoder" checked><span>Use this phone’s video encoder when supported. Turn off to always use the standard encoder.</span></label>
       <button id="goExport" class="primary wide">Export video</button>
       <details class="perf-tools">
         <summary>Performance diagnostics</summary>
@@ -222,6 +223,8 @@
     </div>
   </div>
 
+  <script src="./mediay-core.js"></script>
+  <script src="./mediay-fast.js"></script>
   <script src="./app.js"></script>
   <script src="./setup.js"></script>
 </body>

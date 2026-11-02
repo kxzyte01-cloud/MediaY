@@ -1,0 +1,6 @@
+
+# Speech engine third-party files are fetched and checksum-verified by scripts/fetch_speech_engine.sh
+vendor/transformers/transformers.min.js
+vendor/transformers/ort-wasm-simd.wasm
+vendor/transformers/ort-wasm.wasm
+vendor/transformers/LICENSE
