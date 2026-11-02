@@ -189,3 +189,30 @@ test('speech resampling preserves a voice-band tone', () => {
   const rms = Math.sqrt(output.reduce((sum, value) => sum + value * value, 0) / output.length);
   assert.ok(rms > 0.3 && rms < 0.4, `1 kHz tone RMS was ${rms}`);
 });
+
+test('repeating Whisper token loops are collapsed without deleting normal repetition', () => {
+  assert.equal(Core.stripRepeatingLoops('hello hello hello hello hello hello'), 'hello');
+  assert.equal(Core.stripRepeatingLoops('we go home we go home we go home we go home'), 'we go home');
+  assert.equal(Core.stripRepeatingLoops('we really really need this'), 'we really really need this');
+});
+
+test('caption builder safely ignores null segments and music-only output', () => {
+  const lines = Core.buildCaptionLines([
+    null,
+    { text: '♪ ♫ ♪', start: 0, end: 1 },
+    { text: 'Real words here', start: 1, end: 2 }
+  ], null, 3);
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].text, 'Real words here');
+});
+
+test('caption lines break at Whisper segment boundaries even across short pauses', () => {
+  const activity = { reliable: true, intervals: [[0.8, 1.8], [2.1, 3.1]] };
+  const lines = Core.buildCaptionLines([
+    { text: 'first sentence', start: 1, end: 1.8 },
+    { text: 'second sentence', start: 2.1, end: 3.0 }
+  ], activity, 4);
+  assert.equal(lines.length, 2, JSON.stringify(lines));
+  assert.match(lines[0].text, /first sentence/);
+  assert.match(lines[1].text, /second sentence/);
+});
