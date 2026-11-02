@@ -129,6 +129,41 @@
 
   const wordWeight = w => Math.max(1, w.replace(/[^\p{L}\p{N}]/gu, '').length) + 0.6;
 
+  /** Collapse pathological Whisper token-repetition loops (see FilmCraft crates/speech/src/whisper.rs `repeating`). */
+  function stripRepeatingLoops(text) {
+    const tokens = String(text || '').trim().split(/\s+/).filter(Boolean);
+    if (tokens.length < 5) return tokens.join(' ');
+    const norm = w => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+    const out = [];
+    let i = 0;
+    while (i < tokens.length) {
+      let collapsed = false;
+      for (let n = 1; n <= 6 && i + n * 4 <= tokens.length; n++) {
+        const minReps = n === 1 ? 5 : 4;
+        if (i + n * minReps > tokens.length) continue;
+        const pat = tokens.slice(i, i + n).map(norm);
+        if (pat.some(p => !p)) continue;
+        let reps = 1;
+        while (i + (reps + 1) * n <= tokens.length) {
+          let match = true;
+          for (let k = 0; k < n; k++) {
+            if (norm(tokens[i + reps * n + k]) !== pat[k]) { match = false; break; }
+          }
+          if (!match) break;
+          reps++;
+        }
+        if (reps >= minReps) {
+          out.push(...tokens.slice(i, i + n));
+          i += reps * n;
+          collapsed = true;
+          break;
+        }
+      }
+      if (!collapsed) out.push(tokens[i++]);
+    }
+    return out.join(' ');
+  }
+
   function voicedWithin(activity, a, b) {
     const out = [];
     for (const [s, e] of activity.intervals) {
@@ -216,9 +251,14 @@
   function buildCaptionLines(segments, activity, duration, opts = {}) {
     const cfg = { ...CAPTION, ...opts };
     const usable = activity && activity.reliable;
-    const clean = segments
-      .map(seg => ({ text: String(seg.text || '').trim(), start: num(seg.start, 0), end: Number.isFinite(Number(seg.end)) ? Number(seg.end) : NaN, words: Array.isArray(seg.words) ? seg.words : null }))
-      .filter(seg => seg.text && !/^[\[(♪].*[\])♪]$/.test(seg.text))
+    const clean = (segments || [])
+      .map(seg => ({
+        text: stripRepeatingLoops(String(seg && seg.text || '').trim()),
+        start: num(seg && seg.start, 0),
+        end: seg && Number.isFinite(Number(seg.end)) ? Number(seg.end) : NaN,
+        words: Array.isArray(seg && seg.words) ? seg.words : null
+      }))
+      .filter(seg => seg.text && !/^[\[(♪♫].*[\])♪♫]$/.test(seg.text) && !/^[♪♫\s]+$/.test(seg.text))
       .sort((a, b) => a.start - b.start);
 
     const words = []; // { text, start, end, segmentIndex }
@@ -241,6 +281,28 @@
           const overlaps = inside.some(([a, b]) => b > s - 0.2 && a < e + 0.2);
           if (overlaps) {
             const used = inside.filter(([a, b]) => b > s - cfg.startSlackBefore && a < e + cfg.endSlackAfter);
+            // Tighten against pauses (FilmCraft vad.rs `split_at_pauses` / `trim_edges`):
+            // 1) A tiny click/scrap before a >= 200ms pause prior to `s` is not the start of this segment.
+            while (used.length > 1 && used[0][1] <= s + 0.05 && used[1][0] - used[0][1] >= 0.2 && used[0][1] - used[0][0] < 0.12) {
+              used.shift();
+            }
+            // 2) When Whisper's contiguous segment end spills across a >= 200ms pause into the next segment's
+            //    speech onset, end this segment at the pause so `previousEnd` does not push `next` late.
+            if (next && used.length > 1) {
+              const minExpectedSpeech = Math.min(0.25, tokens.length * 0.08);
+              while (used.length > 1) {
+                const lastInt = used[used.length - 1];
+                const prevInt = used[used.length - 2];
+                const pauseGap = lastInt[0] - prevInt[1];
+                const speechBefore = used.slice(0, -1).reduce((acc, [a, b]) => acc + (b - a), 0);
+                const rawContinuesIntoNext = activity.intervals.some(([ia, ib]) => ia <= lastInt[0] + 1e-4 && ib >= lastInt[1] - 1e-4 && ib > next.start + 0.05);
+                if (pauseGap >= 0.2 && speechBefore >= minExpectedSpeech && (rawContinuesIntoNext || lastInt[0] >= Math.min(e, nextStart) - cfg.startSlackBefore)) {
+                  used.pop();
+                } else {
+                  break;
+                }
+              }
+            }
             if (used.length) {
               rs = used[0][0];
               re = used[used.length - 1][1];
@@ -308,14 +370,14 @@
     words.forEach((word, i) => {
       const prev = current[current.length - 1];
       const chars = current.reduce((a, w) => a + w.text.length + 1, 0) + word.text.length;
-      if (prev && (word.speechInterval !== prev.speechInterval || word.start - prev.end > cfg.pauseBreakSeconds || current.length >= cfg.maxWords || chars > cfg.maxChars)) flush();
+      if (prev && (word.segmentIndex !== prev.segmentIndex || word.speechInterval !== prev.speechInterval || word.start - prev.end > cfg.pauseBreakSeconds || current.length >= cfg.maxWords || chars > cfg.maxChars)) flush();
       current.push(word);
       if (/[.!?…]$/.test(word.text) && words[i + 1]) flush();
     });
     flush();
 
     // Final timing pass: lead-in, hold, no overlaps, no flicker between near-adjacent lines.
-    lines.forEach((line, i) => {
+    lines.forEach(line => {
       line.start = Math.max(0, line.start - cfg.lead);
       line.end = line.end + cfg.hold;
     });
@@ -334,7 +396,8 @@
     return lines.filter(l => l.end - l.start >= MIN_FRAME * 0.99 && l.start < duration);
   }
 
-  /** Windowed-sinc resampling with a low-pass cutoff to suppress aliasing when downsampling. */
+  const resampleTableCache = new Map();
+  /** Windowed-sinc resampling with a cached polyphase table to suppress aliasing without per-sample trig overhead. */
   function resamplePcm(pcm, inputRate, outputRate) {
     if (!pcm || !pcm.length || !(inputRate > 0) || !(outputRate > 0)) return new Float32Array(0);
     if (inputRate === outputRate) return Float32Array.from(pcm);
@@ -342,23 +405,72 @@
     const outputLength = Math.max(1, Math.round(pcm.length / ratio));
     const output = new Float32Array(outputLength);
     const radius = 12;
-    const cutoff = Math.min(0.5, 0.5 / ratio) * 0.92;
-    const sinc = x => Math.abs(x) < 1e-8 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x);
+    const taps = radius * 2;
+    const isIntRatio = Math.abs(ratio - Math.round(ratio)) < 1e-9;
+    const PHASES = isIntRatio ? 1 : 512;
+    const cacheKey = `${inputRate}:${outputRate}`;
+    let table = resampleTableCache.get(cacheKey);
+    if (!table) {
+      const cutoff = Math.min(0.5, 0.5 / ratio) * 0.92;
+      const sinc = x => Math.abs(x) < 1e-8 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x);
+      table = new Float32Array(PHASES * taps);
+      for (let p = 0; p < PHASES; p++) {
+        const frac = p / PHASES;
+        const base = p * taps;
+        let weightSum = 0;
+        for (let k = 0; k < taps; k++) {
+          const offset = k - radius + 1;
+          const distance = offset - frac;
+          const normalized = distance / radius;
+          if (Math.abs(normalized) >= 1) continue;
+          const win = 0.5 + 0.5 * Math.cos(Math.PI * normalized);
+          const w = 2 * cutoff * sinc(2 * cutoff * distance) * win;
+          table[base + k] = w;
+          weightSum += w;
+        }
+        if (weightSum > 0) {
+          const inv = 1 / weightSum;
+          for (let k = 0; k < taps; k++) table[base + k] *= inv;
+        }
+      }
+      resampleTableCache.set(cacheKey, table);
+    }
+
+    const pcmLen = pcm.length;
+    const safeStart = Math.ceil(radius / ratio);
+    const safeEnd = Math.min(outputLength, Math.floor((pcmLen - radius - 1) / ratio));
     for (let i = 0; i < outputLength; i++) {
       const position = i * ratio;
-      const center = Math.floor(position);
-      let sum = 0, weightSum = 0;
-      for (let sample = center - radius + 1; sample <= center + radius; sample++) {
-        if (sample < 0 || sample >= pcm.length) continue;
-        const distance = sample - position;
-        const normalized = distance / radius;
-        if (Math.abs(normalized) >= 1) continue;
-        const window = 0.5 + 0.5 * Math.cos(Math.PI * normalized);
-        const weight = 2 * cutoff * sinc(2 * cutoff * distance) * window;
-        sum += pcm[sample] * weight;
-        weightSum += weight;
+      const center = position | 0;
+      const firstSample = center - radius + 1;
+      if (i >= safeStart && i < safeEnd) {
+        const base = isIntRatio ? 0 : Math.min(PHASES - 1, ((position - center) * PHASES + 0.5) | 0) * taps;
+        output[i] =
+          pcm[firstSample] * table[base] + pcm[firstSample + 1] * table[base + 1] +
+          pcm[firstSample + 2] * table[base + 2] + pcm[firstSample + 3] * table[base + 3] +
+          pcm[firstSample + 4] * table[base + 4] + pcm[firstSample + 5] * table[base + 5] +
+          pcm[firstSample + 6] * table[base + 6] + pcm[firstSample + 7] * table[base + 7] +
+          pcm[firstSample + 8] * table[base + 8] + pcm[firstSample + 9] * table[base + 9] +
+          pcm[firstSample + 10] * table[base + 10] + pcm[firstSample + 11] * table[base + 11] +
+          pcm[firstSample + 12] * table[base + 12] + pcm[firstSample + 13] * table[base + 13] +
+          pcm[firstSample + 14] * table[base + 14] + pcm[firstSample + 15] * table[base + 15] +
+          pcm[firstSample + 16] * table[base + 16] + pcm[firstSample + 17] * table[base + 17] +
+          pcm[firstSample + 18] * table[base + 18] + pcm[firstSample + 19] * table[base + 19] +
+          pcm[firstSample + 20] * table[base + 20] + pcm[firstSample + 21] * table[base + 21] +
+          pcm[firstSample + 22] * table[base + 22] + pcm[firstSample + 23] * table[base + 23];
+      } else {
+        const phase = Math.min(PHASES - 1, Math.round((position - center) * PHASES));
+        const base = phase * taps;
+        let sum = 0, weightSum = 0;
+        for (let k = 0; k < taps; k++) {
+          const sample = firstSample + k;
+          if (sample < 0 || sample >= pcmLen) continue;
+          const w = table[base + k];
+          sum += pcm[sample] * w;
+          weightSum += w;
+        }
+        output[i] = weightSum > 0 ? sum / weightSum : 0;
       }
-      output[i] = weightSum ? sum / weightSum : 0;
     }
     return output;
   }
@@ -375,6 +487,6 @@
 
   return {
     TIMELINE_FPS, MIN_FRAME, ACTIVITY, CAPTION,
-    analyzeSpeechActivity, planCaptionChunks, buildCaptionLines, groupWordsIntoPhrases, mergeCaptionSegments, hasSpeech, resamplePcm, sourceToTimeline
+    analyzeSpeechActivity, planCaptionChunks, buildCaptionLines, groupWordsIntoPhrases, mergeCaptionSegments, hasSpeech, resamplePcm, sourceToTimeline, stripRepeatingLoops
   };
 }));
