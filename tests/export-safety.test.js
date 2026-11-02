@@ -20,3 +20,12 @@ test('dropping media caches releases decoded audio buffers and thumbnail data', 
   assert.match(source, /for \(const id of Object\.keys\(decoded\)\) delete decoded\[id\]/);
   assert.match(source, /for \(const id of Object\.keys\(thumbs\)\) delete thumbs\[id\]/);
 });
+
+test('mobile undo history is bounded and Fabric overlay media is explicitly disposed', () => {
+  assert.match(app, /undoStack\.length > \(isNative\(\) \? 10 : 50\)/);
+  assert.match(app, /function disposeOverlayObject\(object, overlay\)/);
+  assert.match(app, /object\.dispose\(\)/);
+  assert.match(app, /element\.pause\(\)/);
+  assert.match(app, /element\.removeAttribute\('src'\)/);
+  assert.match(app, /for \(const object of canvas\.getObjects\(\)\.slice\(\)\)/);
+});
