@@ -132,15 +132,16 @@
   /** Collapse pathological Whisper token-repetition loops (see FilmCraft crates/speech/src/whisper.rs `repeating`). */
   function stripRepeatingLoops(text) {
     const tokens = String(text || '').trim().split(/\s+/).filter(Boolean);
-    if (tokens.length < 5) return tokens.join(' ');
     const norm = w => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
     const out = [];
     let i = 0;
     while (i < tokens.length) {
       let collapsed = false;
-      for (let n = 1; n <= 6 && i + n * 4 <= tokens.length; n++) {
-        const minReps = n === 1 ? 5 : 4;
-        if (i + n * minReps > tokens.length) continue;
+      for (let n = 1; n <= 6; n++) {
+        // Conservative thresholds: preserve natural emphasis and laughter.
+        const minReps = n === 1 ? 8 : 5;
+        const minTokens = 8;
+        if (i + n * minReps > tokens.length || n * minReps < minTokens) continue;
         const pat = tokens.slice(i, i + n).map(norm);
         if (pat.some(p => !p)) continue;
         let reps = 1;
@@ -162,6 +163,28 @@
       if (!collapsed) out.push(tokens[i++]);
     }
     return out.join(' ');
+  }
+
+  // Remove only rapid, long runs of identical short Whisper segments. Repeated
+  // phrases separated by real pauses are legitimate speech and must survive.
+  function dropIdenticalSegmentRuns(segments, maxGapSeconds = 1.5, minRun = 8) {
+    const key = text => String(text || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+    const out = [];
+    for (let i = 0; i < segments.length;) {
+      const currentKey = key(segments[i].text);
+      let j = i + 1;
+      while (currentKey && j < segments.length && key(segments[j].text) === currentKey) {
+        const prevEnd = Number(segments[j - 1].end);
+        const nextStart = Number(segments[j].start);
+        if (!Number.isFinite(prevEnd) || !Number.isFinite(nextStart) || nextStart - prevEnd > maxGapSeconds) break;
+        j++;
+      }
+      const short = String(segments[i].text || '').trim().split(/\s+/).length <= 8;
+      if (currentKey && short && j - i >= minRun) out.push(segments[i]);
+      else out.push(...segments.slice(i, j));
+      i = j;
+    }
+    return out;
   }
 
   function voicedWithin(activity, a, b) {
@@ -260,10 +283,11 @@
       }))
       .filter(seg => seg.text && !/^[\[(♪♫].*[\])♪♫]$/.test(seg.text) && !/^[♪♫\s]+$/.test(seg.text))
       .sort((a, b) => a.start - b.start);
+    const deduplicated = dropIdenticalSegmentRuns(clean);
 
     const words = []; // { text, start, end, segmentIndex }
     let previousEnd = 0;
-    clean.forEach((seg, index) => {
+    deduplicated.forEach((seg, index) => {
       const tokens = seg.text.split(/\s+/).filter(Boolean);
       if (!tokens.length) return;
       let s = clamp(seg.start, 0, duration);
