@@ -309,34 +309,50 @@ async function buildObject(o, { restackAfter = true } = {}) {
   if (o.key && obj.applyFilters) { obj.filters = [keyFilter(o.key)]; obj.applyFilters(); }
   canvas.add(obj); syncOverlayControls(); if (restackAfter) restack(); return obj;
 }
+function releaseOverlayMediaElement(element) {
+  if (!element || String(element.tagName || '').toUpperCase() !== 'VIDEO') return;
+  try { element.pause(); } catch (_) {}
+  try { element.removeAttribute('src'); element.load(); } catch (_) {}
+}
 function disposeOverlayObject(object, overlay) {
   if (object) {
+    // After restore(), S already points at snapshot objects without .el. The live
+    // video element must therefore be released through the Fabric object itself.
+    try { if (typeof object.getElement === 'function') releaseOverlayMediaElement(object.getElement()); } catch (_) {}
     try { canvas.remove(object); } catch (_) { /* already detached */ }
     try { if (typeof object.dispose === 'function') object.dispose(); } catch (_) { /* release best-effort */ }
   }
   const element = overlay && overlay.el;
   if (element) {
-    try { element.pause(); } catch (_) {}
-    try { element.removeAttribute('src'); element.load(); } catch (_) {}
+    releaseOverlayMediaElement(element);
     delete overlay.el;
   }
 }
+let rebuildGeneration = 0;
 async function rebuildCanvas() {
-  // Dispose Fabric objects and their backing video elements before rebuilding.
+  // Prevent overlapping Undo/Redo rebuilds from leaving stale Fabric objects.
+  const generation = ++rebuildGeneration;
   for (const object of canvas.getObjects().slice()) {
     const overlay = S.overlays.find(item => item.id === object.pmId);
     disposeOverlayObject(object, overlay);
   }
   canvas.clear(); sizeCanvas();
-  for (const o of [...S.overlays].sort((a, b) => a.layer - b.layer)) await buildObject(o);
-  refresh(t);
+  for (const o of [...S.overlays].sort((a, b) => a.layer - b.layer)) {
+    if (generation !== rebuildGeneration) return;
+    const built = await buildObject(o);
+    if (generation !== rebuildGeneration) {
+      if (built) disposeOverlayObject(built, o);
+      return;
+    }
+  }
+  if (generation === rebuildGeneration) refresh(t);
 }
 const objOf = id => canvas.getObjects().find(x => x.pmId === id);
 
 /* ---------- Undo / save ---------- */
 const snap = () => JSON.stringify(S, (k, v) => (k === 'el' ? undefined : v));
 function commit() {
-  undoStack.push(snap()); if (undoStack.length > (isNative() ? 10 : 50)) undoStack.shift(); redoStack = [];
+  undoStack.push(snap()); if (undoStack.length > 50) undoStack.shift(); redoStack = [];
   drawTimeline(); clearTimeout(saveTimer); saveTimer = setTimeout(() => saveProject().catch(err => { console.warn('Auto-save failed:', err); say('Auto-save failed. Check available storage on this device.'); }), 800);
 }
 function normalizeState(value) {
@@ -1855,7 +1871,7 @@ const runExport = async (_event, recoveryAttempt = 0) => {
       retryAfterCleanup = true;
       retryAttempt = recoveryAttempt + 1;
     }
-    const memoryProblem = /out of memory|memory access out of bounds|failed to grow memory|cannot allocate|allocation failed|out of memory|oom/i.test(errText + ' ' + ffLogs.join(' '));
+    const memoryProblem = /out of memory|memory access out of bounds|failed to grow memory|cannot allocate|allocation failed|\boom\b/i.test(errText + ' ' + ffLogs.join(' '));
     const fallbackResolution = EXP.res > 1080 ? 1080 : (EXP.res > 720 ? 720 : null);
     if (fallbackResolution && memoryProblem && recoveryAttempt < 1) {
       EXP.res = fallbackResolution;
@@ -1867,12 +1883,14 @@ const runExport = async (_event, recoveryAttempt = 0) => {
       retryAfterCleanup = true;
       retryAttempt = recoveryAttempt + 1;
     }
-    exportFailed = true;
     exportProgressHandler = null;
-    const diagnostics = ffLogs.length ? (' Encoder details: ' + ffLogs.slice(-4).join(' | ').slice(0, 650)) : '';
-    const message = 'Export problem: ' + (err && err.message || err) + '. Try 720p or a shorter clip.' + diagnostics;
-    say(message);
-    showBusyError('Export failed', message);
+    if (!retryAfterCleanup) {
+      exportFailed = true;
+      const diagnostics = ffLogs.length ? (' Encoder details: ' + ffLogs.slice(-4).join(' | ').slice(0, 650)) : '';
+      const message = 'Export problem: ' + (err && err.message || err) + '. Try 720p or a shorter clip.' + diagnostics;
+      say(message);
+      showBusyError('Export failed', message);
+    }
   } finally {
     exportMetric.stage('Clean FFmpeg workspace');
     // All virtual filesystem inputs and outputs created by this export are session-owned.
