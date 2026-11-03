@@ -153,3 +153,11 @@
 #suStart { background:#1e668c; border:1px solid #1e668c; color:#fff; } #suStart:hover { background:#174f6d; }
 @media(max-width:380px) { #homeScreen { padding-left:13px; padding-right:13px; } .hm-recent,.hm-library { padding:13px; } .hm-footer { flex-direction:column; } }
 @media(max-height:680px) { #homeScreen { padding-top:calc(12px + env(safe-area-inset-top)); } .hm-hero { padding:22px 0 15px; } .hm-hero h1 { font-size:clamp(28px,7vw,38px); } .hm-recent { padding:13px; } }
+
+
+/* COASTLINE PREMIUM — final cascade for transition and format selections.
+   setup.css loads after style.css, so these overrides intentionally live last. */
+.tr-duration { background:var(--panel2); border-color:var(--border); }
+.tr-duration label,.tr-duration label b { color:var(--text); }
+#trList button.on { background:#dcecf3; border-color:#398fb8; color:#193448; }
+.ratios .on { border-color:#398fb8; background:#dcecf3; color:#193448; }
