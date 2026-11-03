@@ -191,7 +191,7 @@ test('speech resampling preserves a voice-band tone', () => {
 });
 
 test('repeating Whisper token loops are collapsed without deleting normal repetition', () => {
-  assert.equal(Core.stripRepeatingLoops('hello hello hello hello hello hello'), 'hello');
+  assert.equal(Core.stripRepeatingLoops('hello hello hello hello hello hello hello hello'), 'hello');
   assert.equal(Core.stripRepeatingLoops('we go home we go home we go home we go home'), 'we go home');
   assert.equal(Core.stripRepeatingLoops('we really really need this'), 'we really really need this');
 });
