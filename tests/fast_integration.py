@@ -179,7 +179,7 @@ def main():
             check("long-output path: one clip is split into six independently muxed bounded pieces",
                   r["returned"] == "joined.mp4" and len(chunk_muxes) == 6
                   and all(f"fastvideo_{i}.h264" in r["log"]["written"] for i in range(6))
-                  and all(f"fastsegment_{i}.mp4" in r["workspace"] for i in range(6)),
+                  and all(f"fastsegment_{i}.mp4" in r["log"]["removed"] for i in range(6)),
                   f"returned={r['returned']} chunks={len(chunk_muxes)} workspace={r['workspace']}")
 
             # 2. project without any sound track -> picture only
