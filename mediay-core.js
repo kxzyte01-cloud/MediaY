@@ -293,7 +293,7 @@
       let s = clamp(seg.start, 0, duration);
       let e = Number.isFinite(seg.end) ? clamp(seg.end, s, duration) : Math.min(duration, s + tokens.length * 0.35);
       if (e - s < 0.05) e = Math.min(duration, s + Math.max(0.2, tokens.length * 0.25));
-      const next = clean[index + 1];
+      const next = deduplicated[index + 1];
       let rs = s, re = e, voiced = null;
       if (usable) {
         const windowStart = Math.max(previousEnd, s - cfg.startSlackBefore);
