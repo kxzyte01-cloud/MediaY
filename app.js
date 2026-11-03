@@ -2996,7 +2996,7 @@ const projectMediaReady = (async function init() {
     } catch (e) { console.warn('Could not restore the last project:', e); }
   }
   undoStack = [snap()]; drawTimeline(); refresh(0);
-  if (window.lucide) lucide.createIcons();
+  if (window.MediaYIcons) MediaYIcons.render(document);
   return true;
 })();
 // setup.js waits for this promise before showing the dashboard so startup cannot race IndexedDB restore.
