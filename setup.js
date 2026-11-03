@@ -24,23 +24,50 @@
   home.id = 'homeScreen'; home.setAttribute('aria-label', 'Project home');
   home.innerHTML = `
     <div class="hm-wrap">
-      <header class="hm-brand"><span class="brand-icon">Y</span><span>ProjectMedia <b>Y</b></span><span class="hm-pill">VIDEO EDITOR</span></header>
-      <div class="hm-hero"><p class="hm-eyebrow">YOUR CREATIVE SPACE</p><h1>Make something<br><span>that moves.</span></h1><p class="hm-sub">Pick up where you left off or start a fresh edit.</p></div>
-      <section class="hm-recent" id="hmRecent">
-        <div class="hm-section-head"><div><p class="hm-eyebrow">RECENT PROJECT</p><h2 id="hmProjectTitle">Your last edit</h2></div><span class="hm-project-icon">▶</span></div>
-        <p id="hmProjectMeta" class="hm-meta">Saved on this device</p>
-        <button id="hmContinue" class="hm-continue"><span class="hm-play">▶</span><span><b>Continue editing</b><small>Open your last project</small></span><span class="hm-arrow">↗</span></button>
-        <p id="hmNoProject" class="hm-empty" hidden>No saved project yet. Start a new edit below; projects are saved on this device.</p>
+      <header class="hm-brand">
+        <span class="brand-mark" aria-hidden="true">Y</span>
+        <span class="hm-wordmark"><strong>MediaY</strong><small>VIDEO STUDIO</small></span>
+        <span class="hm-pill">EDITOR</span>
+      </header>
+      <section class="hm-hero">
+        <p class="hm-eyebrow">YOUR CREATIVE WORKSPACE</p>
+        <h1>A clearer space<br>to shape <em>your video.</em></h1>
+        <p class="hm-sub">Pick up an edit or start with a clean timeline. Your projects stay on this device.</p>
       </section>
-      <div class="hm-actions">
-        <button id="hmNew" class="hm-new"><span class="hm-action-icon">＋</span><span><b>New project</b><small>Start with your own media</small></span><span class="hm-arrow">→</span></button>
-        <button id="hmTemplates" class="hm-action"><span class="hm-action-icon">▧</span><span><b>My templates</b><small>Reuse an intro, logo or layout</small></span><span class="hm-arrow">→</span></button>
-        <button id="hmExport" class="hm-export"><span>Export last project</span><span>↑</span></button>
-      </div>
-      <section class="hm-library"><div class="hm-library-head"><h2>My projects</h2><span id="hmProjectCount">0 saved</span></div><div id="hmProjectList"></div></section>
-      <footer class="hm-footer">Projects and imported media stay on this device.</footer>
+      <section class="hm-recent" id="hmRecent" aria-labelledby="hmRecentHeading">
+        <div class="hm-section-head">
+          <div><p class="hm-eyebrow">RECENT PROJECT</p><h2 id="hmProjectTitle">Your last edit</h2></div>
+          <span class="hm-project-icon" aria-hidden="true"><i data-lucide="film"></i></span>
+        </div>
+        <p id="hmProjectMeta" class="hm-meta">Saved on this device</p>
+        <button id="hmContinue" class="hm-continue" type="button">
+          <span class="hm-play" aria-hidden="true"><i data-lucide="play"></i></span>
+          <span class="hm-continue-copy"><b>Continue editing</b><small>Return to your last project</small></span>
+          <span class="hm-arrow" aria-hidden="true"><i data-lucide="arrow-right"></i></span>
+        </button>
+        <p id="hmNoProject" class="hm-empty" hidden>No saved project yet. Start a new edit below; your work will appear here.</p>
+      </section>
+      <section class="hm-actions" aria-label="Project actions">
+        <button id="hmNew" class="hm-new" type="button">
+          <span class="hm-action-icon" aria-hidden="true"><i data-lucide="plus"></i></span>
+          <span><b>New project</b><small>Start with your own media</small></span>
+          <span class="hm-arrow" aria-hidden="true"><i data-lucide="arrow-right"></i></span>
+        </button>
+        <button id="hmTemplates" class="hm-action" type="button">
+          <span class="hm-action-icon" aria-hidden="true"><i data-lucide="layers"></i></span>
+          <span><b>My templates</b><small>Reuse a saved layout</small></span>
+          <span class="hm-arrow" aria-hidden="true"><i data-lucide="arrow-right"></i></span>
+        </button>
+        <button id="hmExport" class="hm-export" type="button"><span>Export last project</span><i data-lucide="arrow-up-right" aria-hidden="true"></i></button>
+      </section>
+      <section class="hm-library" aria-labelledby="hmLibraryHeading">
+        <div class="hm-library-head"><h2 id="hmLibraryHeading">My projects</h2><span id="hmProjectCount">0 saved</span></div>
+        <div id="hmProjectList"></div>
+      </section>
+      <footer class="hm-footer"><span>Stored locally on this device.</span><a href="./legal.html">Terms, privacy &amp; licenses</a></footer>
     </div>`;
   document.body.appendChild(home);
+  if (window.MediaYIcons) MediaYIcons.render(document);
 
   const setup = document.createElement('section'); setup.id = 'setup'; setup.setAttribute('aria-label', 'New project'); setup.hidden = true;
   setup.innerHTML = `
