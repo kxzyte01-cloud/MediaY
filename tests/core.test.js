@@ -216,3 +216,20 @@ test('caption lines break at Whisper segment boundaries even across short pauses
   assert.match(lines[0].text, /first sentence/);
   assert.match(lines[1].text, /second sentence/);
 });
+
+
+test('caption loop suppression preserves ordinary emphasis and laughter', () => {
+  assert.equal(Core.stripRepeatingLoops('No, no, no, no, no, please stop.'), 'No, no, no, no, no, please stop.');
+  assert.equal(Core.stripRepeatingLoops('Ha ha ha ha ha that is funny.'), 'Ha ha ha ha ha that is funny.');
+  assert.equal(Core.stripRepeatingLoops('thank '.repeat(30) + 'you'), 'thank you');
+});
+
+test('identical caption segments are deduplicated only when they form a rapid Whisper loop', () => {
+  const rapidLoop = Array.from({ length: 12 }, (_, i) => ({ text: 'Thank you.', start: i * 2, end: i * 2 + 1.8 }));
+  const loopLines = Core.buildCaptionLines(rapidLoop, { reliable: false, intervals: [] }, 30);
+  assert.equal(loopLines.length, 1);
+
+  const realRepeatedSpeech = [0, 10, 20, 30].map(start => ({ text: 'Yes, I agree.', start, end: start + 1.5 }));
+  const realLines = Core.buildCaptionLines(realRepeatedSpeech, { reliable: false, intervals: [] }, 40);
+  assert.equal(realLines.length, 4);
+});
