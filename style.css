@@ -329,3 +329,8 @@ dialog::backdrop { background:rgba(25,52,72,.32); } dialog ul,dialog p { color:v
 @media(max-width:620px) { .topbar { gap:6px; padding:7px 9px; } .brand { margin-right:auto; } .brand-lockup small { display:none; } }
 @media(max-height:650px) { .sheet-head { position:sticky; top:-1px; z-index:2; background:var(--panel); } }
 @media(prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; transition-duration:.01ms!important; animation-duration:.01ms!important; } }
+
+
+/* The header uses the same neon aperture artwork as the favicon and Android launcher icon. */
+.brand-icon { background: transparent !important; box-shadow: none !important; padding: 0 !important; overflow: hidden; }
+.brand-icon .brand-mark { display: block; width: 100%; height: 100%; object-fit: contain; }
