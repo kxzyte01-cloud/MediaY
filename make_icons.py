@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
-"""Generate MediaY's neon cyan-violet-magenta aperture mark for app icons."""
+"""Generate and install MediaY's neon cyan-violet-magenta aperture launcher icons."""
+import glob
+import os
+import re
+import sys
 from PIL import Image, ImageDraw
+
+BACKGROUND = (11, 15, 25, 255)
 
 
 def render_cyber_icon(size: int, maskable: bool = False) -> Image.Image:
@@ -14,7 +20,7 @@ def render_cyber_icon(size: int, maskable: bool = False) -> Image.Image:
     draw.rounded_rectangle(
         [pad, pad, width - 1 - pad, width - 1 - pad],
         radius=radius,
-        fill=(11, 15, 25, 255),
+        fill=BACKGROUND,
     )
 
     if not maskable:
@@ -71,9 +77,39 @@ def render_cyber_icon(size: int, maskable: bool = False) -> Image.Image:
     return image.resize((size, size), Image.Resampling.LANCZOS)
 
 
-if __name__ == "__main__":
-    # Regenerate every time so CI/APK builds cannot silently package stale legacy icons.
+def create():
+    # Always regenerate so an APK cannot silently package stale legacy red icons.
     render_cyber_icon(192, maskable=False).save("icon-192.png", "PNG", optimize=True)
     render_cyber_icon(512, maskable=False).save("icon-512.png", "PNG", optimize=True)
     render_cyber_icon(512, maskable=True).save("icon-maskable-512.png", "PNG", optimize=True)
     print("Generated updated MediaY neon icons.")
+
+
+def apply():
+    # Preserve the existing Android resource installation step used by built.yml.
+    resources = "android/app/src/main/res"
+    for path in glob.glob(resources + "/mipmap-*/ic_launcher*.png"):
+        foreground = "foreground" in os.path.basename(path)
+        source = "icon-maskable-512.png" if foreground else "icon-512.png"
+        size = Image.open(path).size
+        Image.open(source).convert("RGBA").resize(size, Image.Resampling.LANCZOS).save(path)
+
+    for path in glob.glob(resources + "/drawable*/splash.png"):
+        width, height = Image.open(path).size
+        image = Image.new("RGBA", (width, height), BACKGROUND)
+        side = int(min(width, height) * 0.4)
+        logo = Image.open("icon-512.png").convert("RGBA").resize((side, side), Image.Resampling.LANCZOS)
+        image.paste(logo, ((width - side) // 2, (height - side) // 2), logo)
+        image.save(path)
+
+    background_xml = resources + "/values/ic_launcher_background.xml"
+    if os.path.exists(background_xml):
+        with open(background_xml, encoding="utf-8") as file:
+            source = file.read()
+        with open(background_xml, "w", encoding="utf-8") as file:
+            file.write(re.sub(r"#[0-9a-fA-F]{6}", "#0B0F19", source, count=1))
+
+
+if __name__ == "__main__":
+    mode = sys.argv[1] if len(sys.argv) > 1 else "before"
+    create() if mode == "before" else apply()
