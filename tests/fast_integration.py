@@ -68,7 +68,11 @@ async (a) => {
     exportMetric: { stage: n => log.stages.push(n), note: (k, v) => { log.notes[k] = v; } },
     exportProgressHandler: 'SAVED-HANDLER',
     exportWorkspaceFiles: new Set(), exportSourceCache: new Map(), exportSourceCacheBytes: 0,
-    ff: { writeFile: async (n, d) => { log.written[n] = (typeof d === 'string') ? d.length : d.length; if (n === 'alist.txt') log.alist = new TextDecoder().decode(d); } },
+    ff: { writeFile: async (n, d) => {
+      log.written[n] = (typeof d === 'string') ? d.length : d.length;
+      if (n === 'alist.txt') log.alist = new TextDecoder().decode(d);
+      if (n === 'vlist.txt') log.vlist = new TextDecoder().decode(d);
+    } },
     run: async args => { if (a.failOn && args.join(' ').includes(a.failOn)) throw new Error('FFmpeg failed (code 1)'); log.commands.push(args); },
     ensureExportSource: async id => ({ name: a.names[id], size: 1, cached: false }),
     removeExportFile: async n => { log.removed.push(n); },
