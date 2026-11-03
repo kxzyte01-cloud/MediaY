@@ -40,10 +40,10 @@ def make_tone(folder, name, freq, duration=1.5):
        "-c:a", "libopus", str(out))
     return str(out)
 
-def make_voiced_clip(folder, name="pip_voiced.webm", duration=2):
+def make_voiced_clip(folder, name="pip_voiced.webm", duration=2, freq=880, size="320x180"):
     out = Path(folder) / name
-    sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=blue:s=320x180:r=30:d={duration}",
-       "-f", "lavfi", "-i", f"sine=frequency=880:sample_rate=44100:duration={duration}",
+    sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=blue:s={size}:r=30:d={duration}",
+       "-f", "lavfi", "-i", f"sine=frequency={freq}:sample_rate=44100:duration={duration}",
        "-vf", "format=yuv420p", "-c:v", "libvpx", "-b:v", "200k", "-deadline", "realtime", "-cpu-used", "8",
        "-c:a", "libopus", "-shortest", str(out))
     return str(out)
@@ -216,8 +216,10 @@ def main():
     assert "Export complete" in status and not errors, (status, errors)
     assert abs(duration - total) < 0.15 and abs(duration - 3.0) < 0.15, (duration, total)
     assert any(s[0] == "audio" for s in streams), f"missing mixed audio stream: {streams}"
+    assert rms_db(path, 0.3, 0.5) > -30.0, "first external voice-over was not audible in its window"
+    assert rms_db(path, 1.15, 0.45) < -45.0, "unexpected audio bleed in silent gap between voice-overs"
     assert rms_db(path, 1.9, 0.6) > -30.0, "second external voice-over was truncated"
-    print(f"PASS: both delayed voice-overs remain audible and output stays within {duration:.2f} s timeline in {time.time() - t0:.0f} s")
+    print(f"PASS: both delayed voice-overs remain independently audible and output stays within {duration:.2f} s timeline in {time.time() - t0:.0f} s")
 
     # 5) PiP videos are intentionally muted in preview and export because there is no
     # overlay-volume control. A voiced PiP must not add a hidden audio track.
@@ -242,6 +244,54 @@ def main():
     assert abs(duration - total) < 0.15, (duration, total)
     assert not any(s[0] == "audio" for s in streams), f"muted PiP unexpectedly added an audio track: {streams}"
     print(f"PASS: silent and voiced PiP overlays remain muted; no hidden PiP audio is exported ({duration:.2f} s) in {time.time() - t0:.0f} s")
+
+    # 6) Reversed external audio-track order & overlong music track.
+    # Later music is pushed first and exceeds the 3-second project timeline.
+    t0 = time.time()
+    silent_main_rev = make_silent_clip(folder, "silent_main_rev.webm", duration=3)
+    music_overlong = make_tone(folder, "music_overlong.webm", 660, duration=5.0)
+    voice_first = make_tone(folder, "voice_first.webm", 440, duration=0.8)
+    setup = fast + """(async () => {
+      for (const [url, name, start, outDur, srcDur] of [
+        ['/music_overlong.webm', 'music_overlong.webm', 1.6, 4.5, 5.0],
+        ['/voice_first.webm', 'voice_first.webm', 0.2, 0.8, 0.8]
+      ]) {
+        const blob = await (await fetch(url)).blob();
+        const file = new File([blob], name, { type: 'audio/webm' });
+        const mediaId = await storeMedia(file);
+        S.audio.push({ id: uid(), mediaId, name, start, in: 0, out: outDur, src: srcDur });
+      }
+    })()"""
+    path, status, total, errors = run_export(base, [silent_main_rev], setup, route_libs,
+        assets={"music_overlong.webm": music_overlong, "voice_first.webm": voice_first})
+    duration, streams = probe(path)
+    assert "Export complete" in status and not errors, (status, errors)
+    assert abs(duration - total) < 0.15 and abs(duration - 3.0) < 0.15, (duration, total)
+    assert any(s[0] == "audio" and s[1] == "aac" for s in streams), f"missing AAC audio stream: {streams}"
+    assert rms_db(path, 0.3, 0.5) > -30.0, "earlier voice track (pushed second in reverse S.audio order) was lost"
+    assert rms_db(path, 1.1, 0.35) < -45.0, "unexpected audio bleed in silent gap before overlong music track"
+    assert rms_db(path, 1.8, 1.0) > -30.0, "overlong music track (pushed first in reverse S.audio order) was lost"
+    print(f"PASS: reversed S.audio order and overlong music track trim cleanly to {duration:.2f} s while preserving both tracks in {time.time() - t0:.0f} s")
+
+    # 7) Short overlapping fades & voiced -> silent -> voiced xfade transitions.
+    t0 = time.time()
+    short_voiced_1 = make_voiced_clip(folder, name="short_voiced_1.webm", duration=0.8, freq=440, size="640x360")
+    short_silent_mid = make_silent_clip(folder, name="short_silent_mid.webm", duration=0.6, size="640x360")
+    short_voiced_2 = make_voiced_clip(folder, name="short_voiced_2.webm", duration=0.8, freq=880, size="640x360")
+    setup = fast + """(() => {
+      S.main.forEach(c => { c.fade = true; });
+      S.main[1].tr = 'fade'; S.main[1].trDur = 0.2;
+      S.main[2].tr = 'fade'; S.main[2].trDur = 0.2;
+    })()"""
+    path, status, total, errors = run_export(base, [short_voiced_1, short_silent_mid, short_voiced_2], setup, route_libs)
+    duration, streams = probe(path)
+    assert "Export complete" in status and not errors, (status, errors)
+    assert abs(duration - total) < 0.2 and abs(total - 2.2) < 0.1, (duration, total)
+    assert ("video", "h264", 480, 854) in streams, f"invalid H.264 stream header: {streams}"
+    assert any(s[0] == "audio" and s[1] == "aac" for s in streams), f"missing AAC stream header: {streams}"
+    assert rms_db(path, 0.1, 0.5) > -35.0, "first sub-second voiced clip lost audio across fade/xfade"
+    assert rms_db(path, 1.45, 0.5) > -35.0, "second sub-second voiced clip lost audio after silent middle clip and xfade"
+    print(f"PASS: sub-second voiced -> silent -> voiced clips with overlapping fades and xfade transitions preserve both voiced segments ({duration:.2f} s) in {time.time() - t0:.0f} s")
 
     server.shutdown()
 
