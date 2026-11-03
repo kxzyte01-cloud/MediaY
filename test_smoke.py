@@ -7,6 +7,7 @@ html=(root/'index.html').read_text()
 html=html.replace('<script src="./vendor/ffmpeg/ffmpeg.js"></script>', '<script>window.FFmpegWASM={};</script>')
 style=(root/'style.css').read_text()
 setup_style=(root/'setup.css').read_text()
+icons=(root/'mediay-icons.js').read_text()
 core=(root/'mediay-core.js').read_text()
 app=(root/'app.js').read_text()
 setup=(root/'setup.js').read_text()
@@ -29,7 +30,7 @@ DEXIE_STUB = r'''window.Dexie = class Dexie {
  constructor(){ const maps={projects:new Map(),media:new Map()}; this.projects={get:async k=>maps.projects.get(k)||null,put:async v=>{maps.projects.set(v.id,structuredClone(v));return v.id},toArray:async()=>Array.from(maps.projects.values()).map(x=>structuredClone(x)),delete:async k=>maps.projects.delete(k)}; this.media={get:async k=>maps.media.get(k)||null,put:async v=>{maps.media.set(v.id,v);return v.id}}; }
  version(){return {stores:()=>this};}
 };'''
-LUCIDE_STUB = r'''window.lucide={createIcons:function(){}};'''
+
 # Build an all-inline version; no network or local file URL is needed for the smoke test.
 html=html.replace('<link rel="manifest" href="./manifest.json">','')
 html=html.replace('<link rel="icon" href="./favicon.svg" type="image/svg+xml">','')
@@ -41,7 +42,8 @@ for x in ['<link rel="preconnect" href="https://fonts.googleapis.com">','<link h
 html=html.replace('<script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>', '<script>'+FABRIC_STUB+'</script>')
 html=html.replace('<script src="https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.2/anime.min.js"></script>', '<script>'+ANIME_STUB+'</script>')
 html=html.replace('<script src="https://unpkg.com/dexie@3.2.7/dist/dexie.min.js"></script>', '<script>'+DEXIE_STUB+'</script>')
-html=html.replace('<script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>', '<script>'+LUCIDE_STUB+'</script>')
+
+html=html.replace('<script src="./mediay-icons.js"></script>', '<script>'+icons+'</script>')
 html=html.replace('<script src="./mediay-core.js"></script>', '<script>'+core+'</script>')
 html=html.replace('<script src="./app.js"></script>', '<script>'+app+'</script>')
 html=html.replace('<script src="./setup.js"></script>', '<script>'+setup+'</script>')
@@ -59,7 +61,11 @@ with sync_playwright() as p:
     assert "await endNativeExportService()" in app, 'native export service is not stopped during export cleanup'
     assert "foreground-service notification" in html, 'background export guidance is missing'
     print('PASS: Android export service hooks and foreground-export guidance are present')
+    assert page.locator('.dock svg[data-mediay-svg]').count() >= 10, 'custom MediaY toolbar SVG icons did not render'
+    assert page.locator('#homeScreen svg[data-mediay-svg]').count() >= 4, 'custom MediaY home SVG icons did not render'
+    assert 'lucide.min.js' not in html and 'fonts.googleapis.com' not in html, 'remote icon/font dependencies remain'
     print('PASS: home screen appears on startup')
+    print('PASS: original local SVG icons render in home and editor toolbar')
     page.locator('#hmNew').click(); page.wait_for_selector('#setup:not([hidden])')
     print('PASS: New project opens setup screen')
     page.locator('#suStart').click(); page.wait_for_function("document.querySelector('#homeScreen').hidden === true")
