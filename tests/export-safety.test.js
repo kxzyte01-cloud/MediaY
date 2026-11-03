@@ -21,29 +21,23 @@ test('dropping media caches releases decoded audio buffers and thumbnail data', 
   assert.match(source, /for \(const id of Object\.keys\(thumbs\)\) delete thumbs\[id\]/);
 });
 
-test('mobile undo history is bounded and Fabric overlay media is explicitly disposed', () => {
-  assert.match(app, /undoStack\.length > \(isNative\(\) \? 10 : 50\)/);
+test('undo history remains bounded and Fabric overlay media is explicitly disposed', () => {
+  assert.match(app, /undoStack\.length > 50/);
   assert.match(app, /function disposeOverlayObject\(object, overlay\)/);
   assert.match(app, /object\.dispose\(\)/);
   assert.match(app, /element\.pause\(\)/);
   assert.match(app, /element\.removeAttribute\('src'\)/);
-  assert.match(app, /for \(const object of canvas\.getObjects\(\)\.slice\(\)\)/);
+  assert.match(app, /for \(const object of canvas\.getObjects\(\)\.slice\(\)/);
 });
-
 
 test('overlay rebuild releases Fabric-owned video elements and ignores stale asynchronous rebuilds', () => {
-  assert.match(source, /object\.getElement\(\)/);
+  assert.match(app, /object\.getElement\(\)/);
   assert.match(app, /let rebuildGeneration = 0/);
   assert.match(app, /generation !== rebuildGeneration/);
-  assert.match(source, /element\.removeAttribute\('src'\)/);
-});
-
-test('undo history remains bounded at 50 entries without an arbitrary mobile-only reduction', () => {
-  assert.match(source, /undoStack\.length > 50/);
-  assert.doesNotMatch(source, /undoStack\.length > \(isNative\(\) \? 10 : 50\)/);
+  assert.match(app, /element\.removeAttribute\('src'\)/);
 });
 
 test('OOM retry detection matches the oom token, not arbitrary words containing those letters', () => {
-  assert.match(source, /\\boom\\b/);
-  assert.doesNotMatch(source, /allocation failed\|out of memory\|oom\/i/);
+  assert.match(app, /\\boom\\b/);
+  assert.doesNotMatch(app, /allocation failed\|out of memory\|oom\/i/);
 });
