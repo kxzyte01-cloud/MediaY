@@ -51,7 +51,7 @@ async (a) => {
   const Fast = useVp9 ? Object.assign({}, real, {
     chooseEncoderConfig: o => real.chooseEncoderConfig(Object.assign({}, o, { codecs: ['vp09.00.10.08'], acceleration: ['no-preference'] })),
     AnnexBSink: function () { return new real.IvfSink('VP90', 640, 360, 30); },
-    targetBitrate: (...args) => a.smallChunks ? 100e6 : real.targetBitrate(...args)
+    targetBitrate: (...args) => a.smallChunks ? 1.07e9 : real.targetBitrate(...args)
   }) : real;
   window.MediaYFast = Fast;
   const blobs = {};
