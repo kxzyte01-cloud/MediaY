@@ -26,6 +26,7 @@ jobs:
           node --check mediay-fast.js
           node --check app.js
           node --check setup.js
+          node --check mediay-icons.js
           node --check sw.js
       - name: Download and verify the bundled speech engine (pinned npm version, SHA-256 checked)
         run: bash scripts/fetch_speech_engine.sh
