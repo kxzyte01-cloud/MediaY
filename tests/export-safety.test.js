@@ -29,3 +29,21 @@ test('mobile undo history is bounded and Fabric overlay media is explicitly disp
   assert.match(app, /element\.removeAttribute\('src'\)/);
   assert.match(app, /for \(const object of canvas\.getObjects\(\)\.slice\(\)\)/);
 });
+
+
+test('overlay rebuild releases Fabric-owned video elements and ignores stale asynchronous rebuilds', () => {
+  assert.match(source, /object\.getElement\(\)/);
+  assert.match(source, /let rebuildGeneration = 0/);
+  assert.match(source, /generation !== rebuildGeneration/);
+  assert.match(source, /element\.removeAttribute\('src'\)/);
+});
+
+test('undo history remains bounded at 50 entries without an arbitrary mobile-only reduction', () => {
+  assert.match(source, /undoStack\.length > 50/);
+  assert.doesNotMatch(source, /undoStack\.length > \(isNative\(\) \? 10 : 50\)/);
+});
+
+test('OOM retry detection matches the oom token, not arbitrary words containing those letters', () => {
+  assert.match(source, /\\\\boom\\\\b/);
+  assert.doesNotMatch(source, /allocation failed\|out of memory\|oom\/i/);
+});
