@@ -50,7 +50,8 @@ async (a) => {
   }
   const Fast = useVp9 ? Object.assign({}, real, {
     chooseEncoderConfig: o => real.chooseEncoderConfig(Object.assign({}, o, { codecs: ['vp09.00.10.08'], acceleration: ['no-preference'] })),
-    AnnexBSink: function () { return new real.IvfSink('VP90', 640, 360, 30); }
+    AnnexBSink: function () { return new real.IvfSink('VP90', 640, 360, 30); },
+    targetBitrate: (...args) => a.smallChunks ? 100e6 : real.targetBitrate(...args)
   }) : real;
   window.MediaYFast = Fast;
   const blobs = {};
@@ -170,6 +171,16 @@ def main():
             subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *mux], cwd=work, check=True)
             dur, streams = ffprobe(work / "joined.mp4")
             check("assembled MP4 has H.264 picture (60 frames) and AAC sound, 2.0 s long", streams.get("video", ("", 0))[0] == "h264" and streams["video"][1] == 60 and streams.get("audio", ("",))[0] == "aac" and abs(dur - 2.0) < 0.05, f"{dur} {streams}")
+
+            # Force a tiny per-piece frame budget to prove a single one-second clip
+            # is rendered as multiple bounded segments instead of one large output buffer.
+            r = go({"main": [clip("m1", 0, 1)], "overlays": []}, smallChunks=True)
+            chunk_muxes = [c for c in r["log"]["commands"] if "-f" in c and "h264" in c]
+            check("long-output path: one clip is split into six independently muxed bounded pieces",
+                  r["returned"] == "joined.mp4" and len(chunk_muxes) == 6
+                  and all(f"fastvideo_{i}.h264" in r["log"]["written"] for i in range(6))
+                  and all(f"fastsegment_{i}.mp4" in r["workspace"] for i in range(6)),
+                  f"returned={r['returned']} chunks={len(chunk_muxes)} workspace={r['workspace']}")
 
             # 2. project without any sound track -> picture only
             r = go({"main": [clip("m2", 0, 1)], "overlays": []})
