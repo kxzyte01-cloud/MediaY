@@ -21,3 +21,12 @@ test('Coastline transition and format selections use porcelain surfaces',()=>{
   assert.ok(active.includes('color:#193448'),'selected transition text must use deep ink');
   assert.ok(ratio.includes('background:#dcecf3'),'selected ratio must use the pale-blue active state');
 });
+
+test('Coastline project-library actions keep the premium blue treatment',()=>{
+  const newIcon=setupStyle.slice(setupStyle.lastIndexOf('.hm-new .hm-action-icon {')).split('}')[0];
+  const openProject=setupStyle.slice(setupStyle.lastIndexOf('.hm-open-project {')).split('}')[0];
+  assert.ok(newIcon.includes('background:#e5f0f5'));
+  assert.ok(newIcon.includes('color:#1e668c'));
+  assert.ok(openProject.includes('background:#1e668c'));
+  assert.ok(openProject.includes('color:#fff'));
+});
