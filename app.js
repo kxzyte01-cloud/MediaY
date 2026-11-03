@@ -1946,7 +1946,7 @@ function openSheet(name) {
   sheet.classList.toggle('sheet-tall', name === 'adjust' || name === 'blend');
   document.querySelectorAll('[data-pane]').forEach(p => (p.hidden = p.dataset.pane !== name));
   document.querySelectorAll('.dock button').forEach(b => b.classList.toggle('on', b.dataset.sheet === name));
-  if (name === 'fx') markFx(); else if (name === 'adjust') markAdjust(); else if (name === 'blend') markBlend(); else if (name === 'speed') markSp(); else if (name === 'vol') markVol(); else if (name === 'tr') markTr(); else if (name === 'text') markText(); else if (name === 'tpl') markTpl(); else if (name === 'key') markKey(); else if (window.lucide) lucide.createIcons();
+  if (name === 'fx') markFx(); else if (name === 'adjust') markAdjust(); else if (name === 'blend') markBlend(); else if (name === 'speed') markSp(); else if (name === 'vol') markVol(); else if (name === 'tr') markTr(); else if (name === 'text') markText(); else if (name === 'tpl') markTpl(); else if (name === 'key') markKey(); else if (window.MediaYIcons) MediaYIcons.render(document);
 }
 const closeSheet = () => { sheet.hidden = true; document.querySelectorAll('.dock button').forEach(b => b.classList.remove('on')); };
 $('sheetClose').onclick = closeSheet;
