@@ -2596,7 +2596,9 @@ async function* streamCaptionPcmWindows(src, file, onProgress = () => {}) {
         raw = null;
       }
       if (!pcm || !pcm.length) throw new Error(`Audio window ${index + 1} of ${windowCount} decoded to no samples.`);
-      yield { pcm: normalizeQuietCaptionAudio(pcm), offsetSeconds, durationSeconds, index, count: windowCount };
+      const normalizedPcm = normalizeQuietCaptionAudio(pcm);
+      pcm = null;
+      yield { pcm: normalizedPcm, offsetSeconds, durationSeconds, index, count: windowCount };
     }
   } catch (error) {
     if (error && error.name === 'AbortError') throw error;
