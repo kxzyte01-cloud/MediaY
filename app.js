@@ -1871,7 +1871,7 @@ const runExport = async (_event, recoveryAttempt = 0) => {
       retryAfterCleanup = true;
       retryAttempt = recoveryAttempt + 1;
     }
-    const memoryProblem = /out of memory|memory access out of bounds|failed to grow memory|cannot allocate|allocation failed|\\boom\\b/i.test(errText + ' ' + ffLogs.join(' '));
+    const memoryProblem = /out of memory|memory access out of bounds|failed to grow memory|cannot allocate|allocation failed|\boom\b/i.test(errText + ' ' + ffLogs.join(' '));
     const fallbackResolution = EXP.res > 1080 ? 1080 : (EXP.res > 720 ? 720 : null);
     if (fallbackResolution && memoryProblem && recoveryAttempt < 1) {
       EXP.res = fallbackResolution;
