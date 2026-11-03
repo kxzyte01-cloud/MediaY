@@ -1581,6 +1581,9 @@ const runExport = async (_event, recoveryAttempt = 0) => {
         exportMetric.stage('Render video on device');
         say('Rendering with this phone’s video encoder…');
         updateBusy('Preparing overlays…', 'Rendering captions and stickers.', 8, 'Rendering');
+        // Use the exact frame-aligned project duration for overlay clipping.
+        const totalFrames = S.main.reduce((sum, c) => sum + Fast.frameCount(dur(c), EXP.fps), 0);
+        const totalSeconds = totalFrames / EXP.fps;
         const overlays = [];
         for (const o of [...S.overlays].sort((x, y) => x.layer - y.layer)) {
           if (!(o.start < totalSeconds && o.start + o.dur > 0)) continue;
@@ -1589,7 +1592,6 @@ const runExport = async (_event, recoveryAttempt = 0) => {
         }
 
         const videoSegments = [], clipFrames = [];
-        const totalFrames = S.main.reduce((sum, c) => sum + Fast.frameCount(dur(c), EXP.fps), 0);
         let renderedFrames = 0, segmentIndex = 0, timelineOffset = 0;
         const rate = String(EXP.fps);
         exportProgressHandler = null;
