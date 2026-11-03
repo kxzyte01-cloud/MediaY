@@ -44,6 +44,6 @@ test('undo history remains bounded at 50 entries without an arbitrary mobile-onl
 });
 
 test('OOM retry detection matches the oom token, not arbitrary words containing those letters', () => {
-  assert.match(source, /\\\\boom\\\\b/);
+  assert.match(source, /\\boom\\b/);
   assert.doesNotMatch(source, /allocation failed\|out of memory\|oom\/i/);
 });
