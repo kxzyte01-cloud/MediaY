@@ -161,3 +161,7 @@
 .tr-duration label,.tr-duration label b { color:var(--text); }
 #trList button.on { background:#dcecf3; border-color:#398fb8; color:#193448; }
 .ratios .on { border-color:#398fb8; background:#dcecf3; color:#193448; }
+
+.hm-new .hm-action-icon { background:#e5f0f5; color:#1e668c; }
+.hm-open-project { background:#1e668c; border-color:#1e668c; color:#fff; }
+.hm-open-project:hover:not(:disabled) { background:#174f6d; border-color:#174f6d; }
