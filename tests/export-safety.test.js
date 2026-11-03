@@ -33,8 +33,8 @@ test('mobile undo history is bounded and Fabric overlay media is explicitly disp
 
 test('overlay rebuild releases Fabric-owned video elements and ignores stale asynchronous rebuilds', () => {
   assert.match(source, /object\.getElement\(\)/);
-  assert.match(source, /let rebuildGeneration = 0/);
-  assert.match(source, /generation !== rebuildGeneration/);
+  assert.match(app, /let rebuildGeneration = 0/);
+  assert.match(app, /generation !== rebuildGeneration/);
   assert.match(source, /element\.removeAttribute\('src'\)/);
 });
 
