@@ -2534,6 +2534,94 @@ async function captionFrom(pcm, src, onProgress = () => {}, diagnostics = null) 
     top: RATIOS[S.ratio][1] * 0.72
   }));
 }
+// Large caption sources are decoded and transcribed one bounded window at a time.
+// 16 kHz mono float32 PCM uses about 38.4 MB per 10-minute window.
+const CAPTION_STREAM_THRESHOLD_BYTES = 96 * 1024 * 1024;
+const CAPTION_STREAM_WINDOW_SECONDS = 10 * 60;
+const CAPTION_STREAM_MAX_SECONDS = 4 * 60 * 60;
+function shouldStreamCaptionSource(file, src) {
+  const duration = Math.max(0, Number(src && src.out) - Number(src && src.in));
+  return !!file && (file.size > CAPTION_STREAM_THRESHOLD_BYTES || duration > CAPTION_STREAM_WINDOW_SECONDS);
+}
+function rawCaptionBytesToPcm(raw) {
+  if (!raw || raw.byteLength < 4 || raw.byteLength % 4 !== 0) return null;
+  return new Float32Array(raw.buffer, raw.byteOffset, raw.byteLength / 4).slice();
+}
+async function* streamCaptionPcmWindows(src, file, onProgress = () => {}) {
+  const clipStart = Math.max(0, Number(src.in) || 0);
+  const clipLength = Math.max(0, (Number(src.out) || 0) - clipStart);
+  if (!file || !file.size) throw new Error('The selected audio source is missing or empty.');
+  if (clipLength < 0.1) throw new Error('The selected audio range is too short.');
+  if (clipLength > CAPTION_STREAM_MAX_SECONDS) {
+    throw new Error('This captioning pass is limited to 4 hours of selected audio. Split the clip into shorter sections and try again.');
+  }
+  if (!window.FFmpegWASM || typeof FFmpegWASM.FFmpeg !== 'function') {
+    throw new Error('The local FFmpeg audio decoder is unavailable. Reload MediaY and try again.');
+  }
+  if (captionCancelRequested) throw abortCaption();
+  const engine = await getFFmpeg();
+  const token = uid();
+  const ext = ((file.name || 'media.mp4').split('.').pop() || 'mp4').toLowerCase().replace(/[^a-z0-9]/g, '') || 'mp4';
+  const inputName = `caption_source_${token}.${ext}`;
+  const outputName = `caption_window_${token}.f32`;
+  const mountDir = `/caption_source_${token}`;
+  let mounted = false, directoryCreated = false;
+  const windowCount = Math.ceil(clipLength / CAPTION_STREAM_WINDOW_SECONDS);
+  try {
+    if (typeof engine.createDir !== 'function' || typeof engine.mount !== 'function' || typeof engine.unmount !== 'function') {
+      throw new Error('This FFmpeg build does not support safe file-backed audio streaming. Update the app before captioning this large file.');
+    }
+    await engine.createDir(mountDir);
+    directoryCreated = true;
+    const workerFs = (FFmpegWASM.FFFSType && FFmpegWASM.FFFSType.WORKERFS) || 'WORKERFS';
+    await engine.mount(workerFs, { blobs: [{ name: inputName, data: file }] }, mountDir);
+    mounted = true;
+    const inputPath = `${mountDir}/${inputName}`;
+    for (let index = 0; index < windowCount; index++) {
+      if (captionCancelRequested) throw abortCaption();
+      const offsetSeconds = index * CAPTION_STREAM_WINDOW_SECONDS;
+      const durationSeconds = Math.min(CAPTION_STREAM_WINDOW_SECONDS, clipLength - offsetSeconds);
+      onProgress({ index, count: windowCount, percent: index / windowCount, stage: 'decode' });
+      const code = await engine.exec([
+        '-ss', String(clipStart + offsetSeconds), '-t', String(durationSeconds), '-i', inputPath,
+        '-vn', '-ac', '1', '-ar', String(CAPTION_SAMPLE_RATE), '-f', 'f32le', outputName
+      ]);
+      if (code !== 0) throw new Error(`FFmpeg could not decode audio window ${index + 1} of ${windowCount}.`);
+      let raw = null;
+      try {
+        raw = await engine.readFile(outputName);
+        const pcm = rawCaptionBytesToPcm(raw);
+        if (!pcm || !pcm.length) throw new Error(`Audio window ${index + 1} of ${windowCount} decoded to no samples.`);
+        yield { pcm: normalizeQuietCaptionAudio(pcm), offsetSeconds, durationSeconds, index, count: windowCount };
+      } finally {
+        try { await engine.deleteFile(outputName); } catch (_) {}
+        raw = null;
+      }
+    }
+  } catch (error) {
+    if (error && error.name === 'AbortError') throw error;
+    if (/memory|out of memory|oom/i.test(String(error && error.message || error))) disposeFFmpeg();
+    throw error;
+  } finally {
+    try { if (mounted) await engine.unmount(mountDir); } catch (_) {}
+    try { if (directoryCreated && typeof engine.deleteDir === 'function') await engine.deleteDir(mountDir); } catch (_) {}
+    try { await engine.deleteFile(outputName); } catch (_) {}
+  }
+}
+async function transcribeCaptionPcmWithFallback(pcm, source, onChunk, diagnostics) {
+  try {
+    return await captionFrom(pcm, source, onChunk, diagnostics);
+  } catch (error) {
+    if (error && error.name === 'AbortError') throw error;
+    if (asrBackend !== 'webgpu') throw error;
+    asr = null;
+    updateBusy('Switching to compatible captions…', 'GPU inference failed on this device. Retrying this audio window with the CPU engine.', null, 'Compatibility');
+    captionMetric.stage('Load CPU compatibility model');
+    asr = await createSpeechPipeline(false);
+    captionMetric.stage('Whisper inference (CPU fallback)');
+    return await captionFrom(pcm, source, onChunk, diagnostics);
+  }
+}
 async function commitCaptionDrafts(drafts) {
   if (!drafts.length) return 0;
   await ensureFontsReady();
@@ -2673,43 +2761,97 @@ $('capGo').onclick = async () => {
         decode: 'pending', transcription: 'not attempted'
       };
       sourceDiagnostics.push(sourceDiagnostic);
-      let pcm;
-      try {
-        pcm = await pcmOf(source, audioContext, decodeCache, info => Object.assign(sourceDiagnostic, info));
-        sourceDiagnostic.decode = 'success';
-        Object.assign(sourceDiagnostic, captionPcmStats(pcm));
-      } catch (decodeError) {
-        sourceDiagnostic.decode = 'failed';
-        sourceDiagnostic.decodeError = String(decodeError && decodeError.name || 'Error');
-        continue;
-      }
-      if (!hasAudibleSignal(pcm)) {
-        sourceDiagnostic.transcription = 'skipped: no audible signal';
-        updateBusy('Skipping silent audio…', `No useful audio signal was detected in ${source.label}.`, 15 + (candidateIndex + 1) / candidates.length * 5, 'Audio check');
-        continue;
-      }
+      let drafts = [];
       const candidateBase = 20 + candidateIndex / candidates.length * 70;
       const candidateSpan = 70 / candidates.length;
+      const clipLength = Math.max(0, Number(source.out) - Number(source.in));
       const onChunk = p => {
-        const detail = `${source.label}: audio chunk ${p.chunkIndex + 1} of ${p.chunkCount}. You can cancel between chunks.`;
+        const windowLabel = p.windowCount > 1 ? `, window ${(p.windowIndex || 0) + 1} of ${p.windowCount}` : '';
+        const detail = `${source.label}: audio chunk ${p.chunkIndex + 1} of ${p.chunkCount}${windowLabel}. You can cancel between chunks.`;
         say(detail);
-        updateBusy('Transcribing speech…', detail, candidateBase + candidateSpan * p.percent, 'Transcription');
+        const percent = p.windowCount > 1 ? ((p.windowIndex + p.percent) / p.windowCount) : p.percent;
+        updateBusy('Transcribing speech…', detail, candidateBase + candidateSpan * percent, 'Transcription');
       };
-      let drafts;
       try {
-        captionMetric.stage('Whisper inference');
-        drafts = await captionFrom(pcm, source, onChunk, sourceDiagnostic);
-        sourceDiagnostic.transcription = drafts.length ? 'captions generated' : 'no caption lines';
-      } catch (inferenceError) {
-        if (inferenceError.name === 'AbortError') throw inferenceError;
-        if (asrBackend !== 'webgpu') throw inferenceError;
-        asr = null;
-        updateBusy('Switching to compatible captions…', 'GPU inference failed on this device. Retrying with the CPU engine.', null, 'Compatibility');
-        captionMetric.stage('Load CPU compatibility model');
-        asr = await createSpeechPipeline(false);
-        captionMetric.stage('Whisper inference (CPU fallback)');
-        drafts = await captionFrom(pcm, source, onChunk, sourceDiagnostic);
-        sourceDiagnostic.transcription = drafts.length ? 'captions generated (CPU fallback)' : 'no caption lines (CPU fallback)';
+        await loadMedia(source.m);
+        const sourceFile = files[source.m];
+        if (!sourceFile) throw new Error('The selected audio source is missing.');
+        if (shouldStreamCaptionSource(sourceFile, source)) {
+          sourceDiagnostic.decodeMode = 'ffmpeg-windowed';
+          sourceDiagnostic.windowSeconds = CAPTION_STREAM_WINDOW_SECONDS;
+          sourceDiagnostic.windowCount = Math.ceil(clipLength / CAPTION_STREAM_WINDOW_SECONDS);
+          sourceDiagnostic.durationSeconds = Number(clipLength.toFixed(3));
+          let audibleWindows = 0, totalSamples = 0, totalPlanned = 0, totalSent = 0, totalRaw = 0, totalLines = 0;
+          for await (const windowData of streamCaptionPcmWindows(source, sourceFile, progress => {
+            const detail = `${source.label}: decoding audio window ${progress.index + 1} of ${progress.count}.`;
+            say(detail);
+            updateBusy('Decoding audio…', detail, 10 + (candidateIndex / candidates.length) * 5 + (progress.percent * 5 / candidates.length), 'Audio decode');
+          })) {
+            if (captionCancelRequested) throw abortCaption();
+            sourceDiagnostic.decode = 'success';
+            totalSamples += windowData.pcm.length;
+            if (!hasAudibleSignal(windowData.pcm)) { windowData.pcm = null; continue; }
+            audibleWindows++;
+            const speed = Number.isFinite(source.sp) && source.sp > 0 ? source.sp : 1;
+            const windowSource = { ...source, start: (Number(source.start) || 0) + windowData.offsetSeconds / speed };
+            const windowDiagnostics = {};
+            const windowDrafts = await transcribeCaptionPcmWithFallback(windowData.pcm, windowSource, p => onChunk({
+              ...p, windowIndex: windowData.index, windowCount: windowData.count
+            }), windowDiagnostics);
+            drafts.push(...windowDrafts);
+            totalPlanned += Number(windowDiagnostics.plannedChunks) || 0;
+            totalSent += Number(windowDiagnostics.chunksSentToWhisper) || 0;
+            totalRaw += Number(windowDiagnostics.rawWhisperSegments) || 0;
+            totalLines += Number(windowDiagnostics.finalCaptionLines) || 0;
+            Object.assign(sourceDiagnostic, {
+              speechThresholdDb: windowDiagnostics.speechThresholdDb,
+              speechDynamicRangeDb: windowDiagnostics.speechDynamicRangeDb,
+              speechVoicedRatio: windowDiagnostics.speechVoicedRatio,
+              speechIntervals: (Number(sourceDiagnostic.speechIntervals) || 0) + (Number(windowDiagnostics.speechIntervals) || 0),
+              speechAnalysisReliable: !!(sourceDiagnostic.speechAnalysisReliable || windowDiagnostics.speechAnalysisReliable)
+            });
+            windowData.pcm = null;
+          }
+          sourceDiagnostic.decode = 'success';
+          sourceDiagnostic.sampleRate = CAPTION_SAMPLE_RATE;
+          sourceDiagnostic.channels = 1;
+          sourceDiagnostic.rms = null;
+          sourceDiagnostic.peak = null;
+          sourceDiagnostic.durationSeconds = Number((totalSamples / CAPTION_SAMPLE_RATE).toFixed(3));
+          sourceDiagnostic.plannedChunks = totalPlanned;
+          sourceDiagnostic.chunksSentToWhisper = totalSent;
+          sourceDiagnostic.rawWhisperSegments = totalRaw;
+          sourceDiagnostic.finalCaptionLines = totalLines;
+          sourceDiagnostic.audibleWindows = audibleWindows;
+          sourceDiagnostic.transcription = drafts.length ? 'captions generated' : 'no caption lines';
+          if (!audibleWindows) sourceDiagnostic.transcription = 'skipped: no audible signal';
+        } else {
+          let pcm;
+          try {
+            pcm = await pcmOf(source, audioContext, decodeCache, info => Object.assign(sourceDiagnostic, info));
+            sourceDiagnostic.decode = 'success';
+            Object.assign(sourceDiagnostic, captionPcmStats(pcm));
+          } catch (decodeError) {
+            sourceDiagnostic.decode = 'failed';
+            sourceDiagnostic.decodeError = String(decodeError && decodeError.message || decodeError && decodeError.name || 'Error');
+            continue;
+          }
+          if (!hasAudibleSignal(pcm)) {
+            sourceDiagnostic.transcription = 'skipped: no audible signal';
+            updateBusy('Skipping silent audio…', `No useful audio signal was detected in ${source.label}.`, 15 + (candidateIndex + 1) / candidates.length * 5, 'Audio check');
+            continue;
+          }
+          captionMetric.stage('Whisper inference');
+          drafts = await transcribeCaptionPcmWithFallback(pcm, source, onChunk, sourceDiagnostic);
+          sourceDiagnostic.transcription = drafts.length ? 'captions generated' : 'no caption lines';
+          pcm = null;
+        }
+      } catch (decodeOrInferenceError) {
+        if (decodeOrInferenceError && decodeOrInferenceError.name === 'AbortError') throw decodeOrInferenceError;
+        sourceDiagnostic.decode = sourceDiagnostic.decode === 'success' ? 'success' : 'failed';
+        sourceDiagnostic.decodeError = String(decodeOrInferenceError && decodeOrInferenceError.message || decodeOrInferenceError || 'Error');
+        sourceDiagnostic.transcription = 'failed';
+        continue;
       }
       if (drafts.length) { chosenDrafts.push(...drafts); usedLabels.push(source.label); if (source.kind === 'audio') break; }
     }
