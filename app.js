@@ -2587,16 +2587,16 @@ async function* streamCaptionPcmWindows(src, file, onProgress = () => {}) {
         '-vn', '-ac', '1', '-ar', String(CAPTION_SAMPLE_RATE), '-f', 'f32le', outputName
       ]);
       if (code !== 0) throw new Error(`FFmpeg could not decode audio window ${index + 1} of ${windowCount}.`);
-      let raw = null;
+      let raw = null, pcm = null;
       try {
         raw = await engine.readFile(outputName);
-        const pcm = rawCaptionBytesToPcm(raw);
-        if (!pcm || !pcm.length) throw new Error(`Audio window ${index + 1} of ${windowCount} decoded to no samples.`);
-        yield { pcm: normalizeQuietCaptionAudio(pcm), offsetSeconds, durationSeconds, index, count: windowCount };
+        pcm = rawCaptionBytesToPcm(raw);
       } finally {
         try { await engine.deleteFile(outputName); } catch (_) {}
         raw = null;
       }
+      if (!pcm || !pcm.length) throw new Error(`Audio window ${index + 1} of ${windowCount} decoded to no samples.`);
+      yield { pcm: normalizeQuietCaptionAudio(pcm), offsetSeconds, durationSeconds, index, count: windowCount };
     }
   } catch (error) {
     if (error && error.name === 'AbortError') throw error;
@@ -2793,9 +2793,14 @@ $('capGo').onclick = async () => {
             const speed = Number.isFinite(source.sp) && source.sp > 0 ? source.sp : 1;
             const windowSource = { ...source, start: (Number(source.start) || 0) + windowData.offsetSeconds / speed };
             const windowDiagnostics = {};
-            const windowDrafts = await transcribeCaptionPcmWithFallback(windowData.pcm, windowSource, p => onChunk({
-              ...p, windowIndex: windowData.index, windowCount: windowData.count
-            }), windowDiagnostics);
+            let windowDrafts;
+            try {
+              windowDrafts = await transcribeCaptionPcmWithFallback(windowData.pcm, windowSource, p => onChunk({
+                ...p, windowIndex: windowData.index, windowCount: windowData.count
+              }), windowDiagnostics);
+            } finally {
+              windowData.pcm = null;
+            }
             drafts.push(...windowDrafts);
             totalPlanned += Number(windowDiagnostics.plannedChunks) || 0;
             totalSent += Number(windowDiagnostics.chunksSentToWhisper) || 0;
@@ -2808,7 +2813,6 @@ $('capGo').onclick = async () => {
               speechIntervals: (Number(sourceDiagnostic.speechIntervals) || 0) + (Number(windowDiagnostics.speechIntervals) || 0),
               speechAnalysisReliable: !!(sourceDiagnostic.speechAnalysisReliable || windowDiagnostics.speechAnalysisReliable)
             });
-            windowData.pcm = null;
           }
           sourceDiagnostic.decode = 'success';
           sourceDiagnostic.decodeComplete = true;
