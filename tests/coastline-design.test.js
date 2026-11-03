@@ -10,4 +10,14 @@ test('home retains editor actions, library and legal route',()=>{for(const id of
 test('inspector is a single vertical scroller, not nested adjustment panes',()=>{const sheets=[...style.matchAll(/\.sheet\s*\{[^}]*\}/g)];assert.equal(sheets.length,1,'expected one .sheet rule');const a=[...style.matchAll(/\.adjust-grid\s*\{([^}]*)\}/g)].at(-1)?.[1]||'';assert.ok(!/max-height\s*:/.test(a));assert.ok(!/overflow-y\s*:\s*auto/.test(a));assert.ok(setupStyle.includes('#homeScreen { background:var(--bg)'));});
 test('service worker precaches local icons with a fresh cache key',()=>{assert.match(sw,/pmy-v24/);assert.ok(sw.includes("'./mediay-icons.js'"));assert.ok(workflow.includes('mediay-icons.js'));});
 
-test('Coastline transition and format selections use porcelain surfaces',()=>{const duration=[...setupStyle.matchAll(/\\.tr-duration\\s*\\{([^}]*)\\}/g)].at(-1)?.[1]||'';const active=[...setupStyle.matchAll(/#trList button\\.on\\s*\\{([^}]*)\\}/g)].at(-1)?.[1]||'';const ratio=[...setupStyle.matchAll(/\\.ratios \\.on\\s*\\{([^}]*)\\}/g)].at(-1)?.[1]||'';assert.match(duration,/background:\\s*var\\(--panel2\\)/);assert.match(duration,/border-color:\\s*var\\(--border\\)/);assert.match(active,/background:\\s*#dcecf3/);assert.match(active,/color:\\s*#193448/);assert.match(ratio,/background:\\s*#dcecf3/);});
+
+test('Coastline transition and format selections use porcelain surfaces',()=>{
+  const duration=setupStyle.slice(setupStyle.lastIndexOf('.tr-duration {')).split('}')[0];
+  const active=setupStyle.slice(setupStyle.lastIndexOf('#trList button.on {')).split('}')[0];
+  const ratio=setupStyle.slice(setupStyle.lastIndexOf('.ratios .on {')).split('}')[0];
+  assert.ok(duration.includes('background:var(--panel2)'),'transition duration panel must use a light surface');
+  assert.ok(duration.includes('border-color:var(--border)'),'transition duration panel must use the Coastline border');
+  assert.ok(active.includes('background:#dcecf3'),'selected transition must use the pale-blue active state');
+  assert.ok(active.includes('color:#193448'),'selected transition text must use deep ink');
+  assert.ok(ratio.includes('background:#dcecf3'),'selected ratio must use the pale-blue active state');
+});
