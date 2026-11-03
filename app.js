@@ -2616,9 +2616,7 @@ async function transcribeCaptionPcmWithFallback(pcm, source, onChunk, diagnostic
     if (asrBackend !== 'webgpu') throw error;
     asr = null;
     updateBusy('Switching to compatible captions…', 'GPU inference failed on this device. Retrying this audio window with the CPU engine.', null, 'Compatibility');
-    captionMetric.stage('Load CPU compatibility model');
     asr = await createSpeechPipeline(false);
-    captionMetric.stage('Whisper inference (CPU fallback)');
     return await captionFrom(pcm, source, onChunk, diagnostics);
   }
 }
@@ -2813,6 +2811,7 @@ $('capGo').onclick = async () => {
             windowData.pcm = null;
           }
           sourceDiagnostic.decode = 'success';
+          sourceDiagnostic.decodeComplete = true;
           sourceDiagnostic.sampleRate = CAPTION_SAMPLE_RATE;
           sourceDiagnostic.channels = 1;
           sourceDiagnostic.rms = null;
@@ -2848,7 +2847,8 @@ $('capGo').onclick = async () => {
         }
       } catch (decodeOrInferenceError) {
         if (decodeOrInferenceError && decodeOrInferenceError.name === 'AbortError') throw decodeOrInferenceError;
-        sourceDiagnostic.decode = sourceDiagnostic.decode === 'success' ? 'success' : 'failed';
+        sourceDiagnostic.decode = sourceDiagnostic.decodeMode === 'ffmpeg-windowed' && !sourceDiagnostic.decodeComplete
+          ? 'failed' : (sourceDiagnostic.decode === 'success' ? 'success' : 'failed');
         sourceDiagnostic.decodeError = String(decodeOrInferenceError && decodeOrInferenceError.message || decodeOrInferenceError || 'Error');
         sourceDiagnostic.transcription = 'failed';
         continue;
