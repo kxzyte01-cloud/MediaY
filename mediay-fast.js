@@ -587,7 +587,10 @@
 
           const tClip = k / fps;
           let alpha = 1;
-          if (c.fade) alpha = Math.max(0, Math.min(1, tClip / fd, (p.td - tClip) / fd));
+          const fadeIn = c.fadeIn == null ? !!c.fade : !!c.fadeIn;
+          const fadeOut = c.fadeOut == null ? !!c.fade : !!c.fadeOut;
+          if (fadeIn || fadeOut) alpha = Math.max(0, Math.min(1,
+            fadeIn ? tClip / fd : 1, fadeOut ? (p.td - tClip) / fd : 1));
           ctx.globalAlpha = 1; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
           const f = cur.frame;
           const dw = swap ? f.displayHeight : f.displayWidth, dh = swap ? f.displayWidth : f.displayHeight;

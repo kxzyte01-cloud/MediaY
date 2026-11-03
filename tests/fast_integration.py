@@ -134,8 +134,16 @@ def main():
             log = r["log"]
             check("success: returns the joined file", r["returned"] == "joined.mp4" and r["error"] is None, json.dumps(r)[:300])
             check("success: report says the device encoder was used", log["notes"].get("deviceEncoder", "").startswith("used"), str(log["notes"]))
-            check("success: picture stream, per-clip sound and assembly all issued", len(log["commands"]) == 3 and log["written"].get("fastvideo.h264", 0) > 1000 and "alist.txt" in log["written"], str(log["commands"])[:300])
-            check("success: temporary files removed, workspace list keeps only joined.mp4", {"fastvideo.h264", "alist.txt", "aseg0.wav", "aseg1.wav"} <= set(log["removed"]) and "joined.mp4" in r["workspace"], f"{log['removed']} {r['workspace']}")
+            check("success: bounded picture pieces, per-clip sound and assembly all issued",
+                  len([c for c in log["commands"] if "-f" in c and "h264" in c]) == 2
+                  and log["written"].get("fastvideo_0.h264", 0) > 1000
+                  and log["written"].get("fastvideo_1.h264", 0) > 1000
+                  and "vlist.txt" in log["written"] and "alist.txt" in log["written"],
+                  str(log["commands"])[:500])
+            check("success: temporary files removed, workspace list keeps only joined.mp4",
+                  {"fastvideo_0.h264", "fastvideo_1.h264", "fastsegment_0.mp4", "fastsegment_1.mp4",
+                   "vlist.txt", "alist.txt", "aseg0.wav", "aseg1.wav"} <= set(log["removed"])
+                  and "joined.mp4" in r["workspace"], f"{log['removed']} {r['workspace']}")
             check("success: progress only moves forward", all(a <= b for a, b in zip(log["busy"], log["busy"][1:])), str(log["busy"]))
 
             # run the recorded sound commands for real and check lengths
@@ -145,8 +153,14 @@ def main():
             lens = [float(sh("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(work / c[-1])).strip()) for c in audio_cmds]
             check("sound pieces have exactly the video length of their clip (1.0 s and 1.0 s)", len(lens) == 2 and all(abs(l - 1.0) < 0.003 for l in lens), str(lens))
 
-            # stand-in picture stream (real H.264, 60 frames) + the recorded assembly command, run for real
-            sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-frames:v", "60", "-c:v", "libx264", "-bf", "0", "-pix_fmt", "yuv420p", "-f", "h264", str(work / "fastvideo.h264"))
+            # Stand in for the two bounded WebCodecs chunks with real H.264 pieces.
+            video_muxes = [c for c in log["commands"] if "-f" in c and "h264" in c]
+            for cmd in video_muxes:
+                raw = cmd[cmd.index("-i") + 1]
+                sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30",
+                   "-frames:v", "30", "-c:v", "libx264", "-bf", "0", "-pix_fmt", "yuv420p", "-f", "h264", str(work / raw))
+                subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *cmd], cwd=work, check=True)
+            (work / "vlist.txt").write_text(log["vlist"])
             (work / "alist.txt").write_text(log["alist"])
             mux = log["commands"][-1]
             subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *mux], cwd=work, check=True)
@@ -156,7 +170,9 @@ def main():
             # 2. project without any sound track -> picture only
             r = go({"main": [clip("m2", 0, 1)], "overlays": []})
             mux = r["log"]["commands"][-1] if r["log"]["commands"] else []
-            check("silent project: no sound commands, picture-only assembly", r["returned"] == "joined.mp4" and len(r["log"]["commands"]) == 1 and "-map" not in mux and "alist.txt" not in " ".join(mux), str(r["log"]["commands"]))
+            check("silent project: one video piece and picture-only concat", r["returned"] == "joined.mp4"
+                  and len(r["log"]["commands"]) == 2 and "-f" in mux and "concat" in mux
+                  and "alist.txt" not in " ".join(mux), str(r["log"]["commands"]))
 
             # 2b. mixed voiced + silent clips: the fast path must remain eligible and
             # synthesize a silent WAV for the silent clip so concat has matching tracks.
@@ -165,7 +181,8 @@ def main():
             mixed_audio_cmds = [c for c in mixed_log["commands"] if c[-1].endswith(".wav")]
             check("mixed-sound project: fast path stays enabled and creates one audio piece per clip",
                   r["returned"] == "joined.mp4" and r["error"] is None and len(mixed_audio_cmds) == 2
-                  and any(any("anullsrc" in arg for arg in c) for c in mixed_audio_cmds) and "alist.txt" in mixed_log["written"],
+                  and any(any("anullsrc" in arg for arg in c) for c in mixed_audio_cmds)
+                  and "vlist.txt" in mixed_log["written"] and "alist.txt" in mixed_log["written"],
                   f"returned={r['returned']} error={r['error']} commands={mixed_log['commands']}")
             for cmd in mixed_audio_cmds:
                 subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *cmd], cwd=work, check=True)
@@ -173,9 +190,13 @@ def main():
                                    str(work / c[-1])).strip()) for c in mixed_audio_cmds]
             check("mixed-sound project: voiced and synthetic-silence WAVs have matching 1.0 s durations",
                   len(mixed_lens) == 2 and all(abs(x - 1.0) < 0.003 for x in mixed_lens), str(mixed_lens))
-            sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30",
-               "-frames:v", "60", "-c:v", "libx264", "-bf", "0", "-pix_fmt", "yuv420p", "-f", "h264",
-               str(work / "fastvideo.h264"))
+            mixed_video_muxes = [c for c in mixed_log["commands"] if "-f" in c and "h264" in c]
+            for cmd in mixed_video_muxes:
+                raw = cmd[cmd.index("-i") + 1]
+                sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30",
+                   "-frames:v", "30", "-c:v", "libx264", "-bf", "0", "-pix_fmt", "yuv420p", "-f", "h264", str(work / raw))
+                subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *cmd], cwd=work, check=True)
+            (work / "vlist.txt").write_text(mixed_log["vlist"])
             (work / "alist.txt").write_text(mixed_log["alist"])
             subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *mixed_log["commands"][-1]], cwd=work, check=True)
             mixed_dur, mixed_streams = ffprobe(work / "joined.mp4")
@@ -204,11 +225,16 @@ def main():
             r = go({"main": [clip("m1", 0, 1), clip("m1", 1, 2)], "overlays": [overlay]}, failOn="aseg1.wav")
             note = r["log"]["notes"].get("deviceEncoder", "")
             check("failure while preparing sound: returns null, says why, removes its files, restores the progress handler",
-                  r["returned"] is None and "failed" in note and {"fastvideo.h264", "aseg0.wav", "aseg1.wav"} <= set(r["log"]["removed"]) and r["handlerAfter"] == "SAVED-HANDLER",
+                  r["returned"] is None and "failed" in note
+                  and {"fastvideo_0.h264", "fastvideo_1.h264", "fastsegment_0.mp4", "fastsegment_1.mp4",
+                       "aseg0.wav", "aseg1.wav"} <= set(r["log"]["removed"])
+                  and r["handlerAfter"] == "SAVED-HANDLER",
                   f"{r['returned']} {note} {r['log']['removed']} {r['handlerAfter']}")
             r = go({"main": [clip("m1", 0, 1)], "overlays": []}, failOn="joined.mp4")
-            check("failure while assembling: the partial joined.mp4 is removed too",
-                  r["returned"] is None and {"fastvideo.h264", "aseg0.wav", "alist.txt", "joined.mp4"} <= set(r["log"]["removed"]), f"{r['returned']} {r['log']['removed']}")
+            check("failure while assembling: all partial video/audio pieces and joined.mp4 are removed",
+                  r["returned"] is None
+                  and {"fastvideo_0.h264", "fastsegment_0.mp4", "aseg0.wav", "vlist.txt", "alist.txt", "joined.mp4"} <= set(r["log"]["removed"]),
+                  f"{r['returned']} {r['log']['removed']}")
 
             check("no page errors", not errors, str(errors))
             browser.close()

@@ -1566,15 +1566,13 @@ const runExport = async (_event, recoveryAttempt = 0) => {
 
         exportMetric.stage('Check device video encoder');
         updateBusy('Checking this phone’s video encoder…', 'Looking for a hardware video encoder.', 7, 'Preparing');
-        // The H.264 stream is buffered in JS chunks, flattened into one Uint8Array,
-        // and copied into FFmpeg.wasm. Keep this accelerator for short jobs only;
-        // longer videos use the FFmpeg segment path instead of risking WebView OOM.
-        const totalSeconds = S.main.reduce((sum, c) => sum + dur(c), 0);
+        // Keep each hardware-encoded piece below the existing memory budget. A short
+        // bounded render is muxed immediately, so JS never retains the entire video stream.
+        // The final MP4 is assembled from compatible MP4 pieces with stream copy.
         const maxBufferedVideoBytes = 32 * 1024 * 1024;
-        const estimatedVideoBytes = Math.ceil(Fast.targetBitrate(W, H, EXP.fps) * totalSeconds / 8 * 1.2);
-        if (estimatedVideoBytes > maxBufferedVideoBytes) {
-          return decline('projected video stream exceeds the safe in-memory device-export budget');
-        }
+        const estimatedBitrate = Fast.targetBitrate(W, H, EXP.fps);
+        const maxChunkFrames = Math.max(1, Math.min(Math.round(30 * EXP.fps),
+          Math.floor((maxBufferedVideoBytes * 8 / Math.max(1, estimatedBitrate * 1.5)) * EXP.fps)));
         const choice = await Fast.chooseEncoderConfig({ W, H, fps: EXP.fps });
         const bench = await Fast.benchmarkEncoder(choice);
         note('deviceEncoderSelfTest', `${choice.codec}, ${choice.acceleration}, ${Math.round(bench.fps)} fps`);
@@ -1589,23 +1587,66 @@ const runExport = async (_event, recoveryAttempt = 0) => {
           const part = await Fast.overlayFromPng(await overlayPNG(o), W, H);
           if (part) { overlayBitmaps.push(part.bitmap); overlays.push({ ...part, start: o.start, end: o.start + o.dur }); }
         }
-        const sink = new Fast.AnnexBSink(maxBufferedVideoBytes);
-        exportProgressHandler = null;
-        const result = await Fast.renderTimeline({
-          clips: S.main.map(c => ({ file: files[c.mediaId], track: sources.get(c.mediaId).video, in: c.in, out: c.out, speed: c.speed || 1, fade: !!c.fade })),
-          overlays, W, H, fps: EXP.fps, choice, sink,
-          onProgress: f => updateBusy('Rendering video…', `Encoding with this phone’s video encoder: ${Math.round(f * 100)}%.`, 8 + f * 50, 'Rendering')
-        });
-        overlayBitmaps.splice(0).forEach(b => { try { b.close(); } catch (_) { /* already closed */ } });
-        await ff.writeFile('fastvideo.h264', sink.finish());
-        exportWorkspaceFiles.add('fastvideo.h264'); mine.add('fastvideo.h264');
 
-        // Sound: one small FFmpeg command per clip (trim, speed, volume, fade), padded to the exact video length of the clip.
+        const videoSegments = [], clipFrames = [];
+        const totalFrames = S.main.reduce((sum, c) => sum + Fast.frameCount(dur(c), EXP.fps), 0);
+        let renderedFrames = 0, segmentIndex = 0, timelineOffset = 0;
+        const rate = String(EXP.fps);
+        exportProgressHandler = null;
+        for (let i = 0; i < S.main.length; i++) {
+          const c = S.main[i], speed = c.speed || 1;
+          const framesInClip = Fast.frameCount(dur(c), EXP.fps);
+          clipFrames[i] = framesInClip;
+          for (let frameOffset = 0; frameOffset < framesInClip;) {
+            const chunkFrames = Math.min(maxChunkFrames, framesInClip - frameOffset);
+            const chunkDuration = chunkFrames / EXP.fps;
+            const chunkStart = timelineOffset + frameOffset / EXP.fps;
+            const chunkEnd = chunkStart + chunkDuration;
+            const sourceIn = c.in + frameOffset / EXP.fps * speed;
+            const sourceOut = sourceIn + chunkDuration * speed;
+            const localOverlays = overlays
+              .filter(o => o.start < chunkEnd && o.end > chunkStart)
+              .map(o => ({ ...o, start: Math.max(0, o.start - chunkStart), end: Math.min(chunkDuration, o.end - chunkStart) }));
+            const rawName = `fastvideo_${segmentIndex}.h264`;
+            const segmentName = `fastsegment_${segmentIndex}.mp4`;
+            exportWorkspaceFiles.add(rawName); exportWorkspaceFiles.add(segmentName);
+            mine.add(rawName); mine.add(segmentName);
+            const sink = new Fast.AnnexBSink(maxBufferedVideoBytes);
+            const result = await Fast.renderTimeline({
+              clips: [{
+                file: files[c.mediaId], track: sources.get(c.mediaId).video,
+                in: sourceIn, out: sourceOut, speed,
+                fadeIn: !!c.fade && frameOffset === 0,
+                fadeOut: !!c.fade && frameOffset + chunkFrames === framesInClip
+              }],
+              overlays: localOverlays, W, H, fps: EXP.fps, choice, sink,
+              onProgress: f => {
+                const progress = (renderedFrames + f * chunkFrames) / Math.max(1, totalFrames);
+                updateBusy('Rendering video…', `Encoding with this phone’s video encoder: ${Math.round(progress * 100)}%.`,
+                  8 + progress * 50, 'Rendering');
+              }
+            });
+            const encodedChunk = sink.finish();
+            await ff.writeFile(rawName, encodedChunk);
+            // Drop the JS copy before the next chunk is rendered.
+            await run(['-f', 'h264', '-framerate', rate, '-i', rawName, '-c:v', 'copy', '-an', segmentName]);
+            await removeExportFile(rawName);
+            videoSegments.push(segmentName);
+            renderedFrames += result.frames;
+            frameOffset += chunkFrames;
+            segmentIndex++;
+          }
+          timelineOffset += dur(c);
+        }
+        overlayBitmaps.splice(0).forEach(b => { try { b.close(); } catch (_) { /* already closed */ } });
+
+        // Sound: one small FFmpeg command per original clip, padded to the exact
+        // accumulated video-frame duration. Chunk boundaries do not reset audio timing.
         const audioNames = [];
         if (hasAudio) {
           exportMetric.stage('Prepare clip sound');
           for (let i = 0; i < S.main.length; i++) {
-            const c = S.main[i], sp = c.speed || 1, td = (c.out - c.in) / sp, seconds = result.clipFrames[i] / EXP.fps;
+            const c = S.main[i], sp = c.speed || 1, td = (c.out - c.in) / sp, seconds = clipFrames[i] / EXP.fps;
             updateBusy('Preparing sound…', `Clip ${i + 1} of ${S.main.length}.`, 58 + (i / S.main.length) * 8, 'Audio');
             const name = `aseg${i}.wav`;
             exportWorkspaceFiles.add(name); mine.add(name);
@@ -1631,21 +1672,23 @@ const runExport = async (_event, recoveryAttempt = 0) => {
         }
 
         exportMetric.stage('Join rendered clips');
-        updateBusy('Assembling the video…', 'Combining picture and sound into one MP4.', 67, 'Final assembly');
+        updateBusy('Assembling the video…', 'Joining the encoded pieces without re-encoding.', 67, 'Final assembly');
+        const videoList = 'vlist.txt';
+        await ff.writeFile(videoList, new TextEncoder().encode(videoSegments.map(n => `file '${n}'`).join('\\n')));
+        exportWorkspaceFiles.add(videoList); mine.add(videoList);
         exportWorkspaceFiles.add('joined.mp4'); mine.add('joined.mp4');
-        const rate = String(EXP.fps);
         if (audioNames.length) {
-          await ff.writeFile('alist.txt', new TextEncoder().encode(audioNames.map(n => `file '${n}'`).join('\n')));
+          await ff.writeFile('alist.txt', new TextEncoder().encode(audioNames.map(n => `file '${n}'`).join('\\n')));
           exportWorkspaceFiles.add('alist.txt'); mine.add('alist.txt');
-          await run(['-f', 'h264', '-framerate', rate, '-i', 'fastvideo.h264', '-f', 'concat', '-safe', '0', '-i', 'alist.txt',
+          await run(['-f', 'concat', '-safe', '0', '-i', videoList, '-f', 'concat', '-safe', '0', '-i', 'alist.txt',
             '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-ar', '44100', '-ac', '2', 'joined.mp4']);
         } else {
-          await run(['-f', 'h264', '-framerate', rate, '-i', 'fastvideo.h264', '-c:v', 'copy', 'joined.mp4']);
+          await run(['-f', 'concat', '-safe', '0', '-i', videoList, '-map', '0:v:0', '-c:v', 'copy', '-an', 'joined.mp4']);
         }
-        for (const n of ['fastvideo.h264', 'alist.txt', ...audioNames]) await removeExportFile(n);
+        for (const n of [...videoSegments, videoList, 'alist.txt', ...audioNames]) await removeExportFile(n);
         for (const entry of exportSourceCache.values()) await removeExportFile(entry.name);
         exportSourceCache.clear(); exportSourceCacheBytes = 0;
-        note('deviceEncoder', `used (${choice.codec}, ${choice.acceleration}): ${result.frames} frames in ${(result.ms / 1000).toFixed(1)} s`);
+        note('deviceEncoder', `used (${choice.codec}, ${choice.acceleration}): ${renderedFrames} frames in ${segmentIndex} bounded pieces`);
         return 'joined.mp4';
       } catch (error) {
         console.warn('MediaY: device video encoder failed, using the standard encoder:', error);

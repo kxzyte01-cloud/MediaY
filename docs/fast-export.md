@@ -19,10 +19,13 @@ which is cheap work.
 3. Each frame is drawn on a canvas (letterbox like `scale+pad`, rotation metadata applied, fade), then caption/sticker overlays
    are drawn for their timeline window. Overlay PNGs come from the existing `overlayPNG()` and are cropped to their visible
    pixels first, so many captions cost little memory.
-4. One continuous `VideoEncoder` session encodes the whole timeline (no per-clip segments, so no SPS/PPS mismatch between
-   pieces). Output is converted to an Annex B stream.
-5. FFmpeg extracts each clip's sound (trim, speed, volume, fade, padded to the exact video length) as WAV, then one command
-   joins picture + sound into `joined.mp4`. The normal audio-mix and save steps follow unchanged.
+4. The timeline is divided on output-frame boundaries into short pieces. The maximum piece duration is derived from the
+   existing 32 MiB in-memory sink budget and the estimated output bitrate (capped at 30 seconds). Each piece gets a fresh
+   encoder session and begins with a keyframe; its Annex B stream is immediately muxed into a small MP4 segment and the raw
+   temporary stream is deleted before the next piece is rendered. Clip fades are applied only at the original clip edges.
+5. FFmpeg extracts each original clip's sound once (trim, speed, volume, fade, padded to the accumulated frame duration) as WAV.
+   A concat-demuxer stream-copy pass joins the video segments and audio pieces into `joined.mp4`; the normal audio-mix and
+   save steps follow unchanged. This avoids a single multi-minute JS output buffer and avoids re-encoding during final assembly.
 
 ## When it is used
 
@@ -44,7 +47,7 @@ performance report records `deviceEncoder: used (...)` or `not used: <reason>` p
 - The browser pipeline runs its deterministic frame-accuracy matrix with VP9 and also exercises the actual H.264 WebCodecs
   encoder/Annex B output when the installed Chromium build exposes it (`tests/fast_pipeline.py`). This is desktop CI coverage,
   not proof that a particular Android WebView exposes a working or fast hardware H.264 encoder; that must still be checked on a phone.
-- The finished picture stream (about the output bitrate x duration) is held in memory before being handed to FFmpeg.
+- Each individual encoded piece is bounded by the existing 32 MiB sink budget. FFmpeg.wasm's virtual filesystem still retains the muxed segments until final assembly, so total project size is not a hard 32 MiB limit but total output bytes still consume browser memory.
 - Filters, colour adjustments, transitions, reverse, video overlays and blend modes still use the FFmpeg-only path (slow).
   Porting the filters to canvas, or a native Android encoder, are the next steps if those matter.
 - Sound from a clip is extracted by FFmpeg from a copy of the source in its virtual filesystem (same cost as before). Extracting
