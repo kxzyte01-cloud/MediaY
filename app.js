@@ -1676,11 +1676,11 @@ const runExport = async (_event, recoveryAttempt = 0) => {
         exportMetric.stage('Join rendered clips');
         updateBusy('Assembling the video…', 'Joining the encoded pieces without re-encoding.', 67, 'Final assembly');
         const videoList = 'vlist.txt';
-        await ff.writeFile(videoList, new TextEncoder().encode(videoSegments.map(n => `file '${n}'`).join('\\n')));
+        await ff.writeFile(videoList, new TextEncoder().encode(videoSegments.map(n => `file '${n}'`).join('\n')));
         exportWorkspaceFiles.add(videoList); mine.add(videoList);
         exportWorkspaceFiles.add('joined.mp4'); mine.add('joined.mp4');
         if (audioNames.length) {
-          await ff.writeFile('alist.txt', new TextEncoder().encode(audioNames.map(n => `file '${n}'`).join('\\n')));
+          await ff.writeFile('alist.txt', new TextEncoder().encode(audioNames.map(n => `file '${n}'`).join('\n')));
           exportWorkspaceFiles.add('alist.txt'); mine.add('alist.txt');
           await run(['-f', 'concat', '-safe', '0', '-i', videoList, '-f', 'concat', '-safe', '0', '-i', 'alist.txt',
             '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-ar', '44100', '-ac', '2', 'joined.mp4']);
