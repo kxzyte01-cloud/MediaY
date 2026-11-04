@@ -342,7 +342,7 @@ body { background:radial-gradient(ellipse at 52% -35%,rgba(53,116,153,.16),trans
 .brand-icon,.empty-logo { background:transparent; color:var(--text); }
 .brand-mark { display:block; width:38px; height:38px; object-fit:contain; }
 .brand-text { letter-spacing:-.045em; }
-.primary,.dock button.rec { background:linear-gradient(110deg,#187F9A,#6554B8); color:#F8FBFF; box-shadow:0 5px 18px rgba(48,144,177,.16); }
+.primary,.dock button.rec { background:linear-gradient(110deg,#16758F,#6554B8); color:#F8FBFF; box-shadow:0 5px 18px rgba(48,144,177,.16); }
 button:hover { filter:brightness(1.08); }
 :focus-visible { outline:2px solid var(--accent); outline-offset:3px; box-shadow:0 0 0 4px var(--focus-ring); }
 .preview-frame { box-shadow:0 0 0 1px var(--border),var(--shadow-soft); }
