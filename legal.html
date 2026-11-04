@@ -3,20 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f01925">
+  <meta name="theme-color" content="#EDF6FA">
   <title>Terms, Privacy and Licenses — ProjectMedia Y</title>
   <style>
-    :root { color-scheme: dark; }
-    body { margin: 0; background: #101012; color: #f7f7fa; font: 16px/1.6 "DM Sans", system-ui, sans-serif; }
-    main { max-width: 680px; margin: auto; padding: 20px 18px 48px; }
-    h1 { font-size: 24px; margin: 8px 0 4px; }
-    h2 { font-size: 19px; margin: 32px 0 8px; padding-top: 8px; border-top: 1px solid #34343d; }
-    h3 { font-size: 16px; margin: 18px 0 4px; }
-    p, li { color: #d9d9e0; }
-    a { color: #ff6b73; }
-    .meta { color: #92929e; font-size: 14px; }
-    table { width: 100%; border-collapse: collapse; font-size: 14px; display: block; overflow-x: auto; }
-    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #34343d; vertical-align: top; }
+    :root { color-scheme:light; --bg:#edf6fa; --panel:#f9fcfd; --text:#193448; --muted:#536d7d; --border:#cfdee6; --accent:#1e668c; }
+    body { margin:0; background:var(--bg); color:var(--text); font:16px/1.6 "Avenir Next",Avenir,"Segoe UI",system-ui,sans-serif; }
+    main { max-width:680px; margin:auto; padding:20px 18px 48px; }
+    h1 { font-size:24px; margin:8px 0 4px; } h2 { font-size:19px; margin:32px 0 8px; padding-top:8px; border-top:1px solid var(--border); }
+    h3 { font-size:16px; margin:18px 0 4px; } p,li { color:var(--muted); } a { color:var(--accent); }
+    .meta { color:var(--muted); font-size:14px; } table { width:100%; border-collapse:collapse; font-size:14px; display:block; overflow-x:auto; background:var(--panel); }
+    th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
   </style>
 </head>
 <body>
@@ -59,12 +55,12 @@
     <tr><td>Fabric.js</td><td>MIT</td></tr>
     <tr><td>Anime.js</td><td>MIT</td></tr>
     <tr><td>Dexie.js</td><td>Apache License 2.0</td></tr>
-    <tr><td>Lucide icons</td><td>ISC</td></tr>
+    <tr><td>MediaY original SVG icons</td><td>Original in-project artwork</td></tr>
     <tr><td>FFmpeg.wasm wrapper (@ffmpeg/ffmpeg, @ffmpeg/util)</td><td>MIT</td></tr>
     <tr><td>FFmpeg.wasm core (@ffmpeg/core), loaded when you export</td><td>FFmpeg and its libraries, including x264, under GPL version 2 or later. Source: <a href="https://ffmpeg.org/download.html">ffmpeg.org</a> and <a href="https://github.com/ffmpegwasm/ffmpeg.wasm-core">ffmpeg.wasm-core</a></td></tr>
     <tr><td>Transformers.js (@xenova/transformers) and ONNX Runtime Web, used for Auto captions</td><td>Apache License 2.0 and MIT</td></tr>
     <tr><td>Whisper speech model (OpenAI), ONNX conversion by Xenova</td><td>MIT</td></tr>
-    <tr><td>DM Sans font</td><td>SIL Open Font License 1.1</td></tr>
+    
     <tr><td>Capacitor (Android app wrapper)</td><td>MIT</td></tr>
   </table>
   <p>“FFmpeg” is a trademark of Fabrice Bellard. All other names and trademarks belong to their owners. ProjectMedia Y is not affiliated with or endorsed by them.</p>
