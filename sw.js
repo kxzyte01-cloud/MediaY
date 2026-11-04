@@ -1,5 +1,5 @@
 // ProjectMedia Y offline shell. Only cache app files that are part of this repository.
-const CACHE = 'pmy-v24';
+const CACHE = 'pmy-v25';
 const SHELL = ['./', './index.html', './style.css', './setup.css', './mediay-icons.js', './mediay-core.js', './mediay-fast.js', './app.js', './setup.js', './vendor/ffmpeg/ffmpeg.js', './vendor/ffmpeg/814.ffmpeg.js'];
 self.addEventListener('install', event => {
   event.waitUntil((async () => {
