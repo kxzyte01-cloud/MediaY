@@ -1,67 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-labelledby="title">
+  <title id="title">MediaY aperture mark</title>
   <defs>
-    <linearGradient id="myBg" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#0B0F19"/>
-      <stop offset="50%" stop-color="#141C2B"/>
-      <stop offset="100%" stop-color="#070A12"/>
-    </linearGradient>
-    <linearGradient id="myRim" x1="0" y1="32" x2="64" y2="32" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#00F0FF"/>
-      <stop offset="50%" stop-color="#8B5CF6"/>
-      <stop offset="100%" stop-color="#FF2A85"/>
-    </linearGradient>
-    <linearGradient id="myCyanFacet" x1="12" y1="14" x2="32" y2="34" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#00F5FF"/>
-      <stop offset="55%" stop-color="#0284C7"/>
-      <stop offset="100%" stop-color="#1E293B"/>
-    </linearGradient>
-    <linearGradient id="myCyanSteel" x1="20" y1="14" x2="32" y2="30" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#E0F2FE"/>
-      <stop offset="50%" stop-color="#38BDF8"/>
-      <stop offset="100%" stop-color="#334155"/>
-    </linearGradient>
-    <linearGradient id="myMagentaFacet" x1="52" y1="14" x2="32" y2="34" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#FF2A85"/>
-      <stop offset="55%" stop-color="#9333EA"/>
-      <stop offset="100%" stop-color="#1E293B"/>
-    </linearGradient>
-    <linearGradient id="myMagentaSteel" x1="44" y1="14" x2="32" y2="30" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#FCE7F3"/>
-      <stop offset="50%" stop-color="#F43F5E"/>
-      <stop offset="100%" stop-color="#334155"/>
-    </linearGradient>
-    <linearGradient id="myStemLeft" x1="25" y1="34" x2="32" y2="54" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#1E293B"/>
-      <stop offset="60%" stop-color="#0284C7"/>
-      <stop offset="100%" stop-color="#00F0FF"/>
-    </linearGradient>
-    <linearGradient id="myStemRight" x1="39" y1="34" x2="32" y2="54" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#1E293B"/>
-      <stop offset="60%" stop-color="#9333EA"/>
-      <stop offset="100%" stop-color="#FF2A85"/>
-    </linearGradient>
-    <linearGradient id="myPlayGlow" x1="26" y1="25" x2="39" y2="38" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#FFFFFF"/>
-      <stop offset="100%" stop-color="#E0F2FE"/>
-    </linearGradient>
+    <linearGradient id="cyan" x1="12" y1="12" x2="36" y2="43" gradientUnits="userSpaceOnUse"><stop stop-color="#70E8F5"/><stop offset="1" stop-color="#268BAF"/></linearGradient>
+    <linearGradient id="violet" x1="30" y1="13" x2="53" y2="48" gradientUnits="userSpaceOnUse"><stop stop-color="#B8A5FF"/><stop offset="1" stop-color="#7658C9"/></linearGradient>
+    <linearGradient id="stem" x1="32" y1="31" x2="32" y2="56" gradientUnits="userSpaceOnUse"><stop stop-color="#D8D5FF"/><stop offset="1" stop-color="#8A78D8"/></linearGradient>
   </defs>
-  <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#myBg)"/>
-  <rect x="2.75" y="2.75" width="58.5" height="58.5" rx="14.25" stroke="url(#myRim)" stroke-width="1.6"/>
-  <rect x="5" y="5" width="54" height="54" rx="12" stroke="#FFFFFF" stroke-opacity="0.07" stroke-width="0.75"/>
-  <circle cx="32" cy="33" r="18.5" stroke="url(#myRim)" stroke-opacity="0.38" stroke-width="1"/>
-  <circle cx="32" cy="33" r="16" stroke="#94A3B8" stroke-opacity="0.28" stroke-width="1.2" stroke-dasharray="2 2.5"/>
-  <circle cx="32" cy="33" r="13.2" stroke="#00F0FF" stroke-opacity="0.18" stroke-width="0.8"/>
-  <polygon points="12,15 22,15 26.5,27 12,21" fill="url(#myCyanFacet)"/>
-  <polygon points="22,15 32,27.5 26.5,27" fill="url(#myCyanSteel)"/>
-  <polygon points="12,21 26.5,27 25.5,35.5" fill="url(#myCyanFacet)"/>
-  <polygon points="52,15 42,15 37.5,27 52,21" fill="url(#myMagentaFacet)"/>
-  <polygon points="42,15 32,27.5 37.5,27" fill="url(#myMagentaSteel)"/>
-  <polygon points="52,21 37.5,27 38.5,35.5" fill="url(#myMagentaFacet)"/>
-  <polygon points="25.5,35.5 32,39 32,54 25.5,47.5" fill="url(#myStemLeft)"/>
-  <polygon points="38.5,35.5 32,39 32,54 38.5,47.5" fill="url(#myStemRight)"/>
-  <line x1="32" y1="38.5" x2="32" y2="53.5" stroke="#F472B6" stroke-width="1.3"/>
-  <polyline points="22,15 12,15 12,21 25.5,35.5 25.5,47.5 32,54" stroke="#00F0FF" stroke-width="1.15" stroke-linejoin="round"/>
-  <polyline points="42,15 52,15 52,21 38.5,35.5 38.5,47.5 32,54" stroke="#FF2A85" stroke-width="1.15" stroke-linejoin="round"/>
-  <polygon points="25.5,23.5 40.5,32 25.5,40.5" fill="#080C15" stroke="#8B5CF6" stroke-opacity="0.55" stroke-width="1" stroke-linejoin="round"/>
-  <polygon points="27.8,26.5 37.5,32 27.8,37.5" fill="url(#myPlayGlow)"/>
+  <circle cx="32" cy="32" r="29" fill="#0B1019" stroke="#28364A" stroke-width="1.5"/>
+  <circle cx="32" cy="32" r="23.5" stroke="#53647D" stroke-opacity=".55"/>
+  <path d="M14 17.5h13.5L32 26.2l-8.8 9.3-9.7-8.3Z" fill="url(#cyan)"/>
+  <path d="M50 17.5H36.5L32 26.2l8.8 9.3 9.7-8.3Z" fill="url(#violet)"/>
+  <path d="m23.2 35.5 8.7-5.9 8.9 5.9-5 6.7V53h-7.6V42.2Z" fill="url(#stem)"/>
+  <path d="m25.2 25.1 13.6 6.9-13.6 6.9" stroke="#F7FBFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M32 33.5v19.2" stroke="#F7FBFF" stroke-opacity=".85" stroke-width="1.2" stroke-linecap="round"/>
 </svg>
