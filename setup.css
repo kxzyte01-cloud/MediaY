@@ -183,3 +183,10 @@
 .su-shapes .on,.su-row .on { border-color:var(--accent); background:rgba(85,214,232,.12); }
 .su-shapes i,.su-shapes .on i { border-color:var(--accent); }
 #trList button.on,.ratios .on { background:rgba(85,214,232,.13); border-color:var(--accent); color:var(--text); }
+
+.tr-duration { background:var(--panel2); border-color:var(--border); }
+#trList button.on { background:rgba(85,214,232,.13); border-color:var(--accent); color:var(--text); }
+.ratios .on { background:rgba(85,214,232,.13); border-color:var(--accent); color:var(--text); }
+.hm-new .hm-action-icon { background:rgba(85,214,232,.12); color:var(--accent); }
+.hm-open-project { background:linear-gradient(110deg,#16758F,#6554B8); border-color:transparent; color:#F8FBFF; }
+.hm-open-project:hover:not(:disabled) { filter:brightness(1.08); }
