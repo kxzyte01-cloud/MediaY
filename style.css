@@ -1,4 +1,4 @@
-:root { color-scheme: light; --bg:#edf6fa; --panel:#f9fcfd; --panel2:#e5f0f5; --panel3:#d7e9f1; --red:#1e668c; --accent:#1e668c; --sky:#398fb8; --rose:#d97899; --rose-soft:#f7eaf0; --teal:#398d88; --amber:#a87936; --text:#193448; --muted:#536d7d; --border:#cfdee6; --border-strong:#a9c3d1; --line:#cfdee6; }
+:root { color-scheme: dark; --bg:#090D15; --panel:#101722; --panel2:#172231; --panel3:#202E40; --red:#F16C83; --accent:#55D6E8; --sky:#55D6E8; --rose:#A78BFA; --rose-soft:rgba(167,139,250,.14); --teal:#55C6B0; --amber:#E5B66C; --text:#EAF1FA; --muted:#98A8BC; --border:#263448; --border-strong:#40536B; --line:#263448; --logo-grad:linear-gradient(135deg,#70E8F5 0%,#55D6E8 42%,#A78BFA 100%); }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { height: 100%; }
 body { margin:0; background:var(--bg); color:var(--text); font:14px "Avenir Next",Avenir,"Segoe UI",system-ui,sans-serif; display:flex; flex-direction:column; height:100dvh; overflow:hidden; padding-top:env(safe-area-inset-top); }
@@ -334,3 +334,22 @@ dialog::backdrop { background:rgba(25,52,72,.32); } dialog ul,dialog p { color:v
 /* The header uses the same neon aperture artwork as the favicon and Android launcher icon. */
 .brand-icon { background: transparent !important; box-shadow: none !important; padding: 0 !important; overflow: hidden; }
 .brand-icon .brand-mark { display: block; width: 100%; height: 100%; object-fit: contain; }
+
+/* Neon Aperture: restrained studio finish */
+:root { --shadow-soft:0 12px 34px rgba(0,0,0,.24); --focus-ring:rgba(85,214,232,.32); }
+body { background:radial-gradient(ellipse at 52% -35%,rgba(53,116,153,.16),transparent 58%),var(--bg); }
+.topbar { border-bottom:1px solid rgba(105,130,160,.12); background:rgba(9,13,21,.92); }
+.brand-icon,.empty-logo { background:transparent; color:var(--text); }
+.brand-mark { display:block; width:38px; height:38px; object-fit:contain; }
+.brand-text { letter-spacing:-.045em; }
+.primary,.dock button.rec { background:linear-gradient(110deg,#187F9A,#6554B8); color:#F8FBFF; box-shadow:0 5px 18px rgba(48,144,177,.16); }
+button:hover { filter:brightness(1.08); }
+:focus-visible { outline:2px solid var(--accent); outline-offset:3px; box-shadow:0 0 0 4px var(--focus-ring); }
+.preview-frame { box-shadow:0 0 0 1px var(--border),var(--shadow-soft); }
+.sheet,.panel,.busy-card { box-shadow:var(--shadow-soft); }
+.clip.video-clip { background:linear-gradient(110deg,#123C55,#174B64); border-color:#287B99; }
+.clip.audio-clip { background:linear-gradient(110deg,#3C326B,#4B3A83); border-color:#7663B6; }
+.clip.ov-clip { background:#34305B; border-color:#8273C5; }
+.ratios .on { border-color:var(--accent); background:rgba(85,214,232,.13); color:var(--text); }
+#emptyState a,dialog a { color:var(--accent); }
+.dock { background:rgba(12,17,27,.96); }
