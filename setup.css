@@ -190,3 +190,6 @@
 .hm-new .hm-action-icon { background:rgba(85,214,232,.12); color:var(--accent); }
 .hm-open-project { background:linear-gradient(110deg,#16758F,#6554B8); border-color:transparent; color:#F8FBFF; }
 .hm-open-project:hover:not(:disabled) { filter:brightness(1.08); }
+
+.brand-mark { display:block; width:100%; height:100%; object-fit:contain; }
+.empty-logo img { display:block; width:100%; height:100%; object-fit:contain; }
