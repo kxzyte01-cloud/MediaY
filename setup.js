@@ -25,7 +25,7 @@
   home.innerHTML = `
     <div class="hm-wrap">
       <header class="hm-brand">
-        <span class="brand-mark" aria-hidden="true">Y</span>
+        <img class="brand-mark" src="./favicon.svg" alt="" aria-hidden="true">
         <span class="hm-wordmark"><strong>MediaY</strong><small>VIDEO STUDIO</small></span>
         <span class="hm-pill">EDITOR</span>
       </header>
@@ -73,7 +73,7 @@
   setup.innerHTML = `
     <div class="su-wrap">
       <button id="suBack" class="su-back">← Home</button>
-      <div class="su-head"><div class="empty-logo">Y</div><h1>Set up your project</h1><p>Choose a format and export settings.</p></div>
+      <div class="su-head"><div class="empty-logo"><img src="./favicon.svg" alt="" aria-hidden="true"></div><h1>Set up your project</h1><p>Choose a format and export settings.</p></div>
       <div><p class="su-label">Video shape</p><div id="suShape" class="su-shapes"></div></div>
       <div><p class="su-label">Export quality</p><div id="suRes" class="su-row q5"></div><p id="suHint" class="su-hint"></p></div>
       <div><p class="su-label">Frames per second</p><div id="suFps" class="su-row"></div></div>
