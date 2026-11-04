@@ -27,6 +27,6 @@ test('Neon Aperture project-library actions keep the studio accent treatment',()
   const openProject=setupStyle.slice(setupStyle.lastIndexOf('.hm-open-project {')).split('}')[0];
   assert.ok(newIcon.includes('background:rgba(85,214,232,.12)'));
   assert.ok(newIcon.includes('color:var(--accent)'));
-  assert.ok(openProject.includes('background:linear-gradient(110deg,#187F9A,#6554B8)'));
+  assert.ok(openProject.includes('background:linear-gradient(110deg,#16758F,#6554B8)'));
   assert.ok(openProject.includes('color:#F8FBFF'));
 });
