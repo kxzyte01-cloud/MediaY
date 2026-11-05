@@ -56,7 +56,7 @@
 .hm-new,.hm-action { display:flex; align-items:center; gap:12px; min-height:72px; width:100%; padding:12px 15px; text-align:left; border:1px solid var(--border); border-radius:17px; background:var(--panel); }
 .hm-action { background:#141419; }
 .hm-action-icon { display:grid; place-items:center; width:39px; height:39px; flex:0 0 39px; border-radius:13px; background:#29252d; color:#fff; font-size:24px; }
-.hm-new .hm-action-icon { background:#3a1b21; color:#ff6972; }
+.hm-new .hm-action-icon { background:#3a1b21; color:var(--accent); }
 .hm-new small,.hm-action small { color:var(--muted); }
 .hm-export { display:flex; align-items:center; justify-content:space-between; min-height:58px; width:100%; padding:0 18px; margin-top:3px; border-radius:16px; background:#f01925; font-size:15px; font-weight:700; }
 .hm-export span:last-child { display:grid; place-items:center; width:31px; height:31px; border-radius:10px; background:#ffffff25; font-size:21px; }
@@ -74,7 +74,7 @@
 .tr-duration label { display:flex; justify-content:space-between; color:var(--muted); font-size:12px; margin-bottom:8px; }
 .tr-duration label b { color:#fff; }
 #trList button { border:1px solid var(--border); transition:background .18s, border-color .18s, transform .15s; }
-#trList button.on { background:#401b21; border:1px solid var(--red); color:#fff; }
+#trList button.on { background:#401b21; border:1px solid var(--red); color:var(--text); }
 
 
 /* Saved-project library */
@@ -199,7 +199,7 @@
 .hm-hero h1 em { color:#B79AFF; }
 .hm-continue,.hm-open-project,#suStart { background:linear-gradient(120deg,#00DDEB,#168BFF 55%,#7548D8); color:#071321; border-color:transparent; }
 .hm-continue-copy small { color:#E4F8FF; }
-.hm-project-icon,.hm-action-icon,.hm-new .hm-action-icon { background:rgba(0,231,242,.12); color:#00E7F2; }
+.hm-project-icon,.hm-action-icon,.hm-new .hm-action-icon { background:rgba(0,231,242,.12); color:var(--accent); }
 .hm-new,.hm-action,.hm-recent,.hm-library { border-color:#293852; }
 .su-shapes .on,.su-row .on,.ratios .on { border-color:#00E7F2; background:rgba(0,231,242,.13); color:#F3F7FF; }
 #trList button.on { background:rgba(139,92,246,.2); border-color:#8B5CF6; color:#F3F7FF; }
@@ -208,7 +208,7 @@
 .empty-logo img { display:block; width:100%; height:100%; object-fit:contain; }
 
 /* Neon Aperture final state: keep selected controls and project actions on-brand. */
-#trList button.on { background:rgba(0,231,242,.13); border-color:#00E7F2; color:#F3F7FF; }
+#trList button.on { background:rgba(0,231,242,.13); border-color:#00E7F2; color:var(--text); }
 .ratios .on { background:rgba(0,231,242,.13); border-color:#00E7F2; color:#F3F7FF; }
 .hm-open-project { background:linear-gradient(120deg,#00DDEB,#168BFF 55%,#7548D8); border-color:transparent; color:#071321; }
 .hm-open-project:hover:not(:disabled) { filter:brightness(1.08); }
