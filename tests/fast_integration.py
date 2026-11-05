@@ -67,6 +67,7 @@ async (a) => {
     S: a.S, FX: [{ f: '' }, { f: 'eq=saturation=1.5' }], TD: a.TD || a.S.main.map(() => 0), adjustmentFilter: c => (c.adjust ? 'eq=brightness=0.1' : ''),
     files: blobs, W: 640, H: 360, EXP: { fps: 30 }, dur: c => (c.out - c.in) / (c.speed || 1),
     exportMetric: { stage: n => log.stages.push(n), note: (k, v) => { log.notes[k] = v; } },
+    exportCancelRequested: false,
     exportProgressHandler: 'SAVED-HANDLER',
     exportWorkspaceFiles: new Set(), exportSourceCache: new Map(), exportSourceCacheBytes: 0,
     ff: { writeFile: async (n, d) => {
