@@ -1332,6 +1332,57 @@ async function saveVideo(data) {
   return { method: 'browser-download', filename: name, location: 'Downloads' };
 }
 
+/* Stream a completed FFmpeg file to Android without materializing the entire MP4 in WebView memory. */
+async function saveFFmpegOutput(engine, outputPath) {
+  const plugins = (window.Capacitor && window.Capacitor.Plugins) || {};
+  const nativeStore = isNative() && plugins.MediaYMediaStore;
+  if (!nativeStore || typeof nativeStore.beginStreamingSave !== 'function' ||
+      typeof engine.readFileChunk !== 'function') {
+    return saveVideo(await engine.readFile(outputPath));
+  }
+  const name = `ProjectMedia-Y-${Date.now()}.mp4`;
+  const CHUNK_BYTES = 1024 * 1024;
+  let started = false;
+  let offset = 0;
+  let totalBytes = null;
+  try {
+    await nativeStore.beginStreamingSave({ fileName: name });
+    started = true;
+    while (totalBytes == null || offset < totalBytes) {
+      const part = await engine.readFileChunk(outputPath, offset, CHUNK_BYTES);
+      if (!part || !part.bytesRead || !(part.data instanceof Uint8Array)) {
+        throw new Error('The video engine returned an incomplete MP4 chunk.');
+      }
+      totalBytes = Number(part.fileSize) || totalBytes;
+      let binary = '';
+      for (let i = 0; i < part.data.length; i += 0x8000) {
+        binary += String.fromCharCode.apply(null, part.data.subarray(i, i + 0x8000));
+      }
+      await nativeStore.appendStreamingChunk({ data: btoa(binary) });
+      offset += part.bytesRead;
+      const progress = totalBytes ? Math.min(99, 97 + offset / totalBytes * 2) : null;
+      updateBusy('Saving your MP4…', `Writing ${(offset / 1048576).toFixed(1)} MB of ${(totalBytes / 1048576).toFixed(1)} MB to Movies/MediaY.`, progress, 'Saving video');
+      if (part.eof) break;
+    }
+    if (!totalBytes || offset !== totalBytes) {
+      throw new Error('The completed MP4 could not be read in full.');
+    }
+    const saved = await nativeStore.finishStreamingSave();
+    started = false;
+    return { method: 'device', filename: (saved && saved.fileName) || name,
+      location: (saved && saved.location) || 'Movies/MediaY' };
+  } catch (error) {
+    if (started && typeof nativeStore.abortStreamingSave === 'function') {
+      await nativeStore.abortStreamingSave().catch(() => {});
+    }
+    // Android 9 and earlier retain the established legacy-storage path.
+    if (/Android 10 or newer/.test(String(error && error.message || error))) {
+      return saveVideo(await engine.readFile(outputPath));
+    }
+    throw error;
+  }
+}
+
 // Native Android builds register this plugin during the APK workflow. A foreground
 // service helps keep the app process alive during export when the user switches apps.
 async function beginNativeExportService() {
@@ -1887,8 +1938,7 @@ const runExport = async (_event, recoveryAttempt = 0) => {
     }
     exportMetric.stage('Read and save final MP4');
     updateBusy('Preparing your MP4…', 'Writing the final video file.', 97, 'Finishing');
-    const data = await ff.readFile(out);
-    const delivery = await saveVideo(data);
+    const delivery = await saveFFmpegOutput(ff, out);
     delivered = delivery;
     ['joined.mp4', 'final.mp4', 'list.txt'].forEach(n => ff.deleteFile(n).catch(() => {}));
     exportOutcome = 'complete';
