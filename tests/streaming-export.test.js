@@ -37,7 +37,7 @@ test('build workflow uses read-only contents permission and isolates release wri
   assert.match(workflow, /^permissions:\\n  contents: read/m);
   assert.match(workflow, /  build:\\n    permissions:\\n      contents: read/);
   assert.match(workflow, /  publish-release:[\\s\\S]*?permissions:\\n      contents: write/);
-  assert.match(workflow, /actions\\/download-artifact@v4/);
+  assert.ok(workflow.includes('actions/download-artifact@v4'));
 });
 
 test('FFmpeg worker range reads return exact offsets and end-of-file metadata', async () => {
