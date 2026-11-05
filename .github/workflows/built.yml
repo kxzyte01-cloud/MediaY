@@ -338,20 +338,21 @@ jobs:
                       values.put(MediaStore.Video.Media.IS_PENDING, 1);
                       Uri uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
                       if (uri == null) throw new IOException("Android did not create a Movies/MediaY media entry.");
+                      // Track the pending row before opening its stream so every failure path can delete it.
+                      streamingUri = uri;
+                      streamingFileName = fileName;
                       OutputStream output = resolver.openOutputStream(uri, "w");
                       if (output == null) {
-                          resolver.delete(uri, null, null);
                           throw new IOException("Android did not open the destination file.");
                       }
-                      streamingUri = uri;
                       streamingOutput = new BufferedOutputStream(output, 256 * 1024);
-                      streamingFileName = fileName;
                       streamingBytes = 0L;
                       JSObject result = new JSObject();
                       result.put("fileName", fileName);
                       result.put("location", "Movies/MediaY");
                       call.resolve(result);
                   } catch (Exception error) {
+                      abortStreamingSaveInternal();
                       call.reject("Could not start streaming export: " + error.getMessage(), error);
                   }
               }
