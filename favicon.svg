@@ -1,15 +1,33 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-labelledby="title">
-  <title id="title">MediaY aperture mark</title>
-  <defs>
-    <linearGradient id="cyan" x1="12" y1="12" x2="36" y2="43" gradientUnits="userSpaceOnUse"><stop stop-color="#70E8F5"/><stop offset="1" stop-color="#268BAF"/></linearGradient>
-    <linearGradient id="violet" x1="30" y1="13" x2="53" y2="48" gradientUnits="userSpaceOnUse"><stop stop-color="#B8A5FF"/><stop offset="1" stop-color="#7658C9"/></linearGradient>
-    <linearGradient id="stem" x1="32" y1="31" x2="32" y2="56" gradientUnits="userSpaceOnUse"><stop stop-color="#D8D5FF"/><stop offset="1" stop-color="#8A78D8"/></linearGradient>
-  </defs>
-  <circle cx="32" cy="32" r="29" fill="#0B1019" stroke="#28364A" stroke-width="1.5"/>
-  <circle cx="32" cy="32" r="23.5" stroke="#53647D" stroke-opacity=".55"/>
-  <path d="M14 17.5h13.5L32 26.2l-8.8 9.3-9.7-8.3Z" fill="url(#cyan)"/>
-  <path d="M50 17.5H36.5L32 26.2l8.8 9.3 9.7-8.3Z" fill="url(#violet)"/>
-  <path d="m23.2 35.5 8.7-5.9 8.9 5.9-5 6.7V53h-7.6V42.2Z" fill="url(#stem)"/>
-  <path d="m25.2 25.1 13.6 6.9-13.6 6.9" stroke="#F7FBFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M32 33.5v19.2" stroke="#F7FBFF" stroke-opacity=".85" stroke-width="1.2" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">MediaY Neon Aperture</title><desc id="desc">A geometric cyan and white Y surrounding a violet camera aperture, with cyan and violet editing timeline bars.</desc>
+<defs>
+ <linearGradient id="cyan" x1="16" y1="10" x2="55" y2="100" gradientUnits="userSpaceOnUse"><stop stop-color="#12F1F4"/><stop offset="1" stop-color="#168BFF"/></linearGradient>
+ <linearGradient id="violet" x1="50" y1="18" x2="108" y2="105" gradientUnits="userSpaceOnUse"><stop stop-color="#B58BFF"/><stop offset="1" stop-color="#713BDB"/></linearGradient>
+ <linearGradient id="white" x1="70" y1="10" x2="111" y2="67" gradientUnits="userSpaceOnUse"><stop stop-color="#FFFFFF"/><stop offset="1" stop-color="#C9D8F2"/></linearGradient>
+ <linearGradient id="stem" x1="52" y1="74" x2="76" y2="120" gradientUnits="userSpaceOnUse"><stop stop-color="#25EAF3"/><stop offset="1" stop-color="#178DFF"/></linearGradient>
+</defs>
+<g stroke-linejoin="round">
+ <!-- Y arms -->
+ <path d="M13 12H34L54 45L45 58L27 37Z" fill="url(#cyan)"/>
+ <path d="M115 12H94L74 45L83 58L101 37Z" fill="url(#white)"/>
+ <!-- segmented left arm -->
+ <path d="M21 25H37L42 32H25Z M29 38H45L49 45H33Z" fill="#071321" opacity=".9"/>
+ <!-- Aperture ring and six blades -->
+ <circle cx="64" cy="51" r="25" fill="#11112D" stroke="#8B5CF6" stroke-width="4"/>
+ <circle cx="64" cy="51" r="19.5" fill="#0B1222" stroke="#20DDF4" stroke-width="1.5"/>
+ <path d="M64 32L77 39L73 53L60 55L52 43Z" fill="#13DCEB"/>
+ <path d="M77 39L83 52L73 64L65 54L73 53Z" fill="#8B5CF6"/>
+ <path d="M83 52L77 66L62 70L64 56L73 64Z" fill="#6C43D5"/>
+ <path d="M77 66L63 70L51 62L62 53L62 70Z" fill="#18A9FF"/>
+ <path d="M51 62L45 49L52 36L62 48L62 53Z" fill="#22E5ED"/>
+ <path d="M45 49L52 36L64 32L62 48L52 53Z" fill="#327CF5"/>
+ <circle cx="64" cy="51" r="5" fill="#0A1220"/>
+ <!-- Y stem -->
+ <path d="M49 72L64 78L79 72L75 120H53Z" fill="url(#stem)"/>
+ <path d="M64 78V119" stroke="#D8FFFF" stroke-width="2" opacity=".75"/>
+ <!-- timeline/editing rails -->
+ <path d="M9 91H43V98H9Z M9 104H43V108H9Z" fill="#10DDEB"/>
+ <path d="M85 91H119V98H85Z M85 104H119V108H85Z" fill="#8B5CF6"/>
+ <path d="M48 91H55V98H48Z M73 91H80V98H73Z" fill="#B58BFF"/>
+</g>
 </svg>
