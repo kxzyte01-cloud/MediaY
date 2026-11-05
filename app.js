@@ -390,7 +390,7 @@ $('saveBtn').onclick = async () => {
 };
 
 /* ---------- Runtime guard: heavy-job safety, background keep-alive, in-place project refresh ---------- */
-let exportInProgress = 0;
+let exportInProgress = 0, exportCancelRequested = false;
 let fontsReadyPromise = null;
 // Canvas text is measured the moment it is created. If the web font is still loading, every caption is
 // measured with a fallback font and stays mis-sized until the project is reopened. Wait for the font once.
@@ -1222,6 +1222,7 @@ $('copyPerfReport').onclick = async () => {
 renderMediaYPerformanceReport();
 window.MediaYDiagnostics = recentMediaYMetrics;
 const run = async args => {
+  if (exportCancelRequested) throw new Error('Export cancelled');
   const started = performance.now();
   let success = false;
   const output = String(args && args.length ? args[args.length - 1] : '');
@@ -1349,6 +1350,7 @@ async function saveFFmpegOutput(engine, outputPath) {
     await nativeStore.beginStreamingSave({ fileName: name });
     started = true;
     while (totalBytes == null || offset < totalBytes) {
+      if (exportCancelRequested) throw new Error('Export cancelled');
       const part = await engine.readFileChunk(outputPath, offset, CHUNK_BYTES);
       if (!part || !part.bytesRead || !(part.data instanceof Uint8Array)) {
         throw new Error('The video engine returned an incomplete MP4 chunk.');
@@ -1366,6 +1368,12 @@ async function saveFFmpegOutput(engine, outputPath) {
     }
     if (!totalBytes || offset !== totalBytes) {
       throw new Error('The completed MP4 could not be read in full.');
+    }
+    if (exportCancelRequested) throw new Error('Export cancelled');
+    const cancelButton = $('busyCancel');
+    if (cancelButton) {
+      cancelButton.disabled = true;
+      cancelButton.textContent = 'Finishing save…';
     }
     const saved = await nativeStore.finishStreamingSave();
     started = false;
@@ -1407,6 +1415,7 @@ async function endNativeExportService() {
 
 const EXP = { res: 720, fps: TIMELINE_FPS };
 const runExport = async (_event, recoveryAttempt = 0) => {
+  exportCancelRequested = false;
   if (!S.main.length) return say('Nothing to export yet.');
   if (captionRunning) return say('Captions are still being generated. Wait for them to finish, then export.');
   const exportMetric = createMediaYMetric('Export', {
@@ -1418,17 +1427,44 @@ const runExport = async (_event, recoveryAttempt = 0) => {
   exportMetric.stage('Validate project and media');
   if (playing) stop();
   closeSheet(); const btn = $('goExport'); btn.disabled = true;
+  const busyCancelButton = $('busyCancel');
+  busyCancelButton.hidden = false;
+  busyCancelButton.disabled = false;
+  busyCancelButton.textContent = 'Cancel export';
   let exportFailed = false, delivered = null, retryAfterCleanup = false, retryAttempt = recoveryAttempt;
   ffLogs = [];
   const exportWorkspaceFiles = new Set();
+  const exportSourceMounts = new Map(); // mounted WORKERFS file path -> mount directory
   const exportSourceCache = new Map();
   const exportOverlayPngCache = new Map();
   let exportSourceCacheBytes = 0, exportOverlayPngCacheBytes = 0;
   const EXPORT_SOURCE_CACHE_LIMIT = 96 * 1024 * 1024;
   const EXPORT_OVERLAY_PNG_CACHE_LIMIT = 12 * 1024 * 1024;
   const removeExportFile = async name => {
-    try { if (ff) await ff.deleteFile(name); } catch (_) {}
+    const mountDir = exportSourceMounts.get(name);
+    if (ff && mountDir) {
+      try { await ff.unmount(mountDir); } catch (_) {}
+      try { await ff.deleteDir(mountDir); } catch (_) {}
+      exportSourceMounts.delete(name);
+    } else {
+      try { if (ff) await ff.deleteFile(name); } catch (_) {}
+    }
     exportWorkspaceFiles.delete(name);
+  };
+  const mountExportFile = async (file, name) => {
+    const mountDir = '/mediay_src_' + uid();
+    await ff.createDir(mountDir);
+    try {
+      const mounted = await ff.mount('WORKERFS', { blobs: [{ name, data: file }] }, mountDir);
+      if (!mounted) throw new Error('FFmpeg WORKERFS is unavailable for source streaming.');
+    } catch (error) {
+      try { await ff.deleteDir(mountDir); } catch (_) {}
+      throw error;
+    }
+    const mountedPath = mountDir + '/' + name;
+    exportWorkspaceFiles.add(mountedPath);
+    exportSourceMounts.set(mountedPath, mountDir);
+    return mountedPath;
   };
   updateBusy('Preparing your export…', 'Rendering runs in MediaY. Keep the app open and in the foreground until the MP4 is saved.', 1, 'Preparing');
   let exportWakeLock = null;
@@ -1538,10 +1574,9 @@ const runExport = async (_event, recoveryAttempt = 0) => {
           exportSourceCacheBytes -= victimEntry.size;
         }
       }
-      updateBusy('Preparing source media…', `Loading ${file.name || 'media'} for the next encode pass.`, 5 + (segs.length / Math.max(1, S.main.length)) * 5, 'Source preparation');
-      await ff.writeFile(name, new Uint8Array(await file.arrayBuffer()));
-      exportWorkspaceFiles.add(name);
-      const entry = { name, size, cached: cacheable };
+      updateBusy('Preparing source media…', `Streaming ${file.name || 'media'} into the encoder without copying the whole file.`, 5 + (segs.length / Math.max(1, S.main.length)) * 5, 'Source preparation');
+      const mountedName = await mountExportFile(file, name);
+      const entry = { name: mountedName, size, cached: cacheable, mounted: true };
       if (cacheable) {
         exportSourceCache.set(mediaId, entry);
         exportSourceCacheBytes += size;
@@ -1595,6 +1630,7 @@ const runExport = async (_event, recoveryAttempt = 0) => {
       };
       const savedHandler = exportProgressHandler, mine = new Set(), overlayBitmaps = [];
       try {
+        if (exportCancelRequested) throw new Error('Export cancelled');
         if (!Fast) return decline('engine script not loaded');
         const toggle = $('useDeviceEncoder');
         if (toggle && !toggle.checked) return decline('turned off in the export settings');
@@ -1607,8 +1643,10 @@ const runExport = async (_event, recoveryAttempt = 0) => {
         // Sources must be plain MP4/MOV files this device can decode. They are read in pieces, never loaded whole.
         const sources = new Map();
         for (const c of S.main) {
+          if (exportCancelRequested) throw new Error('Export cancelled');
           if (sources.has(c.mediaId)) continue;
           const info = await Fast.demux(files[c.mediaId]);
+          if (exportCancelRequested) throw new Error('Export cancelled');
           if (!(await Fast.checkDecoder(info.video))) return decline('this device cannot decode ' + info.video.codec);
           sources.set(c.mediaId, info);
         }
@@ -1673,6 +1711,7 @@ const runExport = async (_event, recoveryAttempt = 0) => {
                 fadeOut: !!c.fade && frameOffset + chunkFrames === framesInClip
               }],
               overlays: localOverlays, W, H, fps: EXP.fps, choice, sink,
+              isCancelled: () => exportCancelRequested,
               onProgress: f => {
                 const progress = (renderedFrames + f * chunkFrames) / Math.max(1, totalFrames);
                 updateBusy('Rendering video…', `Encoding with this phone’s video encoder: ${Math.round(progress * 100)}%.`,
@@ -1747,6 +1786,7 @@ const runExport = async (_event, recoveryAttempt = 0) => {
         console.warn('MediaY: device video encoder failed, using the standard encoder:', error);
         for (const n of mine) await removeExportFile(n);
         exportProgressHandler = savedHandler;
+        if (exportCancelRequested) throw error;
         return decline((error && error.name === 'Unsupported' ? '' : 'failed: ') + String(error && error.message || error).slice(0, 160));
       } finally {
         overlayBitmaps.forEach(b => { try { b.close(); } catch (_) { /* already closed */ } });
@@ -1904,13 +1944,12 @@ const runExport = async (_event, recoveryAttempt = 0) => {
         if (!f || !f.size) throw new Error('An audio or picture-in-picture source is missing during export.');
         const ext = ((f.name || 'media.mp4').split('.').pop() || 'mp4').toLowerCase();
         const audioFile = `aud${k}.${ext}`;
-        exportWorkspaceFiles.add(audioFile);
-        await ff.writeFile(audioFile, new Uint8Array(await f.arrayBuffer()));
-        if (await hasAudioStream(audioFile)) {
+        const mountedAudioFile = await mountExportFile(f, audioFile);
+        if (await hasAudioStream(mountedAudioFile)) {
           activeTracks.push({ ...track, inputIndex: activeTracks.length + 1 });
-          ins.push('-i', audioFile);
+          ins.push('-i', mountedAudioFile);
         } else {
-          await removeExportFile(audioFile);
+          await removeExportFile(mountedAudioFile);
         }
       }
       const originalHasAudio = await hasAudioStream(out);
@@ -1953,6 +1992,13 @@ const runExport = async (_event, recoveryAttempt = 0) => {
     exportMetric.stage('Handle export error or recovery');
     console.error(err);
     const errText = String(err && err.message || err);
+    if (exportCancelRequested || /Export cancelled/i.test(errText)) {
+      exportOutcome = 'cancelled';
+      exportFailed = false;
+      retryAfterCleanup = false;
+      exportProgressHandler = null;
+      say('Export cancelled. Temporary files were cleaned up; your project was not changed.');
+    } else {
     const encoderNotLoaded = /ffmpeg is not loaded|not loaded, call.*ffmpeg\.load|called FFmpeg\.terminate/i.test(errText);
     if (encoderNotLoaded && recoveryAttempt < 1) {
       // The browser/WebView can lose the FFmpeg worker. A truthy `ff` reference is not proof
@@ -1986,16 +2032,21 @@ const runExport = async (_event, recoveryAttempt = 0) => {
       say(message);
       showBusyError('Export failed', message);
     }
+    }
   } finally {
     exportMetric.stage('Clean FFmpeg workspace');
     // All virtual filesystem inputs and outputs created by this export are session-owned.
     // Clean them on every exit, including encoder recovery and a failed audio mix.
     if (ff) {
-      for (const name of exportWorkspaceFiles) {
-        try { await ff.deleteFile(name); } catch (_) {}
-      }
+      for (const name of [...exportWorkspaceFiles]) await removeExportFile(name);
     }
     exportWorkspaceFiles.clear();
+    exportSourceMounts.clear();
+    if (!captionRunning) {
+      busyCancelButton.hidden = true;
+      busyCancelButton.disabled = false;
+      busyCancelButton.textContent = 'Request cancellation';
+    }
     if (exportVisibilityHandler) document.removeEventListener('visibilitychange', exportVisibilityHandler);
     if (exportWakeLock) {
       try { await exportWakeLock.release(); } catch (_) {}
@@ -2719,6 +2770,19 @@ async function commitCaptionDrafts(drafts) {
     throw error;
   }
 }
+function requestExportCancel() {
+  if (!exportInProgress || exportCancelRequested) return;
+  exportCancelRequested = true;
+  const button = $('busyCancel');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Cancelling export…';
+  }
+  say('Cancelling export. MediaY is stopping the encoder and removing unfinished output.');
+  // Terminating FFmpeg rejects its active command and releases the worker heap.
+  // The WebCodecs path also receives isCancelled and closes its decoder/encoder between frames.
+  if (ff) disposeFFmpeg();
+}
 function requestCaptionCancel() {
   if (!captionRunning || captionCancelRequested) return;
   captionCancelRequested = true;
@@ -2730,7 +2794,7 @@ function requestCaptionCancel() {
   say('Cancellation requested. MediaY will finish the current model/audio operation and discard all generated captions.');
 }
 $('capCancelBtn').onclick = requestCaptionCancel;
-$('busyCancel').onclick = requestCaptionCancel;
+$('busyCancel').onclick = () => exportInProgress ? requestExportCancel() : requestCaptionCancel();
 $('capGo').onclick = async () => {
   const audioSelection = sel && sel.lane === 'audio' ? S.audio.find(x => x.id === sel.id) : null;
   const explicitVideo = !audioSelection && sel && sel.lane === 'main' ? S.main.find(x => x.id === sel.id) : null;
