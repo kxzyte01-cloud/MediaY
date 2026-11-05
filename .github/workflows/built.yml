@@ -19,10 +19,12 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -310,6 +312,127 @@ jobs:
               }
           )
           public final class MediaYMediaStorePlugin extends Plugin {
+              private Uri streamingUri;
+              private OutputStream streamingOutput;
+              private String streamingFileName;
+              private long streamingBytes;
+
+              @PluginMethod
+              public synchronized void beginStreamingSave(PluginCall call) {
+                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                      call.reject("Streaming MediaStore export requires Android 10 or newer.");
+                      return;
+                  }
+                  String fileName = call.getString("fileName");
+                  if (fileName == null || !fileName.matches("ProjectMedia-Y-[0-9]+\\.mp4")) {
+                      call.reject("Invalid exported video filename.");
+                      return;
+                  }
+                  abortStreamingSaveInternal();
+                  ContentResolver resolver = getContext().getContentResolver();
+                  try {
+                      ContentValues values = new ContentValues();
+                      values.put(MediaStore.Video.Media.DISPLAY_NAME, fileName);
+                      values.put(MediaStore.Video.Media.MIME_TYPE, "video/mp4");
+                      values.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/MediaY");
+                      values.put(MediaStore.Video.Media.IS_PENDING, 1);
+                      Uri uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
+                      if (uri == null) throw new IOException("Android did not create a Movies/MediaY media entry.");
+                      OutputStream output = resolver.openOutputStream(uri, "w");
+                      if (output == null) {
+                          resolver.delete(uri, null, null);
+                          throw new IOException("Android did not open the destination file.");
+                      }
+                      streamingUri = uri;
+                      streamingOutput = new BufferedOutputStream(output, 256 * 1024);
+                      streamingFileName = fileName;
+                      streamingBytes = 0L;
+                      JSObject result = new JSObject();
+                      result.put("fileName", fileName);
+                      result.put("location", "Movies/MediaY");
+                      call.resolve(result);
+                  } catch (Exception error) {
+                      call.reject("Could not start streaming export: " + error.getMessage(), error);
+                  }
+              }
+
+              @PluginMethod
+              public synchronized void appendStreamingChunk(PluginCall call) {
+                  String encoded = call.getString("data");
+                  if (streamingOutput == null || encoded == null || encoded.isEmpty()) {
+                      call.reject("No active streaming export or empty chunk.");
+                      return;
+                  }
+                  try {
+                      byte[] chunk = android.util.Base64.decode(encoded, android.util.Base64.DEFAULT);
+                      if (chunk.length == 0 || chunk.length > 4 * 1024 * 1024) {
+                          throw new IOException("Export chunk is outside the allowed size.");
+                      }
+                      streamingOutput.write(chunk);
+                      streamingBytes += chunk.length;
+                      JSObject result = new JSObject();
+                      result.put("bytesWritten", chunk.length);
+                      result.put("totalBytes", streamingBytes);
+                      call.resolve(result);
+                  } catch (Exception error) {
+                      abortStreamingSaveInternal();
+                      call.reject("Could not write export chunk: " + error.getMessage(), error);
+                  }
+              }
+
+              @PluginMethod
+              public synchronized void finishStreamingSave(PluginCall call) {
+                  if (streamingOutput == null || streamingUri == null || streamingBytes <= 0L) {
+                      abortStreamingSaveInternal();
+                      call.reject("The streamed MP4 is empty or no export is active.");
+                      return;
+                  }
+                  Uri uri = streamingUri;
+                  String fileName = streamingFileName;
+                  long bytes = streamingBytes;
+                  try {
+                      streamingOutput.flush();
+                      streamingOutput.close();
+                      streamingOutput = null;
+                      ContentValues published = new ContentValues();
+                      published.put(MediaStore.Video.Media.IS_PENDING, 0);
+                      if (getContext().getContentResolver().update(uri, published, null, null) <= 0) {
+                          throw new IOException("Android could not publish the exported video to Gallery.");
+                      }
+                      streamingUri = null;
+                      streamingFileName = null;
+                      streamingBytes = 0L;
+                      JSObject result = new JSObject();
+                      result.put("fileName", fileName);
+                      result.put("location", "Movies/MediaY");
+                      result.put("uri", uri.toString());
+                      result.put("bytes", bytes);
+                      call.resolve(result);
+                  } catch (Exception error) {
+                      abortStreamingSaveInternal();
+                      call.reject("Could not finish streaming export: " + error.getMessage(), error);
+                  }
+              }
+
+              @PluginMethod
+              public synchronized void abortStreamingSave(PluginCall call) {
+                  abortStreamingSaveInternal();
+                  call.resolve();
+              }
+
+              private void abortStreamingSaveInternal() {
+                  if (streamingOutput != null) {
+                      try { streamingOutput.close(); } catch (Exception ignored) {}
+                  }
+                  streamingOutput = null;
+                  if (streamingUri != null) {
+                      try { getContext().getContentResolver().delete(streamingUri, null, null); } catch (Exception ignored) {}
+                  }
+                  streamingUri = null;
+                  streamingFileName = null;
+                  streamingBytes = 0L;
+              }
+
               @PluginMethod
               public void saveVideo(PluginCall call) {
                   if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
@@ -571,8 +694,21 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  publish-release:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Download verified signed APK
+        uses: actions/download-artifact@v4
+        with:
+          name: MediaY-signed-release-${{ github.run_number }}
+          path: release-assets
+
       - name: Publish GitHub Release
-        if: github.event_name == 'workflow_dispatch' && inputs.publish_release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.${{ github.run_number }}
@@ -585,5 +721,5 @@ jobs:
             - APK signature verification ran in GitHub Actions before publishing.
             - SHA-256 checksum is included alongside the APK.
           files: |
-            MediaY-v1.0.${{ github.run_number }}.apk
-            MediaY-v1.0.${{ github.run_number }}.apk.sha256
+            release-assets/MediaY-v1.0.${{ github.run_number }}.apk
+            release-assets/MediaY-v1.0.${{ github.run_number }}.apk.sha256
