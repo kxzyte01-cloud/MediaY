@@ -7,8 +7,8 @@
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#090D15",
-  "theme_color": "#090D15",
+  "background_color": "#080D18",
+  "theme_color": "#080D18",
   "categories": [
     "video",
     "multimedia",
