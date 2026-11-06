@@ -23,3 +23,13 @@ test('cancelled export is not retried or reported as an export failure', () => {
   assert.ok(app.includes('exportFailed = false'));
   assert.ok(app.includes('Temporary files were cleaned up; your project was not changed.'));
 });
+
+test('FFmpeg commands have a progress/log inactivity watchdog, not a fixed export deadline', () => {
+  assert.ok(app.includes('ffLastActivityAt = Date.now()'));
+  assert.ok(app.includes("ff.on('progress', event => { ffLastActivityAt = Date.now();"));
+  assert.ok(app.includes('const idleLimitMs = 15 * 60 * 1000'));
+  assert.ok(app.includes('Promise.race([engine.exec(args), watchdog])'));
+  assert.ok(app.includes('if (ff === engine) disposeFFmpeg()'));
+  assert.ok(app.includes('window.clearTimeout(watchdogTimer)'));
+  assert.ok(app.includes('FFmpeg stopped reporting activity for 15 minutes'));
+});
