@@ -284,7 +284,7 @@ async function buildObject(o, { restackAfter = true } = {}) {
   let obj;
   if (o.type === 'text') {
     await ensureFontsReady();
-    obj = new fabric.Textbox(o.text, { width: w * 0.8, fontFamily: 'DM Sans', fontWeight: 700, fontSize: 56, textAlign: 'center', ...TS[o.style || 0]() });
+    obj = new fabric.Textbox(o.text, { width: w * 0.8, fontFamily: 'Avenir Next, Avenir, Segoe UI, system-ui, sans-serif', fontWeight: 700, fontSize: 56, textAlign: 'center', ...TS[o.style || 0]() });
   } else {
     const url = await loadMedia(o.mediaId); if (!url) return;
     let el;
@@ -411,18 +411,18 @@ $('saveBtn').onclick = async () => {
 /* ---------- Runtime guard: heavy-job safety, background keep-alive, in-place project refresh ---------- */
 let exportInProgress = 0, exportCancelRequested = false;
 let fontsReadyPromise = null;
-// Canvas text is measured the moment it is created. If the web font is still loading, every caption is
-// measured with a fallback font and stays mis-sized until the project is reopened. Wait for the font once.
+// Canvas text is measured the moment it is created. Use the same local system-font stack as the editor,
+// and wait only for fonts already used by the document; never depend on an unbundled web font.
 function ensureFontsReady() {
   if (fontsReadyPromise) return fontsReadyPromise;
   fontsReadyPromise = (async () => {
-    if (!document.fonts || typeof document.fonts.load !== 'function') return;
+    if (!document.fonts || !document.fonts.ready) return;
     try {
       await Promise.race([
-        Promise.all([document.fonts.load('700 56px "DM Sans"'), document.fonts.ready]),
-        new Promise(resolve => setTimeout(resolve, 2500))
+        document.fonts.ready,
+        new Promise(resolve => setTimeout(resolve, 800))
       ]);
-    } catch (_) { /* offline or blocked: continue with the fallback font */ }
+    } catch (_) { /* system-font fallback remains available */ }
   })();
   return fontsReadyPromise;
 }
