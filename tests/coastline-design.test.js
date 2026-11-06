@@ -30,3 +30,13 @@ test('Neon Aperture project-library actions keep the studio accent treatment',()
   assert.ok(openProject.includes('background:linear-gradient(120deg,#00DDEB,#168BFF 55%,#7548D8)'));
   assert.ok(openProject.includes('color:#071321'));
 });
+
+test('light editor controls and diagnostics retain WCAG AA foreground contrast',()=>{
+  assert.ok(ratio('#17283c','#ffffff')>=4.5,'dark text on white fields must meet WCAG AA');
+  assert.ok(ratio('#17283c','#e8f0f5')>=4.5,'dark text on adjustment and diagnostics surfaces must meet WCAG AA');
+  assert.ok(ratio('#65304f','#e8f0f5')>=4.5,'adjustment values must meet WCAG AA');
+  const finalFix=style.slice(style.lastIndexOf('/* Accessibility hardening:'));
+  assert.ok(finalFix.includes('color:#17283C'),'light fields need a dark foreground');
+  assert.ok(finalFix.includes('background:#E8F0F5'),'adjustment and diagnostics panels need the tested light surface');
+  assert.ok(finalFix.includes('color:#65304F'),'adjustment outputs need the tested readable accent');
+});
