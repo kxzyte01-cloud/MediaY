@@ -236,3 +236,25 @@ test('widely spaced identical speech is preserved instead of being collapsed as 
   assert.equal(afterLoop[1].text, 'Welcome back.');
   assert.ok(afterLoop[1].start >= 16.9); // The caption renderer intentionally applies a 40 ms visual lead-in.
 });
+
+test('large caption windows overlap for boundary context but own contiguous non-overlapping source ranges', () => {
+  const windows = Core.planCaptionStreamWindows(1200, 600, 1.5);
+  assert.equal(windows.length, 2);
+  assert.equal(windows[0].offsetSeconds, 0);
+  assert.equal(windows[0].durationSeconds, 600.75);
+  assert.equal(windows[1].offsetSeconds, 599.25);
+  assert.equal(windows[1].durationSeconds, 600.75);
+  assert.equal(windows[0].ownershipStartSeconds, 0);
+  assert.equal(windows[0].ownershipEndSeconds, 599.25);
+  assert.equal(windows[1].ownershipStartSeconds, 599.25);
+  assert.equal(windows[1].ownershipEndSeconds, 1200);
+  for (let i = 0; i < windows.length; i++) {
+    assert.ok(windows[i].ownershipEndSeconds > windows[i].ownershipStartSeconds);
+    if (windows[i + 1]) {
+      assert.equal(windows[i].ownershipEndSeconds, windows[i + 1].ownershipStartSeconds);
+      assert.ok(windows[i].offsetSeconds + windows[i].durationSeconds > windows[i + 1].offsetSeconds);
+    }
+  }
+  assert.deepEqual(Core.planCaptionStreamWindows(0, 600, 1.5), []);
+  assert.equal(Core.planCaptionStreamWindows(601, 600, 1.5).length, 2);
+});
