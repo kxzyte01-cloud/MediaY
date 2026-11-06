@@ -52,3 +52,11 @@ test('FFmpeg cache is purged only after an integrity or WebAssembly instantiatio
   const load = app.slice(start, end);
   assert.doesNotMatch(load, /if \(window\.caches\) caches\.delete\(ENGINE_CACHE\)/);
 });
+
+
+test('skip_loop_filter is restricted to the explicit Fast Draft preset', () => {
+  assert.match(app, /fastDraft: false/);
+  assert.match(app, /EXP\.fastDraft = false/);
+  assert.match(app, /EXP\.fastDraft = name === 'draft'/);
+  assert.match(app, /hiRate && EXP\.fastDraft \? \[true, false\] : \[false\]/);
+});
