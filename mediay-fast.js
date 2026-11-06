@@ -251,7 +251,22 @@
      3. Planning helpers (pure, unit-tested)
      ------------------------------------------------------------------ */
   /** Output frame count for a clip that lasts `seconds` on the timeline. Matches `-t` + the fps filter. */
-  const frameCount = (seconds, fps) => Math.max(1, Math.ceil(seconds * fps - 1e-6));
+  const frameCount = (seconds, fps) => Math.max(1, Math.round(seconds * fps));
+  // Quantize cumulative timeline boundaries, not each clip independently. This prevents
+  // fractional-frame rounding from adding one extra frame per cut in long projects.
+  function planFrameCounts(durations, fps) {
+    const rate = Number(fps);
+    if (!Array.isArray(durations) || !Number.isFinite(rate) || rate <= 0) return [];
+    let timelineSeconds = 0, previousFrame = 0;
+    return durations.map(value => {
+      const duration = Number(value);
+      timelineSeconds += Number.isFinite(duration) && duration > 0 ? duration : 0;
+      const boundaryFrame = Math.round(timelineSeconds * rate);
+      const frames = Math.max(1, boundaryFrame - previousFrame);
+      previousFrame += frames;
+      return frames;
+    });
+  }
 
   /** Source time (seconds) below which the source frame for output slot k is chosen. Same rule as FFmpeg's `fps` filter (round to nearest). */
   const sourceLimit = (clip, k, fps) => clip.in + ((k + 0.5) / fps) * (clip.speed || 1);
@@ -548,7 +563,8 @@
     let encErr = null, encoderWaiters = [], encoder = null;
 
     const plan = clips.map(c => ({ c, td: (c.out - c.in) / (c.speed || 1) }));
-    plan.forEach(p => { p.frames = frameCount(p.td, fps); });
+    const plannedFrames = planFrameCounts(plan.map(p => p.td), fps);
+    plan.forEach((p, i) => { p.frames = plannedFrames[i]; });
     const totalFrames = plan.reduce((s, p) => s + p.frames, 0);
     const gop = Math.max(1, Math.round(fps * 2));
     const frameUs = Math.round(1e6 / fps);
@@ -661,7 +677,7 @@
 
   return {
     Unsupported, demux, parseAvcC, avccToAnnexB, codecFromConfig,
-    frameCount, sourceLimit, avcLevelIdc, targetBitrate, fitRect, clipSampleRange, ineligibleReason,
+    frameCount, planFrameCounts, sourceLimit, avcLevelIdc, targetBitrate, fitRect, clipSampleRange, ineligibleReason,
     chooseEncoderConfig, benchmarkEncoder, checkDecoder, renderTimeline, overlayFromPng,
     AnnexBSink, IvfSink, RangeReader, ClipDecoder
   };
