@@ -12,7 +12,9 @@ test('large caption sources use bounded 10-minute file-backed windows', () => {
   assert.match(app, /shouldStreamCaptionSource\(sourceFile, source\)/);
   assert.match(app, /for await \(const windowData of streamCaptionPcmWindows\(/);
   assert.match(app, /engine\.mount\(workerFs, \{ blobs: \[\{ name: inputName, data: file \}\] \}, mountDir\)/);
-  assert.match(app, /yield \{ pcm: normalizedPcm, offsetSeconds/);
+  assert.match(app, /CAPTION_STREAM_OVERLAP_SECONDS = 1\.5/);
+  assert.match(app, /Core\.planCaptionStreamWindows\(clipLength, CAPTION_STREAM_WINDOW_SECONDS, CAPTION_STREAM_OVERLAP_SECONDS\)/);
+  assert.match(app, /yield \{ pcm: normalizedPcm, \.\.\.planWindow \}/);
 });
 
 test('windowed decode does not use invalid compressed-byte slicing or retain all PCM windows', () => {
