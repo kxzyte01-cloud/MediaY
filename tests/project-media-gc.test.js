@@ -22,6 +22,10 @@ test('project media GC saves current state and retains every media reference acr
   assert.match(gc, /db\.media\.bulkDelete\(orphanIds\)/);
   assert.match(gc, /URL\.revokeObjectURL\(urls\[id\]\)/);
   assert.match(gc, /delete files\[id\]/);
+  assert.match(gc, /delete decoded\[id\]/);
+  assert.match(gc, /delete thumbs\[id\]/);
+  assert.match(gc, /delete audioLoads\[id\]/);
+  assert.doesNotMatch(gc, /dropMediaCaches\(\)/);
 });
 
 test('deleting a named project invokes best-effort cleanup without deleting shared media', () => {
