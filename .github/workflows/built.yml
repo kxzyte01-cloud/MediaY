@@ -91,6 +91,8 @@ jobs:
           cp index.html style.css mediay-icons.js mediay-core.js mediay-fast.js app.js setup.js setup.css manifest.json sw.js legal.html favicon.svg icon-*.png www/
           mkdir -p www/vendor/ffmpeg
           cp vendor/ffmpeg/ffmpeg.js vendor/ffmpeg/814.ffmpeg.js vendor/ffmpeg/LICENSE www/vendor/ffmpeg/
+          mkdir -p www/vendor/media-libraries
+          cp vendor/media-libraries/fabric.min.js vendor/media-libraries/anime.min.js vendor/media-libraries/dexie.min.js vendor/media-libraries/LICENSES.md www/vendor/media-libraries/
           bash scripts/fetch_speech_engine.sh
           mkdir -p www/vendor/transformers
           cp vendor/transformers/transformers.min.js vendor/transformers/ort-wasm-simd.wasm vendor/transformers/ort-wasm.wasm vendor/transformers/LICENSE www/vendor/transformers/
