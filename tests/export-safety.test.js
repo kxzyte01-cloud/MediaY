@@ -41,3 +41,14 @@ test('OOM retry detection matches the oom token, not arbitrary words containing 
   assert.match(app, /\\boom\\b/);
   assert.doesNotMatch(app, /allocation failed\|out of memory\|oom\/i/);
 });
+
+
+test('FFmpeg cache is purged only after an integrity or WebAssembly instantiation failure', () => {
+  assert.match(app, /function isFFmpegCacheIntegrityError\(error\)/);
+  assert.match(app, /if \(isFFmpegCacheIntegrityError\(error\) && window\.caches\)/);
+  const start = app.indexOf('async function loadFFmpegEngine()');
+  const end = app.indexOf('// One shared load:', start);
+  assert.ok(start >= 0 && end > start);
+  const load = app.slice(start, end);
+  assert.doesNotMatch(load, /if \(window\.caches\) caches\.delete\(ENGINE_CACHE\)/);
+});
