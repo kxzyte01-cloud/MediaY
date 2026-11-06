@@ -39,9 +39,9 @@ html=html.replace('<link rel="stylesheet" href="./style.css">', '<style>'+style+
 html=html.replace('<link rel="stylesheet" href="./setup.css">', '<style>'+setup_style+'</style>')
 for x in ['<link rel="preconnect" href="https://fonts.googleapis.com">','<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">']:
     html=html.replace(x,'')
-html=html.replace('<script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>', '<script>'+FABRIC_STUB+'</script>')
-html=html.replace('<script src="https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.2/anime.min.js"></script>', '<script>'+ANIME_STUB+'</script>')
-html=html.replace('<script src="https://unpkg.com/dexie@3.2.7/dist/dexie.min.js"></script>', '<script>'+DEXIE_STUB+'</script>')
+html=html.replace('<script src="./vendor/media-libraries/fabric.min.js" integrity="sha256-uwRC1ppNRnMyD2ibxuFsBaDj8WzPv1UfOU2Qp+fPx3I=" crossorigin="anonymous"></script>', '<script>'+FABRIC_STUB+'</script>')
+html=html.replace('<script src="./vendor/media-libraries/anime.min.js" integrity="sha256-tc4b48P1MPGS4PJXHRlChGCW1mEZy62jS/3JEsSHPzU=" crossorigin="anonymous"></script>', '<script>'+ANIME_STUB+'</script>')
+html=html.replace('<script src="./vendor/media-libraries/dexie.min.js" integrity="sha256-2JhqFVK0mn2MsIWpLGaYWuvzuzO2Stb3uu0kYdm2R/8=" crossorigin="anonymous"></script>', '<script>'+DEXIE_STUB+'</script>')
 
 html=html.replace('<script src="./mediay-icons.js"></script>', '<script>'+icons+'</script>')
 html=html.replace('<script src="./mediay-core.js"></script>', '<script>'+core+'</script>')
