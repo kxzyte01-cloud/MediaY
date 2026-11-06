@@ -1,6 +1,45 @@
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
+def assert_computed_contrast(page, selectors, label):
+    report = page.evaluate("""selectors => {
+      const parse = value => {
+        const m = String(value).match(/rgba?\\(\\s*([\\d.]+)[,\\s]+([\\d.]+)[,\\s]+([\\d.]+)(?:\\s*[,/]\\s*([\\d.]+))?\\s*\\)/i);
+        return m ? [Number(m[1]), Number(m[2]), Number(m[3]), m[4] === undefined ? 1 : Number(m[4])] : null;
+      };
+      const luminance = rgb => {
+        const c = rgb.map(v => { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; });
+        return .2126 * c[0] + .7152 * c[1] + .0722 * c[2];
+      };
+      const results = [];
+      for (const selector of selectors) for (const el of document.querySelectorAll(selector)) {
+        const cs = getComputedStyle(el);
+        if (!el.textContent.trim() || el.matches(':disabled') || cs.display === 'none' || cs.visibility === 'hidden' || !el.getClientRects().length) continue;
+        let chain = [], node = el, gradient = false, bg = [8, 13, 24], opacity = 1;
+        while (node) { chain.unshift(node); node = node.parentElement; }
+        for (const item of chain) {
+          const st = getComputedStyle(item);
+          if (st.backgroundImage !== 'none') { gradient = true; break; }
+          const color = parse(st.backgroundColor);
+          if (color && color[3] > 0) bg = bg.map((v, i) => color[i] * color[3] + v * (1 - color[3]));
+          opacity *= Number(st.opacity);
+        }
+        if (gradient) continue;
+        const fg = parse(cs.color);
+        if (!fg) continue;
+        const alpha = fg[3] * opacity;
+        const visibleFg = fg.slice(0, 3).map((v, i) => v * alpha + bg[i] * (1 - alpha));
+        const ratio = (Math.max(luminance(visibleFg), luminance(bg)) + .05) / (Math.min(luminance(visibleFg), luminance(bg)) + .05);
+        const size = parseFloat(cs.fontSize) || 16, weight = parseInt(cs.fontWeight, 10) || 400;
+        results.push({selector, text:el.textContent.trim().slice(0,32), ratio:Number(ratio.toFixed(2)), threshold:(size >= 24 || (size >= 18.66 && weight >= 700)) ? 3 : 4.5, foreground:cs.color, background:bg.map(v=>Math.round(v))});
+      }
+      return results;
+    }""", selectors)
+    assert report, f"No visible text controls found for {label}"
+    failures = [item for item in report if item["ratio"] + 0.01 < item["threshold"]]
+    assert not failures, f"Computed WCAG contrast failed for {label}: {failures}"
+    print(f"PASS: computed WCAG contrast for {label} ({len(report)} rendered text controls)")
+
 root=Path(__file__).resolve().parent
 html=(root/'index.html').read_text()
 # FFmpeg is covered by a real-origin integration test; stub the vendored script in this DOM-only smoke test.
@@ -70,6 +109,12 @@ with sync_playwright() as p:
     print('PASS: New project opens setup screen')
     page.locator('#suStart').click(); page.wait_for_function("document.querySelector('#homeScreen').hidden === true")
     print('PASS: Start editing closes home/setup and opens editor')
+    page.evaluate("""() => {
+      S.main.push({id:'contrast-clip', mediaId:'missing-contrast', name:'Contrast clip.mp4', in:0, out:5, src:5});
+      select('contrast-clip','main'); t=1; drawTimeline(); refresh(t);
+    }""")
+    assert_computed_contrast(page, ['#status', '#timeDisplay', '.timeline-tools-title', '#tlZoomLabel', '#copyTillBtn', '.dock button', '.track-name', '.timeline-ruler'], 'editor and timeline controls')
+    page.evaluate("S.main=[]; select(null); drawTimeline(); refresh(0);")
     assert page.locator('#tlZoom').count() == 1, 'timeline zoom slider is missing'
     assert page.locator('#copyTillBtn').count() == 1, 'Copy till here control is missing'
     assert page.locator('#adjustBtn').count() == 1, 'Adjust control is missing'
@@ -107,6 +152,7 @@ with sync_playwright() as p:
       select('adjust-test-a','main');
     }""")
     page.locator('#adjustBtn').click()
+    assert_computed_contrast(page, ['.adjust-control > span', '.adjust-control output'], 'adjustment labels and values')
     page.locator('[data-adjust="brightness"]').evaluate("(e)=>{e.value='24';e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}")
     page.locator('#adjustApplyAll').click()
     adjust_result = page.evaluate("({a:S.main[0].adjust,b:S.main[1].adjust,filter:adjustmentFilter(S.main[0])})")
