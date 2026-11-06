@@ -55,4 +55,8 @@ test('core editor libraries are local, version-pinned and protected by Subresour
   }
   assert.doesNotMatch(html,/https:\/\/(?:cdnjs\.cloudflare\.com|unpkg\.com)\/(?:ajax\/libs\/(?:fabric\.js|animejs)|dexie)/);
   assert.match(sw,/pmy-v26/);
+  assert.ok(workflow.includes('vendor/media-libraries/fabric.min.js'));
+  assert.ok(workflow.includes('vendor/media-libraries/anime.min.js'));
+  assert.ok(workflow.includes('vendor/media-libraries/dexie.min.js'));
+  assert.ok(workflow.includes('vendor/media-libraries/LICENSES.md'));
 });
