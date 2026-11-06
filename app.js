@@ -98,11 +98,17 @@ function showBusyError(title, detail) {
   updateBusy(title, detail, null, 'Needs attention');
   const overlay = $('busyOverlay');
   if (overlay) overlay.dataset.state = 'error';
-  $('busyDismiss').hidden = false;
+  const dismiss = $('busyDismiss');
+  dismiss.hidden = false;
+  dismiss.disabled = false;
+  dismiss.textContent = 'Close';
+  dismiss.onclick = hideBusy;
 }
 function hideBusy() {
   const overlay = $('busyOverlay');
   if (overlay) { overlay.hidden = true; delete overlay.dataset.state; }
+  const dismiss = $('busyDismiss');
+  if (dismiss) { dismiss.textContent = 'Close'; dismiss.disabled = false; dismiss.onclick = hideBusy; }
   document.body.removeAttribute('aria-busy');
 }
 $('busyDismiss').onclick = hideBusy;
@@ -463,7 +469,7 @@ async function releaseHeavyResources({ includeSpeech = true } = {}) {
     try { if (typeof model.dispose === 'function') await model.dispose(); } catch (_) { /* already gone */ }
     released.push('speech model');
   }
-  if (ff && !ffLoading && !exportInProgress) { disposeFFmpeg(); released.push('video engine'); }
+  if (ff && !ffLoading && !exportInProgress && !(pendingExportSave && pendingExportSave.engine === ff)) { disposeFFmpeg(); released.push('video engine'); }
   return released;
 }
 function dropMediaCaches() {
@@ -1039,6 +1045,7 @@ $('aspectRatio').onchange = async e => {
 // FFmpeg's small wrapper and class-worker chunk are hosted in this app's origin.
 // This avoids the cross-origin Worker path that produced "ffmpeg is not loaded" in WebView.
 let ff, ffLogs = [], exportProgressHandler = null, exportClipIndex = 0, exportGroupIndex = 0, ffAssetURLs = [], ffLoading = null, ffQuiet = false, ffLastActivityAt = 0;
+let pendingExportSave = null;
 const CDN = 'https://cdn.jsdelivr.net/npm/';
 // The engine (~31 MB) is kept in Cache Storage so it is downloaded once, not on every app launch.
 // The cache name deliberately does not start with "pmy-", so sw.js cleanup never deletes it.
@@ -1442,6 +1449,35 @@ async function saveFFmpegOutput(engine, outputPath) {
 
 // Native Android builds register this plugin during the APK workflow. A foreground
 // service helps keep the app process alive during export when the user switches apps.
+async function retryPendingExportSave() {
+  const pending = pendingExportSave;
+  if (!pending || !pending.engine) return hideBusy();
+  const button = $('busyDismiss');
+  button.disabled = true;
+  updateBusy('Saving completed video…', 'The render is preserved in MediaY. Retrying the device save.', 97, 'Saving video');
+  try {
+    const delivery = await saveFFmpegOutput(pending.engine, pending.path);
+    pendingExportSave = null;
+    try { await pending.engine.deleteFile(pending.path); } catch (_) {}
+    if (delivery.method === 'device') {
+      say(`Export complete — saved to ${delivery.location}/${delivery.filename}. Open Gallery or Files to find it.`);
+    } else if (delivery.method === 'browser-download') {
+      say(`Export complete — download started for ${delivery.filename}. Check your Downloads folder.`);
+    } else {
+      say('Export rendered, but direct saving was unavailable. Check the Android share sheet to choose a save destination.');
+    }
+    await releaseHeavyResources();
+    hideBusy();
+  } catch (error) {
+    console.warn('Could not save the retained MediaY render:', error);
+    showBusyError('Save still unavailable', 'Your completed render is still preserved in MediaY memory. Check free storage or Android save permissions, then tap Retry save again. Keep MediaY open.');
+    const retry = $('busyDismiss');
+    retry.textContent = 'Retry save';
+    retry.disabled = false;
+    retry.onclick = retryPendingExportSave;
+  }
+}
+
 async function beginNativeExportService() {
   const plugin = isNative() && window.Capacitor && window.Capacitor.Plugins &&
     window.Capacitor.Plugins.MediaYExportService;
@@ -1464,6 +1500,7 @@ async function endNativeExportService() {
 
 const EXP = { res: 720, fps: TIMELINE_FPS, fastDraft: false };
 const runExport = async (_event, recoveryAttempt = 0) => {
+  if (pendingExportSave) return say('A completed render is waiting to be saved. Tap Retry save before starting another export.');
   exportCancelRequested = false;
   if (!S.main.length) return say('Nothing to export yet.');
   if (captionRunning) return say('Captions are still being generated. Wait for them to finish, then export.');
@@ -1481,6 +1518,7 @@ const runExport = async (_event, recoveryAttempt = 0) => {
   busyCancelButton.disabled = false;
   busyCancelButton.textContent = 'Cancel export';
   let exportFailed = false, delivered = null, retryAfterCleanup = false, retryAttempt = recoveryAttempt;
+  let preserveOutputPath = null, saveFailurePending = false;
   ffLogs = [];
   const exportWorkspaceFiles = new Set();
   const exportSourceMounts = new Map(); // mounted WORKERFS file path -> mount directory
@@ -2034,7 +2072,17 @@ const runExport = async (_event, recoveryAttempt = 0) => {
     }
     exportMetric.stage('Read and save final MP4');
     updateBusy('Preparing your MP4…', 'Writing the final video file.', 97, 'Finishing');
-    const delivery = await saveFFmpegOutput(ff, out);
+    let delivery;
+    try {
+      delivery = await saveFFmpegOutput(ff, out);
+    } catch (saveError) {
+      if (ff && ff.loaded) {
+        pendingExportSave = { engine: ff, path: out };
+        preserveOutputPath = out;
+        saveFailurePending = true;
+      }
+      throw saveError;
+    }
     delivered = delivery;
     ['joined.mp4', 'final.mp4', 'list.txt'].forEach(n => ff.deleteFile(n).catch(() => {}));
     exportOutcome = 'complete';
@@ -2049,7 +2097,18 @@ const runExport = async (_event, recoveryAttempt = 0) => {
     exportMetric.stage('Handle export error or recovery');
     console.error(err);
     const errText = String(err && err.message || err);
-    if (exportCancelRequested || /Export cancelled/i.test(errText)) {
+    if (saveFailurePending && pendingExportSave) {
+      exportOutcome = 'rendered; save pending';
+      exportFailed = true;
+      retryAfterCleanup = false;
+      exportProgressHandler = null;
+      const message = 'The video finished rendering, but saving failed. Your completed MP4 is still preserved in MediaY memory. Check storage or Android save permissions, then tap Retry save. Keep MediaY open.';
+      say(message);
+      showBusyError('Video rendered — save failed', message);
+      const retry = $('busyDismiss');
+      retry.textContent = 'Retry save';
+      retry.onclick = retryPendingExportSave;
+    } else if (exportCancelRequested || /Export cancelled/i.test(errText)) {
       exportOutcome = 'cancelled';
       exportFailed = false;
       retryAfterCleanup = false;
@@ -2095,7 +2154,10 @@ const runExport = async (_event, recoveryAttempt = 0) => {
     // All virtual filesystem inputs and outputs created by this export are session-owned.
     // Clean them on every exit, including encoder recovery and a failed audio mix.
     if (ff) {
-      for (const name of [...exportWorkspaceFiles]) await removeExportFile(name);
+      for (const name of [...exportWorkspaceFiles]) {
+        if (preserveOutputPath && name === preserveOutputPath) continue;
+        await removeExportFile(name);
+      }
     }
     exportWorkspaceFiles.clear();
     exportSourceMounts.clear();
