@@ -362,3 +362,27 @@ button:hover { filter:brightness(1.08); }
 .clip.video-clip { background:linear-gradient(120deg,#075B78,#123C75); border-color:#168BFF; }
 .clip.audio-clip { background:linear-gradient(120deg,#402B78,#6636A0); border-color:#8B5CF6; }
 .clip.ov-clip { background:#572A76; border-color:#C45BFF; }
+
+
+/* Accessibility hardening: readable foregrounds on deliberately light inspector surfaces. */
+.sheet input[type=text],
+.sheet input[type=number],
+.sheet select,
+.sheet textarea {
+  color:#17283C;
+  background:#FFFFFF;
+  border-color:#60758C;
+  caret-color:#17283C;
+}
+.adjust-control {
+  color:#17283C;
+  background:#E8F0F5;
+  border-color:#60758C;
+}
+.adjust-control > span { color:#17283C; }
+.adjust-control output { color:#65304F; }
+.perf-report {
+  color:#17283C;
+  background:#E8F0F5;
+  border-color:#60758C;
+}
