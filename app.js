@@ -2027,10 +2027,9 @@ const runExport = async (_event, recoveryAttempt = 0) => {
       ];
       const activeTracks = [], ins = [];
       const audioSources = new Map();
-      const audioInputIndices = new Map();
       const audioStreamCache = new Map();
       for (const track of trk) {
-        // Reuse the export's file-backed source cache when several tracks reference the same media.
+        // Reuse one file-backed mount and one stream probe for repeated media IDs.
         const sourceEntry = await ensureExportSource(track.m, new Set([track.m]), audioSources);
         const sourceName = sourceEntry.name;
         let hasAudio = audioStreamCache.get(sourceName);
@@ -2039,12 +2038,9 @@ const runExport = async (_event, recoveryAttempt = 0) => {
           audioStreamCache.set(sourceName, hasAudio);
         }
         if (!hasAudio) continue;
-        let inputIndex = audioInputIndices.get(sourceName);
-        if (inputIndex === undefined) {
-          inputIndex = audioInputIndices.size + 1; // FFmpeg input 0 is the rendered video.
-          audioInputIndices.set(sourceName, inputIndex);
-          ins.push('-i', sourceName);
-        }
+        // Give every timeline track its own FFmpeg input index; filter graphs consume input pads once.
+        const inputIndex = activeTracks.length + 1; // FFmpeg input 0 is the rendered video.
+        ins.push('-i', sourceName);
         activeTracks.push({ ...track, inputIndex });
       }
       const originalHasAudio = await hasAudioStream(out);
