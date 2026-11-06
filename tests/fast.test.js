@@ -21,9 +21,17 @@ const gen = (name, extra, vcodec = ['-c:v', 'libx264', '-preset', 'veryfast', '-
 };
 const packets = file => sh('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'packet=pts_time,dts_time,size,pos,flags', '-of', 'json', file]);
 
+test('timeline frame planning rounds cumulative boundaries without per-clip overshoot', () => {
+  assert.deepEqual(Fast.planFrameCounts([1.01, 1.01], 30), [30, 31]);
+  assert.equal(Fast.planFrameCounts([1.01, 1.01], 30).reduce((a, b) => a + b, 0), Math.round(2.02 * 30));
+  assert.deepEqual(Fast.planFrameCounts([1 / 3, 1 / 3, 1 / 3], 30), [10, 10, 10]);
+  assert.deepEqual(Fast.planFrameCounts([0.001, 1.01], 30), [1, 29]);
+  assert.deepEqual(Fast.planFrameCounts([], 30), []);
+});
+
 test('planning maths', () => {
   assert.equal(Fast.frameCount(1, 30), 30);
-  assert.equal(Fast.frameCount(1.01, 30), 31);
+  assert.equal(Fast.frameCount(1.01, 30), 30);
   assert.equal(Fast.frameCount(0.001, 30), 1);
   assert.equal(Fast.avcLevelIdc(720, 1280, 30), 31);
   assert.equal(Fast.avcLevelIdc(1080, 1920, 30), 40);
