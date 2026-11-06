@@ -2696,6 +2696,7 @@ async function captionFrom(pcm, src, onProgress = () => {}, diagnostics = null) 
 // 16 kHz mono float32 PCM uses about 38.4 MB per 10-minute window.
 const CAPTION_STREAM_THRESHOLD_BYTES = 96 * 1024 * 1024;
 const CAPTION_STREAM_WINDOW_SECONDS = 10 * 60;
+const CAPTION_STREAM_OVERLAP_SECONDS = 1.5;
 const CAPTION_STREAM_MAX_SECONDS = 4 * 60 * 60;
 function shouldStreamCaptionSource(file, src) {
   const duration = Math.max(0, Number(src && src.out) - Number(src && src.in));
@@ -2724,7 +2725,10 @@ async function* streamCaptionPcmWindows(src, file, onProgress = () => {}) {
   const outputName = `caption_window_${token}.f32`;
   const mountDir = `/caption_source_${token}`;
   let mounted = false, directoryCreated = false;
-  const windowCount = Math.ceil(clipLength / CAPTION_STREAM_WINDOW_SECONDS);
+  const Core = window.MediaYCore;
+  if (!Core || typeof Core.planCaptionStreamWindows !== 'function') throw new Error('The caption window planner is unavailable. Reload MediaY.');
+  const windows = Core.planCaptionStreamWindows(clipLength, CAPTION_STREAM_WINDOW_SECONDS, CAPTION_STREAM_OVERLAP_SECONDS);
+  const windowCount = windows.length;
   try {
     if (typeof engine.createDir !== 'function' || typeof engine.mount !== 'function' || typeof engine.unmount !== 'function') {
       throw new Error('This FFmpeg build does not support safe file-backed audio streaming. Update the app before captioning this large file.');
@@ -2737,8 +2741,8 @@ async function* streamCaptionPcmWindows(src, file, onProgress = () => {}) {
     const inputPath = `${mountDir}/${inputName}`;
     for (let index = 0; index < windowCount; index++) {
       if (captionCancelRequested) throw abortCaption();
-      const offsetSeconds = index * CAPTION_STREAM_WINDOW_SECONDS;
-      const durationSeconds = Math.min(CAPTION_STREAM_WINDOW_SECONDS, clipLength - offsetSeconds);
+      const planWindow = windows[index];
+      const { offsetSeconds, durationSeconds } = planWindow;
       onProgress({ index, count: windowCount, percent: index / windowCount, stage: 'decode' });
       const code = await engine.exec([
         '-ss', String(clipStart + offsetSeconds), '-t', String(durationSeconds), '-i', inputPath,
@@ -2756,7 +2760,7 @@ async function* streamCaptionPcmWindows(src, file, onProgress = () => {}) {
       if (!pcm || !pcm.length) throw new Error(`Audio window ${index + 1} of ${windowCount} decoded to no samples.`);
       const normalizedPcm = normalizeQuietCaptionAudio(pcm);
       pcm = null;
-      yield { pcm: normalizedPcm, offsetSeconds, durationSeconds, index, count: windowCount };
+      yield { pcm: normalizedPcm, ...planWindow };
     }
   } catch (error) {
     if (error && error.name === 'AbortError') throw error;
@@ -2950,6 +2954,7 @@ $('capGo').onclick = async () => {
         if (shouldStreamCaptionSource(sourceFile, source)) {
           sourceDiagnostic.decodeMode = 'ffmpeg-windowed';
           sourceDiagnostic.windowSeconds = CAPTION_STREAM_WINDOW_SECONDS;
+          sourceDiagnostic.windowOverlapSeconds = CAPTION_STREAM_OVERLAP_SECONDS;
           sourceDiagnostic.windowCount = Math.ceil(clipLength / CAPTION_STREAM_WINDOW_SECONDS);
           sourceDiagnostic.durationSeconds = Number(clipLength.toFixed(3));
           let audibleWindows = 0, totalSamples = 0, totalPlanned = 0, totalSent = 0, totalRaw = 0, totalLines = 0;
@@ -2974,7 +2979,14 @@ $('capGo').onclick = async () => {
             } finally {
               windowData.pcm = null;
             }
-            drafts.push(...windowDrafts);
+            const timelineStart = Number.isFinite(source.start) ? source.start : 0;
+            const windowSpeed = Number.isFinite(source.sp) && source.sp > 0 ? source.sp : 1;
+            const ownedDrafts = windowDrafts.filter(draft => {
+              const sourcePosition = (draft.start - timelineStart) * windowSpeed;
+              return sourcePosition >= windowData.ownershipStartSeconds - 0.001 &&
+                sourcePosition < windowData.ownershipEndSeconds - 0.001;
+            });
+            drafts.push(...ownedDrafts);
             totalPlanned += Number(windowDiagnostics.plannedChunks) || 0;
             totalSent += Number(windowDiagnostics.chunksSentToWhisper) || 0;
             totalRaw += Number(windowDiagnostics.rawWhisperSegments) || 0;
@@ -2993,7 +3005,8 @@ $('capGo').onclick = async () => {
           sourceDiagnostic.channels = 1;
           sourceDiagnostic.rms = null;
           sourceDiagnostic.peak = null;
-          sourceDiagnostic.durationSeconds = Number((totalSamples / CAPTION_SAMPLE_RATE).toFixed(3));
+          sourceDiagnostic.durationSeconds = Number(clipLength.toFixed(3));
+          sourceDiagnostic.decodedAudioSeconds = Number((totalSamples / CAPTION_SAMPLE_RATE).toFixed(3));
           sourceDiagnostic.plannedChunks = totalPlanned;
           sourceDiagnostic.chunksSentToWhisper = totalSent;
           sourceDiagnostic.rawWhisperSegments = totalRaw;
