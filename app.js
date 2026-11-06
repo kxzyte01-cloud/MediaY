@@ -1462,7 +1462,7 @@ async function endNativeExportService() {
   catch (error) { console.warn('Could not stop native export foreground service:', error); }
 }
 
-const EXP = { res: 720, fps: TIMELINE_FPS };
+const EXP = { res: 720, fps: TIMELINE_FPS, fastDraft: false };
 const runExport = async (_event, recoveryAttempt = 0) => {
   exportCancelRequested = false;
   if (!S.main.length) return say('Nothing to export yet.');
@@ -1918,7 +1918,7 @@ const runExport = async (_event, recoveryAttempt = 0) => {
         '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p',
         ...(hasMainAudio ? ['-c:a', 'aac', '-ar', '44100', '-ac', '2'] : []), '-t', segDur, seg]; // -t bounds long overlays and synthetic silence to the segment duration
       // High-bitrate sources can skip loop filtering for faster decode; retry with normal decode if needed.
-      const hiRate = (files[c.mediaId].size * 8) / Math.max(1, c.src || dur(c)) > 10e6, tries = hiRate ? [true, false] : [false];
+      const hiRate = (files[c.mediaId].size * 8) / Math.max(1, c.src || dur(c)) > 10e6, tries = hiRate && EXP.fastDraft ? [true, false] : [false];
       let encErr = null;
       for (const fast of tries) {
         try { await run(enc(fast)); encErr = null; break; } catch (e) { encErr = e; await ff.deleteFile(seg).catch(() => {}); }
@@ -3327,13 +3327,13 @@ $('speedList').onclick = e => {
 };
 $('revBtn').onclick = () => { const c = clipNow(); if (!c) return say('Import a video first.'); c.rev = !c.rev; commit(); markSp(); say(c.rev ? 'Reverse added. It plays backwards in the exported video.' : 'Reverse removed.'); };
 $('addClip').onclick = () => $('importBtn').click();
-const opt = (id, vals, key) => { $(id).innerHTML = vals.map(v => `<button data-v="${v}" class="${EXP[key] === v ? 'on' : ''}">${key === 'res' ? (v === 1440 ? '2K' : v === 2160 ? '4K' : v + 'p' + (v === 720 ? ' · fast' : v === 1080 ? ' · HD' : '')) : v}</button>`).join(''); $(id).onclick = e => { const b = e.target.closest('[data-v]'); if (!b) return; EXP[key] = +b.dataset.v; [...$(id).children].forEach(x => x.classList.toggle('on', x === b)); }; };
+const opt = (id, vals, key) => { $(id).innerHTML = vals.map(v => `<button data-v="${v}" class="${EXP[key] === v ? 'on' : ''}">${key === 'res' ? (v === 1440 ? '2K' : v === 2160 ? '4K' : v + 'p' + (v === 720 ? ' · fast' : v === 1080 ? ' · HD' : '')) : v}</button>`).join(''); $(id).onclick = e => { const b = e.target.closest('[data-v]'); if (!b) return; EXP[key] = +b.dataset.v; EXP.fastDraft = false; [...$(id).children].forEach(x => x.classList.toggle('on', x === b)); }; };
 opt('resList', [480, 720, 1080, 1440, 2160], 'res'); opt('fpsList', [24, 30, 60], 'fps');
 function applyExportPreset(name) {
   const presets = { draft: { res: 480, fps: 24 } };
   const preset = presets[name];
   if (!preset) throw new Error('Unknown export preset: ' + name);
-  EXP.res = preset.res; EXP.fps = preset.fps;
+  EXP.res = preset.res; EXP.fps = preset.fps; EXP.fastDraft = name === 'draft';
   [['resList', 'res'], ['fpsList', 'fps']].forEach(([id, key]) => {
     [...$(id).children].forEach(button => button.classList.toggle('on', Number(button.dataset.v) === EXP[key]));
   });
