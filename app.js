@@ -351,9 +351,17 @@ const objOf = id => canvas.getObjects().find(x => x.pmId === id);
 
 /* ---------- Undo / save ---------- */
 const snap = () => JSON.stringify(S, (k, v) => (k === 'el' ? undefined : v));
+function scheduleProjectSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => saveProject().catch(err => {
+    console.warn('Auto-save failed:', err);
+    say('Auto-save failed. Check available storage on this device.');
+  }), 800);
+}
 function commit() {
   undoStack.push(snap()); if (undoStack.length > 50) undoStack.shift(); redoStack = [];
-  drawTimeline(); clearTimeout(saveTimer); saveTimer = setTimeout(() => saveProject().catch(err => { console.warn('Auto-save failed:', err); say('Auto-save failed. Check available storage on this device.'); }), 800);
+  drawTimeline();
+  scheduleProjectSave();
 }
 function normalizeState(value) {
   const raw = typeof value === 'string' ? JSON.parse(value) : value;
@@ -367,8 +375,19 @@ function normalizeState(value) {
   };
 }
 async function restore(json) { S = normalizeState(json); sel = null; await rebuildCanvas(); drawTimeline(); }
-$('undoBtn').onclick = async () => { if (undoStack.length < 2) return; redoStack.push(undoStack.pop()); await restore(undoStack[undoStack.length - 1]); };
-$('redoBtn').onclick = async () => { if (!redoStack.length) return; const s = redoStack.pop(); undoStack.push(s); await restore(s); };
+$('undoBtn').onclick = async () => {
+  if (undoStack.length < 2) return;
+  redoStack.push(undoStack.pop());
+  await restore(undoStack[undoStack.length - 1]);
+  scheduleProjectSave();
+};
+$('redoBtn').onclick = async () => {
+  if (!redoStack.length) return;
+  const s = redoStack.pop();
+  undoStack.push(s);
+  await restore(s);
+  scheduleProjectSave();
+};
 async function saveProject() {
   const state = snap(), updated = Date.now();
   // Keep one always-up-to-date resume checkpoint, even when editing a named project.
