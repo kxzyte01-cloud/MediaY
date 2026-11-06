@@ -60,3 +60,9 @@ test('core editor libraries are local, version-pinned and protected by Subresour
   assert.ok(workflow.includes('vendor/media-libraries/dexie.min.js'));
   assert.ok(workflow.includes('vendor/media-libraries/LICENSES.md'));
 });
+
+test('dark text on every neon gradient stop meets WCAG AA',()=>{
+  for(const color of ['#00DDEB','#168BFF','#946CF7']) assert.ok(ratio('#071321',color)>=4.5,'dark button text must meet AA on '+color);
+  assert.ok(style.includes('linear-gradient(120deg,#00DDEB,#168BFF 58%,#946CF7)'));
+  assert.ok(setupStyle.includes('linear-gradient(120deg,#00DDEB,#168BFF 55%,#946CF7)'));
+});
