@@ -19,7 +19,7 @@ def assert_computed_contrast(page, selectors, label):
         while (node) { chain.unshift(node); node = node.parentElement; }
         for (const item of chain) {
           const st = getComputedStyle(item);
-          if (st.backgroundImage !== 'none') { gradient = true; break; }
+          if (item === el && st.backgroundImage !== 'none') { gradient = true; break; }
           const color = parse(st.backgroundColor);
           if (color && color[3] > 0) bg = bg.map((v, i) => color[i] * color[3] + v * (1 - color[3]));
           opacity *= Number(st.opacity);
