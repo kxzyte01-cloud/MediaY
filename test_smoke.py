@@ -22,7 +22,7 @@ def assert_computed_contrast(page, selectors, label):
           if (item === el && st.backgroundImage !== 'none') { gradient = true; break; }
           const color = parse(st.backgroundColor);
           if (color && color[3] > 0) bg = bg.map((v, i) => color[i] * color[3] + v * (1 - color[3]));
-          opacity *= Number(st.opacity);
+          const nodeOpacity = parseFloat(st.opacity); if (Number.isFinite(nodeOpacity)) opacity *= nodeOpacity;
         }
         if (gradient) continue;
         const fg = parse(cs.color);
@@ -152,6 +152,7 @@ with sync_playwright() as p:
       select('adjust-test-a','main');
     }""")
     page.locator('#adjustBtn').click()
+    page.wait_for_timeout(250)
     assert_computed_contrast(page, ['.adjust-control > span', '.adjust-control output'], 'adjustment labels and values')
     page.locator('[data-adjust="brightness"]').evaluate("(e)=>{e.value='24';e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}")
     page.locator('#adjustApplyAll').click()
