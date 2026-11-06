@@ -36,5 +36,7 @@ test('mounted source files are unmounted and their directories removed on evicti
   const cleanup = app.slice(start, end);
   assert.ok(cleanup.includes('ff.unmount(mountDir)'));
   assert.ok(cleanup.includes('ff.deleteDir(mountDir)'));
-  assert.ok(app.includes('for (const name of [...exportWorkspaceFiles]) await removeExportFile(name)'));
+  assert.ok(app.includes('for (const name of [...exportWorkspaceFiles]) {'));
+  assert.ok(app.includes('if (preserveOutputPath && name === preserveOutputPath) continue;'));
+  assert.ok(app.includes('await removeExportFile(name);'));
 });
