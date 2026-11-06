@@ -16,6 +16,9 @@ test('project media GC saves current state and retains every media reference acr
   assert.match(gc, /\[state\.main, state\.audio, state\.overlays\]/);
   assert.match(gc, /referenced\.add\(item\.mediaId\)/);
   assert.match(gc, /return 0; \/\/ Unknown references must never cause user media to be deleted/);
+  assert.match(gc, /!Array\.isArray\(state\.main\)/);
+  assert.match(gc, /!Array\.isArray\(state\.audio\)/);
+  assert.match(gc, /!Array\.isArray\(state\.overlays\)/);
   assert.match(gc, /db\.media\.bulkDelete\(orphanIds\)/);
   assert.match(gc, /URL\.revokeObjectURL\(urls\[id\]\)/);
   assert.match(gc, /delete files\[id\]/);
