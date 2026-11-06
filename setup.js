@@ -178,9 +178,15 @@
     await db.media.bulkDelete(orphanIds);
     for (const id of orphanIds) {
       if (urls[id]) { URL.revokeObjectURL(urls[id]); delete urls[id]; }
+      if (audios[id]) {
+        try { audios[id].pause(); audios[id].removeAttribute('src'); audios[id].load(); } catch (_) {}
+        delete audios[id];
+      }
+      delete audioLoads[id];
+      delete decoded[id];
+      delete thumbs[id];
       delete files[id];
     }
-    if (typeof dropMediaCaches === 'function') dropMediaCaches();
     return orphanIds.length;
   }
 
