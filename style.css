@@ -302,7 +302,7 @@ button:active { transform:none; } button:hover:not(:disabled) { border-color:var
 #playhead::-webkit-slider-runnable-track { background:var(--border-strong); } #playhead::-webkit-slider-thumb { background:#168BFF; border-color:#fff; }
 .dock { background:var(--panel); border-top:1px solid var(--border); }
 .dock button { color:var(--muted); border:1px solid transparent; border-radius:9px; }
-.dock button.on { color:var(--text); background:var(--panel2); border-color:var(--border); } .dock svg { width:20px; height:20px; } #deleteBtn { color:#9d4a63; }
+.dock button.on { color:var(--text); background:var(--panel2); border-color:var(--border); } .dock svg { width:20px; height:20px; } #deleteBtn { color:#ffb9bc; }
 .sheet-head { color:var(--text); padding-bottom:8px; border-bottom:1px solid var(--border); } .sheet-head button { background:var(--panel2); border:1px solid var(--border); color:var(--text); }
 .lbl,.tip,.perf-tools p { color:var(--muted); }
 .sheet input[type=text],.sheet input[type=number],.sheet select,.sheet textarea { background:#fff; color:var(--text); border:1px solid var(--border-strong); }
