@@ -40,3 +40,19 @@ test('light editor controls and diagnostics retain WCAG AA foreground contrast',
   assert.ok(finalFix.includes('background:#E8F0F5'),'adjustment and diagnostics panels need the tested light surface');
   assert.ok(finalFix.includes('color:#65304F'),'adjustment outputs need the tested readable accent');
 });
+
+
+test('core editor libraries are local, version-pinned and protected by Subresource Integrity',()=>{
+  const files=[
+    ['./vendor/media-libraries/fabric.min.js','sha256-uwRC1ppNRnMyD2ibxuFsBaDj8WzPv1UfOU2Qp+fPx3I='],
+    ['./vendor/media-libraries/anime.min.js','sha256-tc4b48P1MPGS4PJXHRlChGCW1mEZy62jS/3JEsSHPzU='],
+    ['./vendor/media-libraries/dexie.min.js','sha256-2JhqFVK0mn2MsIWpLGaYWuvzuzO2Stb3uu0kYdm2R/8=']
+  ];
+  for(const [src,integrity] of files){
+    assert.ok(html.includes('src="'+src+'"'),'missing local library '+src);
+    assert.ok(html.includes('integrity="'+integrity+'"'),'missing pinned SRI for '+src);
+    assert.ok(sw.includes("'"+src+"'"),'offline shell does not precache '+src);
+  }
+  assert.doesNotMatch(html,/https:\/\/(?:cdnjs\.cloudflare\.com|unpkg\.com)\/(?:ajax\/libs\/(?:fabric\.js|animejs)|dexie)/);
+  assert.match(sw,/pmy-v26/);
+});
