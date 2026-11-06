@@ -237,6 +237,15 @@ def main():
                       h264_out["result"]["frames"] == 60 and h264_ids == list(range(60)),
                       f"frames={len(h264_ids)} ids={h264_ids[:8]}...{h264_ids[-4:]}")
 
+            # N. fractional clip lengths share one cumulative frame grid instead of rounding each clip up.
+            out, ivf = render("N", dict(W=640, H=360, fps=30,
+                                        clips=[clip("a.mp4", 0, 1.01), clip("b.mp4", 0, 1.01)]))
+            got, _ = ids(ivf, 640, 360)
+            expected = list(range(0, 30)) + list(range(1000, 1031))
+            check("N: fractional clips use cumulative frame boundaries (61 frames)",
+                  out["error"] is None and out["result"] and out["result"]["frames"] == 61 and got == expected,
+                  f"frames={len(got)} result={out['result']} ids={got[:5]}...{got[-5:]}")
+
             check("no page errors", not errors, str(errors))
             browser.close()
         server.shutdown()
