@@ -40,3 +40,14 @@ test('Android build registers a MediaStore plugin that publishes MP4s to public 
   assert.match(workflow, /Environment\.DIRECTORY_MOVIES \+ "\/MediaY"/);
   assert.match(workflow, /MediaStore\.Video\.Media\.IS_PENDING/);
 });
+
+
+test('a completed render remains in FFmpeg storage after a delivery failure and can be retried', () => {
+  assert.match(app, /let pendingExportSave = null/);
+  assert.match(app, /pendingExportSave = \{ engine: ff, path: out \}/);
+  assert.match(app, /if \(preserveOutputPath && name === preserveOutputPath\) continue/);
+  assert.match(app, /async function retryPendingExportSave\(\)/);
+  assert.match(app, /retry\.onclick = retryPendingExportSave/);
+  assert.match(app, /pendingExportSave && pendingExportSave\.engine === ff/);
+  assert.match(app, /A completed render is waiting to be saved/);
+});
