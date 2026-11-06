@@ -1115,9 +1115,18 @@ async function loadFFmpegEngine() {
     return ff;
   } catch (error) {
     disposeFFmpeg();
-    if (window.caches) caches.delete(ENGINE_CACHE).catch(() => {}); // a damaged cached copy must not fail forever
+    if (isFFmpegCacheIntegrityError(error) && window.caches) {
+      caches.delete(ENGINE_CACHE).catch(() => {}); // purge only a cached binary that failed integrity/instantiation
+    }
     throw error;
   }
+}
+function isFFmpegCacheIntegrityError(error) {
+  const message = String(error && error.message || error || '');
+  const wasmCompileFailure = typeof WebAssembly !== 'undefined' &&
+    ((WebAssembly.CompileError && error instanceof WebAssembly.CompileError) ||
+     (WebAssembly.LinkError && error instanceof WebAssembly.LinkError));
+  return !!wasmCompileFailure || /integrity|checksum|digest mismatch|WebAssembly\.(?:instantiate|compile)|failed to asynchronously prepare wasm|expected magic word|wasm magic (?:header|number)/i.test(message);
 }
 // One shared load: a background preload and an Export tap can never start two engines.
 function getFFmpeg() {
