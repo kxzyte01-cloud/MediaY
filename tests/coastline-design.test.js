@@ -66,3 +66,12 @@ test('dark text on every neon gradient stop meets WCAG AA',()=>{
   assert.ok(style.includes('linear-gradient(120deg,#00DDEB,#168BFF 58%,#946CF7)'));
   assert.ok(setupStyle.includes('linear-gradient(120deg,#00DDEB,#168BFF 55%,#946CF7)'));
 });
+
+test('busy, transition-preview and dark timeline surfaces use readable text colours',()=>{
+  assert.ok(style.includes('.busy-cancel { background:var(--rose-soft); border-color:#d7a2b6; color:#ffb9bc; }'));
+  assert.ok(style.includes('.tr-preview-empty { color:#17283C; background:rgba(237,246,250,.94); }'));
+  assert.ok(style.includes('.clip.video-clip,.clip.audio-clip,.clip.ov-clip,.clip.overlay-clip { color:#F3F7FF; }'));
+  assert.ok(ratio('#ffb9bc','#10182a')>=4.5);
+  assert.ok(ratio('#17283C','#EDF6FA')>=4.5);
+  for(const bg of ['#075B78','#123C75','#402B78','#6636A0','#572A76','#34305B']) assert.ok(ratio('#F3F7FF',bg)>=4.5);
+});
