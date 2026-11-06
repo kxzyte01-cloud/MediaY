@@ -118,6 +118,31 @@
     return plan;
   }
 
+  /**
+   * Builds bounded decode windows with overlap while assigning each source-time position
+   * to exactly one window. This gives Whisper boundary context without duplicate captions.
+   */
+  function planCaptionStreamWindows(totalSeconds, windowSeconds = 600, overlapSeconds = 1.5) {
+    const total = Number(totalSeconds), width = Number(windowSeconds);
+    if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(width) || width <= 0) return [];
+    const overlap = Math.max(0, Math.min(Number(overlapSeconds) || 0, width / 2));
+    const half = overlap / 2, count = Math.ceil(total / width), windows = [];
+    for (let index = 0; index < count; index++) {
+      const coreStartSeconds = index * width;
+      const coreEndSeconds = Math.min(total, coreStartSeconds + width);
+      const offsetSeconds = Math.max(0, coreStartSeconds - half);
+      const decodeEndSeconds = Math.min(total, coreEndSeconds + half);
+      windows.push({
+        index, count, offsetSeconds,
+        durationSeconds: decodeEndSeconds - offsetSeconds,
+        coreStartSeconds, coreEndSeconds,
+        ownershipStartSeconds: index === 0 ? 0 : coreStartSeconds - half,
+        ownershipEndSeconds: index === count - 1 ? total : coreEndSeconds - half
+      });
+    }
+    return windows;
+  }
+
   /* ------------------------------------------------------------------
      3. Caption alignment: ASR segments + speech activity -> timed lines
      ------------------------------------------------------------------ */
@@ -511,6 +536,6 @@
 
   return {
     TIMELINE_FPS, MIN_FRAME, ACTIVITY, CAPTION,
-    analyzeSpeechActivity, planCaptionChunks, buildCaptionLines, groupWordsIntoPhrases, mergeCaptionSegments, hasSpeech, resamplePcm, sourceToTimeline, stripRepeatingLoops
+    analyzeSpeechActivity, planCaptionChunks, planCaptionStreamWindows, buildCaptionLines, groupWordsIntoPhrases, mergeCaptionSegments, hasSpeech, resamplePcm, sourceToTimeline, stripRepeatingLoops
   };
 }));
