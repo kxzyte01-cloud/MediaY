@@ -197,7 +197,7 @@
 /* Neon Aperture final cascade for home, setup and onboarding */
 #homeScreen { background:radial-gradient(ellipse at 88% 0%,rgba(139,92,246,.17),transparent 43%),radial-gradient(ellipse at 0% 95%,rgba(0,231,242,.08),transparent 40%),var(--bg); }
 .hm-hero h1 em { color:#B79AFF; }
-.hm-continue,.hm-open-project,#suStart { background:linear-gradient(120deg,#00DDEB,#168BFF 55%,#7548D8); color:#071321; border-color:transparent; }
+.hm-continue,.hm-open-project,#suStart { background:linear-gradient(120deg,#00DDEB,#168BFF 55%,#946CF7); color:#071321; border-color:transparent; }
 .hm-continue-copy small { color:#E4F8FF; }
 .hm-project-icon,.hm-action-icon,.hm-new .hm-action-icon { background:rgba(0,231,242,.12); color:var(--accent); }
 .hm-new,.hm-action,.hm-recent,.hm-library { border-color:#293852; }
@@ -210,5 +210,5 @@
 /* Neon Aperture final state: keep selected controls and project actions on-brand. */
 #trList button.on { background:rgba(0,231,242,.13); border-color:#00E7F2; color:var(--text); }
 .ratios .on { background:rgba(0,231,242,.13); border-color:#00E7F2; color:#F3F7FF; }
-.hm-open-project { background:linear-gradient(120deg,#00DDEB,#168BFF 55%,#7548D8); border-color:transparent; color:#071321; }
+.hm-open-project { background:linear-gradient(120deg,#00DDEB,#168BFF 55%,#946CF7); border-color:transparent; color:#071321; }
 .hm-open-project:hover:not(:disabled) { filter:brightness(1.08); }
