@@ -1979,18 +1979,26 @@ const runExport = async (_event, recoveryAttempt = 0) => {
         ...ovA.map(o => ({ m: o.mediaId, st: o.start, in: Number(o.sourceIn) || 0, out: (Number(o.sourceIn) || 0) + o.dur }))
       ];
       const activeTracks = [], ins = [];
-      for (let k = 0; k < trk.length; k++) {
-        const track = trk[k], f = files[track.m];
-        if (!f || !f.size) throw new Error('An audio or picture-in-picture source is missing during export.');
-        const ext = ((f.name || 'media.mp4').split('.').pop() || 'mp4').toLowerCase();
-        const audioFile = `aud${k}.${ext}`;
-        const mountedAudioFile = await mountExportFile(f, audioFile);
-        if (await hasAudioStream(mountedAudioFile)) {
-          activeTracks.push({ ...track, inputIndex: activeTracks.length + 1 });
-          ins.push('-i', mountedAudioFile);
-        } else {
-          await removeExportFile(mountedAudioFile);
+      const audioSources = new Map();
+      const audioInputIndices = new Map();
+      const audioStreamCache = new Map();
+      for (const track of trk) {
+        // Reuse the export's file-backed source cache when several tracks reference the same media.
+        const sourceEntry = await ensureExportSource(track.m, new Set([track.m]), audioSources);
+        const sourceName = sourceEntry.name;
+        let hasAudio = audioStreamCache.get(sourceName);
+        if (hasAudio === undefined) {
+          hasAudio = await hasAudioStream(sourceName);
+          audioStreamCache.set(sourceName, hasAudio);
         }
+        if (!hasAudio) continue;
+        let inputIndex = audioInputIndices.get(sourceName);
+        if (inputIndex === undefined) {
+          inputIndex = audioInputIndices.size + 1; // FFmpeg input 0 is the rendered video.
+          audioInputIndices.set(sourceName, inputIndex);
+          ins.push('-i', sourceName);
+        }
+        activeTracks.push({ ...track, inputIndex });
       }
       const originalHasAudio = await hasAudioStream(out);
       if (activeTracks.length) {
