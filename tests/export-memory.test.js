@@ -22,7 +22,9 @@ test('repeated audio tracks reuse one file-backed source and one FFmpeg input pe
   const audio = app.slice(start, end);
   assert.ok(audio.includes('const audioSources = new Map()'));
   assert.ok(audio.includes('ensureExportSource(track.m, new Set([track.m]), audioSources)'));
-  assert.ok(audio.includes('const audioInputIndices = new Map()'));
+  assert.ok(!audio.includes('audioInputIndices'));
+  assert.ok(audio.includes('const inputIndex = activeTracks.length + 1'));
+  assert.ok(audio.includes('// Give every timeline track its own FFmpeg input index; filter graphs consume input pads once.'));
   assert.ok(audio.includes('const audioStreamCache = new Map()'));
   assert.ok(audio.includes("ins.push('-i', sourceName)"));
   assert.ok(audio.includes('activeTracks.push({ ...track, inputIndex })'));
