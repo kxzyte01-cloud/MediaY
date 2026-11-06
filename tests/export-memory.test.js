@@ -15,13 +15,19 @@ test('video source staging mounts original Blob through WORKERFS instead of copy
   assert.ok(app.includes("ff.mount('WORKERFS', { blobs: [{ name, data: file }] }, mountDir)"));
 });
 
-test('audio tracks are mounted as file-backed sources instead of copied into FFmpeg memory', () => {
+test('repeated audio tracks reuse one file-backed source and one FFmpeg input per media ID', () => {
   const start = app.indexOf('const activeTracks = [], ins = [];');
   const end = app.indexOf('const originalHasAudio', start);
   assert.ok(start >= 0 && end > start);
   const audio = app.slice(start, end);
-  assert.ok(audio.includes('mountExportFile(f, audioFile)'));
-  assert.ok(!audio.includes('f.arrayBuffer()'));
+  assert.ok(audio.includes('const audioSources = new Map()'));
+  assert.ok(audio.includes('ensureExportSource(track.m, new Set([track.m]), audioSources)'));
+  assert.ok(audio.includes('const audioInputIndices = new Map()'));
+  assert.ok(audio.includes('const audioStreamCache = new Map()'));
+  assert.ok(audio.includes("ins.push('-i', sourceName)"));
+  assert.ok(audio.includes('activeTracks.push({ ...track, inputIndex })'));
+  assert.ok(!audio.includes('mountExportFile('));
+  assert.ok(!audio.includes('arrayBuffer()'));
 });
 
 test('mounted source files are unmounted and their directories removed on eviction and final cleanup', () => {
