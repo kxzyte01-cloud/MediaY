@@ -386,3 +386,43 @@ button:hover { filter:brightness(1.08); }
   background:#E8F0F5;
   border-color:#60758C;
 }
+
+
+/* Final Neon Aperture contrast overrides for controls that still inherited legacy colours. */
+#playBtn,
+.nav #playBtn {
+  background:linear-gradient(120deg,#00DDEB,#168BFF 58%,#8B5CF6);
+  color:#071321;
+}
+.busy-cancel,
+#busyCancel {
+  background:#3B2438;
+  border:1px solid #D98EAF;
+  color:#FFFFFF;
+}
+#deleteBtn {
+  color:#FFFFFF;
+  background:#71304B;
+  border:1px solid #D98EAF;
+}
+.tr-preview-empty,
+#trPreviewEmpty {
+  color:var(--text);
+  background:var(--panel2);
+}
+.clip.video-clip,
+.clip.audio-clip,
+.clip.ov-clip,
+.clip.main,
+.clip.aud,
+.clip.ov {
+  color:#F3F7FF;
+}
+.clip.video-clip *,
+.clip.audio-clip *,
+.clip.ov-clip *,
+.clip.main *,
+.clip.aud *,
+.clip.ov * {
+  color:inherit;
+}
