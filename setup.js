@@ -149,15 +149,51 @@
     } catch (err) { console.error(err); say('Could not open this project: ' + (err.message || err)); }
   }
 
+  async function collectUnreferencedMedia() {
+    // Flush the current editor state before calculating references, or a pending edit could lose its media.
+    await saveProject();
+    const projects = await db.projects.toArray();
+    const referenced = new Set();
+    for (const row of projects) {
+      if (!row || !row.state) continue;
+      let state;
+      try { state = typeof row.state === 'string' ? JSON.parse(row.state) : row.state; }
+      catch (_) {
+        console.warn('Media cleanup skipped because a saved project state could not be read.');
+        return 0; // Unknown references must never cause user media to be deleted.
+      }
+      for (const lane of [state.main, state.audio, state.overlays]) {
+        if (!Array.isArray(lane)) continue;
+        for (const item of lane) if (item && item.mediaId) referenced.add(item.mediaId);
+      }
+    }
+    const mediaIds = await db.media.toCollection().primaryKeys();
+    const orphanIds = mediaIds.filter(id => !referenced.has(id));
+    if (!orphanIds.length) return 0;
+    await db.media.bulkDelete(orphanIds);
+    for (const id of orphanIds) {
+      if (urls[id]) { URL.revokeObjectURL(urls[id]); delete urls[id]; }
+      delete files[id];
+    }
+    if (typeof dropMediaCaches === 'function') dropMediaCaches();
+    return orphanIds.length;
+  }
+
   async function deleteSavedProject(id) {
-    if (!window.confirm('Delete this saved project? Its imported media remains on this device.')) return;
+    if (!window.confirm('Delete this saved project? Media used by other projects will be kept; unused imported media may be cleaned up.')) return;
     try {
       await db.projects.delete(id);
       if (activeProjectId === id) {
         activeProjectId = 'current'; activeProjectName = 'Untitled project';
         await saveProject();
       }
-      await loadHome(); say('Saved project deleted.');
+      let removedMedia = 0;
+      try { removedMedia = await collectUnreferencedMedia(); }
+      catch (cleanupError) { console.warn('Unused media cleanup was skipped:', cleanupError); }
+      await loadHome();
+      say(removedMedia
+        ? `Saved project deleted. Cleaned up ${removedMedia} unused media file${removedMedia === 1 ? '' : 's'}.`
+        : 'Saved project deleted. Media still used by a project was kept.');
     } catch (err) { say('Could not delete the project: ' + (err.message || err)); }
   }
 
