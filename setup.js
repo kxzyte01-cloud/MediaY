@@ -162,6 +162,11 @@
         console.warn('Media cleanup skipped because a saved project state could not be read.');
         return 0; // Unknown references must never cause user media to be deleted.
       }
+      if (!state || typeof state !== 'object' ||
+          !Array.isArray(state.main) || !Array.isArray(state.audio) || !Array.isArray(state.overlays)) {
+        console.warn('Media cleanup skipped because a saved project has an unsupported state shape.');
+        return 0; // Older or partial project records are treated as unknown references.
+      }
       for (const lane of [state.main, state.audio, state.overlays]) {
         if (!Array.isArray(lane)) continue;
         for (const item of lane) if (item && item.mediaId) referenced.add(item.mediaId);
