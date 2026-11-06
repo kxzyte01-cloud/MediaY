@@ -356,7 +356,7 @@ button:hover { filter:brightness(1.08); }
 
 /* MediaY Neon Aperture: shared interaction and selection accents */
 :focus-visible { outline-color:#00E7F2; }
-.primary,.play-button,.busy-dismiss { background:linear-gradient(120deg,#00DDEB,#168BFF 58%,#8B5CF6); color:#071321; }
+.primary,.play-button,.busy-dismiss { background:linear-gradient(120deg,#00DDEB,#168BFF 58%,#946CF7); color:#071321; }
 #playhead::-webkit-slider-thumb { background:#00E7F2; }
 #tlZoom { accent-color:#00E7F2; }
 .clip.video-clip { background:linear-gradient(120deg,#075B78,#123C75); border-color:#168BFF; }
@@ -391,7 +391,7 @@ button:hover { filter:brightness(1.08); }
 /* Final Neon Aperture contrast overrides for controls that still inherited legacy colours. */
 #playBtn,
 .nav #playBtn {
-  background:linear-gradient(120deg,#00DDEB,#168BFF 58%,#8B5CF6);
+  background:linear-gradient(120deg,#00DDEB,#168BFF 58%,#946CF7);
   color:#071321;
 }
 .busy-cancel,
