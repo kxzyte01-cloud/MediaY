@@ -1019,7 +1019,7 @@ $('aspectRatio').onchange = async e => {
 /* ---------- Export: FFmpeg.wasm, one clip at a time (chunked) ---------- */
 // FFmpeg's small wrapper and class-worker chunk are hosted in this app's origin.
 // This avoids the cross-origin Worker path that produced "ffmpeg is not loaded" in WebView.
-let ff, ffLogs = [], exportProgressHandler = null, exportClipIndex = 0, exportGroupIndex = 0, ffAssetURLs = [], ffLoading = null, ffQuiet = false;
+let ff, ffLogs = [], exportProgressHandler = null, exportClipIndex = 0, exportGroupIndex = 0, ffAssetURLs = [], ffLoading = null, ffQuiet = false, ffLastActivityAt = 0;
 const CDN = 'https://cdn.jsdelivr.net/npm/';
 // The engine (~31 MB) is kept in Cache Storage so it is downloaded once, not on every app launch.
 // The cache name deliberately does not start with "pmy-", so sw.js cleanup never deletes it.
@@ -1074,14 +1074,16 @@ async function loadFFmpegEngine() {
   }
   const core = CDN + '@ffmpeg/core@0.12.10/dist/umd/';
   ff = new FFmpegWASM.FFmpeg();
+  ffLastActivityAt = Date.now();
   ff.on('log', ({ message }) => {
+    ffLastActivityAt = Date.now();
     const line = String(message || '');
     if (/error|invalid|failed|not found|unsupported|could not|unable|aborted|matches no streams|does not contain any stream/i.test(line)) {
       ffLogs.push(line);
       if (ffLogs.length > 30) ffLogs.shift();
     }
   });
-  ff.on('progress', event => { if (exportProgressHandler) exportProgressHandler(event || {}); });
+  ff.on('progress', event => { ffLastActivityAt = Date.now(); if (exportProgressHandler) exportProgressHandler(event || {}); });
   try {
     engineBusy('Starting video engine…', 'The core files are ready. Initializing FFmpeg in its local worker.', null, 'Engine startup');
     // Do not pass classWorkerURL: the vendored UMD wrapper automatically resolves
@@ -1223,15 +1225,34 @@ renderMediaYPerformanceReport();
 window.MediaYDiagnostics = recentMediaYMetrics;
 const run = async args => {
   if (exportCancelRequested) throw new Error('Export cancelled');
+  const engine = ff;
+  if (!engine || !engine.loaded) throw new Error('The FFmpeg engine is not ready. Please retry the export.');
   const started = performance.now();
   let success = false;
+  let watchdogTimer = null;
   const output = String(args && args.length ? args[args.length - 1] : '');
+  // FFmpeg can legitimately run for a long time. Use an inactivity watchdog rather
+  // than a fixed command deadline, resetting it whenever the worker emits logs/progress.
+  const watchdog = new Promise((_, reject) => {
+    const checkActivity = () => {
+      if (exportCancelRequested) return reject(new Error('Export cancelled'));
+      const idleMs = Date.now() - ffLastActivityAt;
+      const idleLimitMs = 15 * 60 * 1000;
+      if (idleMs >= idleLimitMs) {
+        if (ff === engine) disposeFFmpeg();
+        return reject(new Error('FFmpeg stopped reporting activity for 15 minutes. The export was stopped to prevent an indefinite hang. Your project was not changed; please retry.'));
+      }
+      watchdogTimer = window.setTimeout(checkActivity, Math.min(30_000, idleLimitMs - idleMs));
+    };
+    watchdogTimer = window.setTimeout(checkActivity, 30_000);
+  });
   try {
-    const code = await ff.exec(args);
+    const code = await Promise.race([engine.exec(args), watchdog]);
     if (code !== 0) throw new Error('FFmpeg failed (code ' + code + ')');
     success = true;
     return code;
   } finally {
+    if (watchdogTimer !== null) window.clearTimeout(watchdogTimer);
     if (activeExportMetric) activeExportMetric.command(output, performance.now() - started, success);
   }
 };
