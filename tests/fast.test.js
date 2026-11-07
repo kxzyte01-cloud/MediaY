@@ -29,6 +29,25 @@ test('timeline frame planning rounds cumulative boundaries without per-clip over
   assert.deepEqual(Fast.planFrameCounts([], 30), []);
 });
 
+
+test('stream-copy eligibility accepts only an untouched, full-length matching H.264 clip', () => {
+  const video = { codec: 'avc1.640028', duration: 10, count: 300, width: 1920, height: 1080, rotation: 0 };
+  const clip = { in: 0, out: 10, speed: 1, vol: 1 };
+  const ok = input => Fast.streamCopyIneligibleReason({
+    clip: { ...clip }, video, width: 1920, height: 1080, fps: 30, fileSize: 10 * 1024 * 1024, ...input
+  });
+  assert.equal(ok({}), null);
+  assert.match(ok({ clip: { ...clip, out: 8 } }), /trimmed/);
+  assert.match(ok({ clip: { ...clip, in: 1 } }), /trimmed/);
+  assert.match(ok({ clip: { ...clip, vol: 0 } }), /volume or fade/);
+  assert.match(ok({ clip: { ...clip, fade: true } }), /volume or fade/);
+  assert.match(ok({ video: { ...video, codec: 'hvc1.1.6.L120' } }), /not H.264/);
+  assert.match(ok({ fps: 60 }), /frame rate/);
+  assert.match(ok({ width: 1280 }), /dimensions/);
+  assert.match(ok({ hasOverlays: true }), /overlays/);
+  assert.match(ok({ fileSize: 129 * 1024 * 1024 }), /memory budget/);
+});
+
 test('planning maths', () => {
   assert.equal(Fast.frameCount(1, 30), 30);
   assert.equal(Fast.frameCount(1.01, 30), 30);
