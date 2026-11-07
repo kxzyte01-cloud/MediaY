@@ -6790,3 +6790,1713 @@ cp "$TMP/package/LICENSE" "$DEST/LICENSE"
 (cd "$DEST" && sha256sum -c SHA256SUMS)
 echo "Speech engine ${VERSION} downloaded and verified."
 
+
+
+==========================================================================================
+FILE: setup.css
+BLOB SHA: cce645583b2692c24b446a5298c5a687a7c4b02b
+==========================================================================================
+/* ProjectMedia Y — setup.css (uses the variables from style.css) */
+#setup { position: fixed; inset: 0; z-index: 50; background: var(--bg); overflow-y: auto; display: flex;
+  padding: calc(16px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom)); }
+#setup[hidden] { display: none !important; }
+.su-wrap { width: 100%; max-width: 480px; margin: auto; display: grid; gap: 20px; }
+.su-head { text-align: center; }
+.su-head .empty-logo { width: 56px; height: 56px; border-radius: 16px; font-size: 30px; margin: 0 auto 10px; }
+.su-head h1 { margin: 0 0 4px; font-size: 24px; }
+.su-head p { margin: 0; color: var(--muted); }
+.su-label { margin: 0 0 8px; color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.su-shapes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.su-row { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 8px; }
+.su-shapes button, .su-row button { display: grid; justify-items: center; align-content: center; gap: 3px;
+  background: var(--panel); border: 2px solid transparent; padding: 8px 2px; }
+.su-shapes button { min-height: 118px; gap: 8px; }
+.su-row button { min-height: 58px; }
+.su-shapes .on, .su-row .on { border-color: var(--red); background: #2a1519; }
+.su-shapes i { display: block; border: 2px solid var(--muted); border-radius: 4px; }
+.su-shapes .on i { border-color: var(--text); }
+.su-shapes b { font-size: 13px; text-align: center; }
+.su-shapes small, .su-row small { color: var(--muted); font-size: 11px; }
+.su-hint { margin: 8px 0 0; color: var(--muted); font-size: 12px; min-height: 16px; }
+.su-foot { display: grid; gap: 10px; text-align: center; }
+#suSum { margin: 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+#suStart { min-height: 52px; font-size: 16px; }
+#suClose { position: absolute; top: calc(10px + env(safe-area-inset-top)); right: 12px; width: 40px; padding: 0; background: var(--panel2); }
+#suClose[hidden] { display: none !important; }
+
+
+/* Home dashboard: mobile-first, project-library style */
+#homeScreen { position:fixed; inset:0; z-index:60; overflow-y:auto; background:radial-gradient(ellipse at 85% 0%, #33171b 0, transparent 42%), var(--bg); padding:calc(20px + env(safe-area-inset-top)) 18px calc(24px + env(safe-area-inset-bottom)); }
+#homeScreen[hidden] { display:none !important; }
+.hm-wrap { width:100%; max-width:560px; margin:0 auto; }
+.hm-brand { display:flex; align-items:center; gap:9px; font-size:15px; font-weight:700; }
+.hm-brand .brand-icon { flex:0 0 34px; width:34px; height:34px; }
+.hm-brand b { color:#ff6b73; }
+.hm-pill { margin-left:auto; padding:6px 9px; border:1px solid var(--border); border-radius:999px; color:var(--muted); font-size:9px; letter-spacing:1px; }
+.hm-hero { padding:38px 0 26px; }
+.hm-eyebrow { margin:0 0 10px; color:#ff737b; font-size:10px; font-weight:700; letter-spacing:1.8px; }
+.hm-hero h1 { margin:0; font-size:clamp(34px, 9vw, 48px); line-height:1.04; letter-spacing:-1.8px; }
+.hm-hero h1 span { color:#ff4c58; }
+.hm-sub { color:var(--muted); font-size:13px; margin:13px 0 0; }
+.hm-recent { padding:17px; border:1px solid #37313a; border-radius:22px; background:linear-gradient(135deg,#211b22,#15151a 72%); box-shadow:0 18px 40px #0003; }
+.hm-section-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.hm-section-head .hm-eyebrow { margin-bottom:5px; }
+.hm-section-head h2 { margin:0; font-size:18px; overflow-wrap:anywhere; }
+.hm-project-icon { display:grid; place-items:center; width:42px; height:42px; flex:0 0 42px; border-radius:14px; background:#3a1b21; color:#ff5964; }
+.hm-meta { margin:9px 0 15px; color:var(--muted); font-size:11px; line-height:1.5; }
+.hm-continue { display:flex; align-items:center; gap:12px; width:100%; min-height:68px; padding:10px 13px; text-align:left; background:#f01925; border-radius:15px; }
+.hm-play { display:grid; place-items:center; width:38px; height:38px; border-radius:12px; background:#ffffff25; }
+.hm-continue b,.hm-action b,.hm-new b { display:block; font-size:13px; }
+.hm-continue small,.hm-action small,.hm-new small { display:block; margin-top:4px; font-size:11px; opacity:.78; }
+.hm-arrow { margin-left:auto; font-size:20px; opacity:.8; }
+.hm-empty { margin:0; color:var(--muted); font-size:12px; line-height:1.5; }
+.hm-actions { display:grid; gap:10px; margin-top:13px; }
+.hm-new,.hm-action { display:flex; align-items:center; gap:12px; min-height:72px; width:100%; padding:12px 15px; text-align:left; border:1px solid var(--border); border-radius:17px; background:var(--panel); }
+.hm-action { background:#141419; }
+.hm-action-icon { display:grid; place-items:center; width:39px; height:39px; flex:0 0 39px; border-radius:13px; background:#29252d; color:#fff; font-size:24px; }
+.hm-new .hm-action-icon { background:#3a1b21; color:var(--accent); }
+.hm-new small,.hm-action small { color:var(--muted); }
+.hm-export { display:flex; align-items:center; justify-content:space-between; min-height:58px; width:100%; padding:0 18px; margin-top:3px; border-radius:16px; background:#f01925; font-size:15px; font-weight:700; }
+.hm-export span:last-child { display:grid; place-items:center; width:31px; height:31px; border-radius:10px; background:#ffffff25; font-size:21px; }
+.hm-footer { padding:21px 0 4px; text-align:center; color:#777782; font-size:10px; }
+.su-back { display:block; margin:0 0 22px; background:var(--panel2); }
+#setup { z-index:61; }
+/* Overlay manipulation: keep touch handles usable while preventing browser gestures from stealing drags. */
+#overlayCanvas, .canvas-container, .canvas-container .upper-canvas { pointer-events:auto; touch-action:none; -webkit-user-select:none; user-select:none; }
+.canvas-container { max-width:100%; }
+.canvas-container .upper-canvas { cursor:grab; }
+.canvas-container .upper-canvas:active { cursor:grabbing; }
+@media (min-width:700px) { #homeScreen { padding-top:38px; } .hm-hero { padding-top:52px; } }
+
+.tr-duration { margin:14px 2px 4px; padding:13px; border:1px solid var(--border); border-radius:14px; background:#101014; }
+.tr-duration label { display:flex; justify-content:space-between; color:var(--muted); font-size:12px; margin-bottom:8px; }
+.tr-duration label b { color:#fff; }
+#trList button { border:1px solid var(--border); transition:background .18s, border-color .18s, transform .15s; }
+#trList button.on { background:#401b21; border:1px solid var(--red); color:var(--text); }
+
+
+/* Saved-project library */
+.hm-library { margin-top:22px; padding:17px; border:1px solid var(--border); border-radius:20px; background:rgba(20,20,25,.82); }
+.hm-library-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px; }
+.hm-library-head h2 { margin:0; font-size:17px; }
+.hm-library-head span { color:var(--muted); font-size:11px; }
+.hm-library-empty { color:var(--muted); font-size:12px; line-height:1.5; margin:0; }
+.hm-project-row { display:flex; align-items:center; gap:12px; padding:12px 0; border-top:1px solid var(--border); }
+.hm-project-info { flex:1; min-width:0; display:grid; gap:5px; }
+.hm-project-info strong { font-size:13px; overflow-wrap:anywhere; }
+.hm-project-info small { color:var(--muted); font-size:10px; line-height:1.4; }
+.hm-project-controls { display:flex; gap:6px; flex:0 0 auto; }
+.hm-project-controls button { min-height:34px; padding:0 10px; font-size:11px; border-radius:10px; }
+.hm-open-project { background:#f01925; color:#fff; font-weight:700; }
+.hm-delete-project { border:1px solid var(--border); background:transparent; color:var(--muted); }
+.hm-empty { padding:4px 0; }
+.hm-continue[hidden], .hm-export[hidden] { display:none !important; }
+#homeScreen, #setup { overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }
+#homeScreen button, #setup button { touch-action:manipulation; }
+@media (max-width:360px) {
+  #homeScreen { padding-left:12px; padding-right:12px; }
+  .hm-project-row { align-items:flex-start; flex-direction:column; }
+  .hm-project-controls { width:100%; }
+  .hm-project-controls button { flex:1; }
+}
+
+/* Always-visible route back to the project dashboard while editing */
+.home-nav { display:flex; align-items:center; gap:4px; min-height:36px; padding:0 9px; background:var(--panel2); font-size:12px; flex-shrink:0; }
+.home-nav span { font-size:11px; }
+@media (max-width:370px) { .home-nav span { display:none; } .home-nav { padding:0 8px; } }
+
+
+/* COASTLINE PREMIUM — home, library and first-project setup. */
+#homeScreen { background:var(--bg); color:var(--text); padding:calc(22px + env(safe-area-inset-top)) 20px calc(24px + env(safe-area-inset-bottom)); }
+.hm-wrap { max-width:620px; } .hm-brand { gap:11px; padding-bottom:15px; border-bottom:1px solid var(--border); color:var(--text); }
+.brand-mark { display:grid; place-items:center; width:36px; height:36px; flex:0 0 36px; border-radius:10px; background:#168BFF; color:#fff; font:700 23px Georgia,serif; }
+.hm-wordmark { display:grid; gap:2px; line-height:1; } .hm-wordmark strong { font-size:16px; letter-spacing:-.3px; }
+.hm-wordmark small { color:var(--muted); font-size:8px; font-weight:700; letter-spacing:1.4px; }
+.hm-pill { margin-left:auto; border:1px solid var(--border-strong); border-radius:6px; background:#f3f8fa; color:var(--muted); padding:6px 8px; font-size:9px; letter-spacing:1.1px; }
+.hm-hero { padding:34px 0 22px; } .hm-eyebrow { color:#8e4e68; font-size:9px; font-weight:750; letter-spacing:1.55px; }
+.hm-hero h1 { max-width:560px; color:var(--text); font:700 clamp(32px,8vw,45px)/1.08 "Avenir Next",Avenir,"Segoe UI",system-ui,sans-serif; letter-spacing:-1.6px; }
+.hm-hero h1 em { color:#00CFEA; font-style:normal; } .hm-sub { max-width:420px; color:var(--muted); font-size:13px; line-height:1.65; }
+.hm-recent { padding:17px; border:1px solid var(--border); border-radius:13px; background:var(--panel); box-shadow:0 6px 18px rgba(25,52,72,.06); }
+.hm-section-head h2 { color:var(--text); font-size:17px; font-weight:700; } .hm-project-icon { width:40px; height:40px; flex-basis:40px; border-radius:10px; background:#e5f0f5; color:#168BFF; }
+.hm-project-icon svg { width:21px; height:21px; } .hm-meta { color:var(--muted); }
+.hm-continue { min-height:64px; padding:9px 12px; border:1px solid #168BFF; border-radius:10px; background:#168BFF; color:#fff; }
+.hm-continue:hover { background:#126CC4; } .hm-play { display:grid; place-items:center; width:36px; height:36px; border-radius:8px; background:rgba(255,255,255,.13); }
+.hm-play svg { width:18px; height:18px; } .hm-continue-copy { display:grid; gap:3px; flex:1; }
+.hm-continue-copy b { font-size:13px; } .hm-continue-copy small { color:rgba(0,231,242,.14); font-size:10px; }
+.hm-arrow { color:inherit; display:grid; place-items:center; } .hm-arrow svg { width:17px; height:17px; }
+.hm-empty { color:var(--muted); font-size:12px; line-height:1.55; }
+.hm-actions { display:grid; grid-template-columns:1fr; gap:8px; margin-top:13px; }
+.hm-new,.hm-action { display:flex; align-items:center; gap:12px; min-height:62px; padding:9px 12px; text-align:left; border:1px solid var(--border); border-radius:10px; }
+.hm-new { background:#17243A; color:var(--text); border-color:#293852; } .hm-new:hover { background:#223451; }
+.hm-action { background:var(--panel); color:var(--text); }
+.hm-new>span:nth-child(2),.hm-action>span:nth-child(2) { display:grid; gap:3px; flex:1; }
+.hm-new b,.hm-action b { font-size:13px; } .hm-new small,.hm-action small { color:var(--muted); font-size:10px; }
+.hm-action-icon { display:grid; place-items:center; width:36px; height:36px; border-radius:8px; background:var(--panel2); color:var(--accent); }
+.hm-action-icon svg { width:19px; height:19px; }
+.hm-export { justify-content:space-between; min-height:40px; background:transparent; border:1px solid transparent; color:var(--accent); font-size:11px; }
+.hm-export svg { width:16px; height:16px; }
+.hm-library { margin-top:18px; padding:15px 17px; border:1px solid var(--border); border-radius:13px; background:var(--panel); }
+.hm-library-head h2 { color:var(--text); font-size:16px; } .hm-library-head span { color:var(--muted); }
+.hm-project-row { border-color:var(--border); } .hm-project-info strong { color:var(--text); } .hm-project-info small { color:var(--muted); }
+.hm-delete-project { background:transparent; border:1px solid var(--border); color:var(--muted); } .hm-library-empty { color:var(--muted); }
+.hm-footer { display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px 16px; margin-top:18px; color:var(--muted); font-size:10px; }
+.hm-footer a { color:#168BFF; text-decoration-thickness:1px; text-underline-offset:3px; }
+#setup { background:var(--bg); color:var(--text); } .su-wrap { max-width:540px; gap:18px; }
+.su-back { justify-self:start; background:transparent; border:1px solid var(--border); color:var(--text); }
+.su-head .empty-logo { background:#168BFF; } .su-head h1 { color:var(--text); }
+.su-head p,.su-label,.su-hint,#suSum { color:var(--muted); }
+.su-shapes button,.su-row button { background:var(--panel); color:var(--text); border:1px solid var(--border); border-radius:10px; }
+.su-shapes .on,.su-row .on { border:2px solid #168BFF; background:rgba(0,231,242,.14); }
+.su-shapes i { border-color:#405575; } .su-shapes .on i { border-color:#168BFF; }
+#suStart { background:#168BFF; border:1px solid #168BFF; color:#fff; } #suStart:hover { background:#126CC4; }
+@media(max-width:380px) { #homeScreen { padding-left:13px; padding-right:13px; } .hm-recent,.hm-library { padding:13px; } .hm-footer { flex-direction:column; } }
+@media(max-height:680px) { #homeScreen { padding-top:calc(12px + env(safe-area-inset-top)); } .hm-hero { padding:22px 0 15px; } .hm-hero h1 { font-size:clamp(28px,7vw,38px); } .hm-recent { padding:13px; } }
+
+
+/* COASTLINE PREMIUM — final cascade for transition and format selections.
+   setup.css loads after style.css, so these overrides intentionally live last. */
+.tr-duration { background:var(--panel2); border-color:var(--border); }
+.tr-duration label,.tr-duration label b { color:var(--text); }
+#trList button.on { background:rgba(0,231,242,.14); border-color:#00CFEA; color:#F3F7FF; }
+.ratios .on { border-color:#00CFEA; background:rgba(0,231,242,.14); color:#F3F7FF; }
+
+.hm-new .hm-action-icon { background:#e5f0f5; color:#168BFF; }
+.hm-open-project { background:#168BFF; border-color:#168BFF; color:#fff; }
+.hm-open-project:hover:not(:disabled) { background:#126CC4; border-color:#126CC4; }
+
+/* Neon Aperture home + onboarding surfaces */
+#homeScreen { background:radial-gradient(ellipse at 90% 0%,rgba(105,78,176,.13),transparent 42%),var(--bg); }
+.hm-brand b,.hm-eyebrow { color:var(--accent); }
+.hm-hero h1 span,.hm-hero h1 em { color:#AFA0F4; }
+.hm-recent { border-color:var(--border); background:linear-gradient(135deg,#151F2D,#101722 72%); box-shadow:0 18px 40px rgba(0,0,0,.28); }
+.hm-action { background:var(--panel); }
+.hm-action-icon,.hm-new .hm-action-icon { background:rgba(0,231,242,.12); color:var(--accent); }
+.hm-continue,.hm-open-project,#suStart { background:linear-gradient(110deg,#187F9A,#6554B8); border-color:transparent; color:#F8FBFF; }
+.hm-continue:hover,#suStart:hover { filter:brightness(1.08); }
+.hm-new { background:var(--panel2); color:var(--text); border-color:var(--border); }
+.hm-project-icon { background:rgba(0,231,242,.12); color:var(--accent); }
+.hm-pill { background:var(--panel2); color:var(--muted); }
+.hm-footer a { color:var(--accent); }
+.su-head .empty-logo { background:transparent; }
+.su-shapes .on,.su-row .on { border-color:var(--accent); background:rgba(0,231,242,.12); }
+.su-shapes i,.su-shapes .on i { border-color:var(--accent); }
+#trList button.on,.ratios .on { background:rgba(0,231,242,.13); border-color:var(--accent); color:var(--text); }
+
+.tr-duration { background:var(--panel2); border-color:var(--border); }
+#trList button.on { background:rgba(0,231,242,.13); border-color:var(--accent); color:var(--text); }
+.ratios .on { background:rgba(0,231,242,.13); border-color:var(--accent); color:var(--text); }
+.hm-new .hm-action-icon { background:rgba(0,231,242,.12); color:var(--accent); }
+.hm-open-project { background:linear-gradient(110deg,#16758F,#6554B8); border-color:transparent; color:#F8FBFF; }
+.hm-open-project:hover:not(:disabled) { filter:brightness(1.08); }
+
+.brand-mark { display:block; width:36px; height:36px; flex:0 0 36px; object-fit:contain; background:transparent; border-radius:0; }
+.empty-logo img { display:block; width:100%; height:100%; object-fit:contain; }
+
+/* Neon Aperture final cascade for home, setup and onboarding */
+#homeScreen { background:radial-gradient(ellipse at 88% 0%,rgba(139,92,246,.17),transparent 43%),radial-gradient(ellipse at 0% 95%,rgba(0,231,242,.08),transparent 40%),var(--bg); }
+.hm-hero h1 em { color:#B79AFF; }
+.hm-continue,.hm-open-project,#suStart { background:linear-gradient(120deg,#00DDEB,#168BFF 55%,#946CF7); color:#071321; border-color:transparent; }
+.hm-continue-copy small { color:#E4F8FF; }
+.hm-project-icon,.hm-action-icon,.hm-new .hm-action-icon { background:rgba(0,231,242,.12); color:var(--accent); }
+.hm-new,.hm-action,.hm-recent,.hm-library { border-color:#293852; }
+.su-shapes .on,.su-row .on,.ratios .on { border-color:#00E7F2; background:rgba(0,231,242,.13); color:#F3F7FF; }
+#trList button.on { background:rgba(139,92,246,.2); border-color:#8B5CF6; color:#F3F7FF; }
+.hm-footer a { color:#00E7F2; }
+.brand-mark { display:block; width:36px; height:36px; flex:0 0 36px; object-fit:contain; background:transparent; border-radius:0; }
+.empty-logo img { display:block; width:100%; height:100%; object-fit:contain; }
+
+/* Neon Aperture final state: keep selected controls and project actions on-brand. */
+#trList button.on { background:rgba(0,231,242,.13); border-color:#00E7F2; color:var(--text); }
+.ratios .on { background:rgba(0,231,242,.13); border-color:#00E7F2; color:#F3F7FF; }
+.hm-open-project { background:linear-gradient(120deg,#00DDEB,#168BFF 55%,#946CF7); border-color:transparent; color:#071321; }
+.hm-open-project:hover:not(:disabled) { filter:brightness(1.08); }
+
+
+
+==========================================================================================
+FILE: setup.js
+BLOB SHA: 355e80475dbd4b3ed122b85a35446f757a3bd053
+==========================================================================================
+/* ProjectMedia Y — persistent mobile home, project library and new-project flow. */
+(function () {
+  'use strict';
+  const PREFKEY = 'pmy-setup-v3';
+  const SHAPES = [
+    { v: '16:9', name: 'YouTube', sub: 'Landscape', w: 48, h: 27 },
+    { v: '9:16', name: 'Shorts & Reels', sub: 'Portrait', w: 27, h: 48 },
+    { v: '1:1', name: 'Square', sub: 'Social post', w: 36, h: 36 }
+  ];
+  const QUALITY = [
+    { v: 480, name: '480p', sub: 'Small file' }, { v: 720, name: '720p', sub: 'Fast' },
+    { v: 1080, name: '1080p', sub: 'HD' }, { v: 1440, name: '2K', sub: 'Heavy' }, { v: 2160, name: '4K', sub: 'Very heavy' }
+  ];
+  const FPS = [{ v: 24, name: '24', sub: 'Cinematic' }, { v: 30, name: '30', sub: 'Standard' }, { v: 60, name: '60', sub: 'Smooth' }];
+  let pick = { r: '9:16', res: 1080, fps: 30 }, loadingHome = false;
+  try {
+    const stored = JSON.parse(localStorage.getItem(PREFKEY) || '{}');
+    if (SHAPES.some(s => s.v === stored.r)) pick.r = stored.r;
+    if (QUALITY.some(q => q.v === stored.res)) pick.res = stored.res;
+    if (FPS.some(f => f.v === stored.fps)) pick.fps = stored.fps;
+  } catch (_) {}
+
+  const home = document.createElement('section');
+  home.id = 'homeScreen'; home.setAttribute('aria-label', 'Project home');
+  home.innerHTML = `
+    <div class="hm-wrap">
+      <header class="hm-brand">
+        <img class="brand-mark" src="./favicon.svg" alt="" aria-hidden="true">
+        <span class="hm-wordmark"><strong>MediaY</strong><small>VIDEO STUDIO</small></span>
+        <span class="hm-pill">EDITOR</span>
+      </header>
+      <section class="hm-hero">
+        <p class="hm-eyebrow">YOUR CREATIVE WORKSPACE</p>
+        <h1>A clearer space<br>to shape <em>your video.</em></h1>
+        <p class="hm-sub">Pick up an edit or start with a clean timeline. Your projects stay on this device.</p>
+      </section>
+      <section class="hm-recent" id="hmRecent" aria-labelledby="hmRecentHeading">
+        <div class="hm-section-head">
+          <div><p class="hm-eyebrow">RECENT PROJECT</p><h2 id="hmProjectTitle">Your last edit</h2></div>
+          <span class="hm-project-icon" aria-hidden="true"><i data-lucide="film"></i></span>
+        </div>
+        <p id="hmProjectMeta" class="hm-meta">Saved on this device</p>
+        <button id="hmContinue" class="hm-continue" type="button">
+          <span class="hm-play" aria-hidden="true"><i data-lucide="play"></i></span>
+          <span class="hm-continue-copy"><b>Continue editing</b><small>Return to your last project</small></span>
+          <span class="hm-arrow" aria-hidden="true"><i data-lucide="arrow-right"></i></span>
+        </button>
+        <p id="hmNoProject" class="hm-empty" hidden>No saved project yet. Start a new edit below; your work will appear here.</p>
+      </section>
+      <section class="hm-actions" aria-label="Project actions">
+        <button id="hmNew" class="hm-new" type="button">
+          <span class="hm-action-icon" aria-hidden="true"><i data-lucide="plus"></i></span>
+          <span><b>New project</b><small>Start with your own media</small></span>
+          <span class="hm-arrow" aria-hidden="true"><i data-lucide="arrow-right"></i></span>
+        </button>
+        <button id="hmTemplates" class="hm-action" type="button">
+          <span class="hm-action-icon" aria-hidden="true"><i data-lucide="layers"></i></span>
+          <span><b>My templates</b><small>Reuse a saved layout</small></span>
+          <span class="hm-arrow" aria-hidden="true"><i data-lucide="arrow-right"></i></span>
+        </button>
+        <button id="hmExport" class="hm-export" type="button"><span>Export last project</span><i data-lucide="arrow-up-right" aria-hidden="true"></i></button>
+      </section>
+      <section class="hm-library" aria-labelledby="hmLibraryHeading">
+        <div class="hm-library-head"><h2 id="hmLibraryHeading">My projects</h2><span id="hmProjectCount">0 saved</span></div>
+        <div id="hmProjectList"></div>
+      </section>
+      <footer class="hm-footer"><span>Stored locally on this device.</span><a href="./legal.html">Terms, privacy &amp; licenses</a></footer>
+    </div>`;
+  document.body.appendChild(home);
+  if (window.MediaYIcons) MediaYIcons.render(document);
+
+  const setup = document.createElement('section'); setup.id = 'setup'; setup.setAttribute('aria-label', 'New project'); setup.hidden = true;
+  setup.innerHTML = `
+    <div class="su-wrap">
+      <button id="suBack" class="su-back">← Home</button>
+      <div class="su-head"><div class="empty-logo"><img src="./favicon.svg" alt="" aria-hidden="true"></div><h1>Set up your project</h1><p>Choose a format and export settings.</p></div>
+      <div><p class="su-label">Video shape</p><div id="suShape" class="su-shapes"></div></div>
+      <div><p class="su-label">Export quality</p><div id="suRes" class="su-row q5"></div><p id="suHint" class="su-hint"></p></div>
+      <div><p class="su-label">Frames per second</p><div id="suFps" class="su-row"></div></div>
+      <div class="su-foot"><p id="suSum"></p><button id="suStart" class="primary wide">Start editing <span aria-hidden="true">→</span></button></div>
+    </div>`;
+  document.body.appendChild(setup);
+
+  const q = id => setup.querySelector('#' + id);
+  const hasContent = (st = S) => !!(st && ((st.main || []).length || (st.overlays || []).length || (st.audio || []).length));
+  const hasVideo = (st = S) => !!(st && (st.main || []).length);
+  const visibleName = st => {
+    const clip = (st.main || []).find(c => c && c.name) || (st.overlays || []).find(c => c && c.name) || (st.audio || []).find(c => c && c.name);
+    return clip && clip.name ? clip.name.replace(/\.[^.]+$/, '').slice(0, 80) : 'Untitled project';
+  };
+  const niceName = v => String(v || 'Untitled project').replace(/[\\/:*?"<>|]/g, '-').trim().slice(0, 80) || 'Untitled project';
+
+  function renderSetup() {
+    q('suShape').innerHTML = SHAPES.map(s => `<button type="button" data-k="r" data-v="${s.v}" class="${s.v === pick.r ? 'on' : ''}"><i style="width:${s.w}px;height:${s.h}px"></i><b>${s.name}</b><small>${s.sub}</small></button>`).join('');
+    q('suRes').innerHTML = QUALITY.map(o => `<button type="button" data-k="res" data-v="${o.v}" class="${o.v === pick.res ? 'on' : ''}"><b>${o.name}</b><small>${o.sub}</small></button>`).join('');
+    q('suFps').innerHTML = FPS.map(o => `<button type="button" data-k="fps" data-v="${o.v}" class="${o.v === pick.fps ? 'on' : ''}"><b>${o.name}</b><small>${o.sub}</small></button>`).join('');
+    q('suHint').textContent = pick.res >= 1440 ? '2K/4K exports can be slow or run out of memory on phones.' : pick.res === 1080 ? 'Recommended for a clear HD export.' : 'A smaller file and quicker export.';
+    q('suSum').textContent = `${pick.r}  ·  ${QUALITY.find(o => o.v === pick.res).name}  ·  ${pick.fps} fps`;
+  }
+  setup.addEventListener('click', e => {
+    const b = e.target.closest('button[data-k]'); if (!b) return;
+    pick[b.dataset.k] = b.dataset.k === 'r' ? b.dataset.v : Number(b.dataset.v); renderSetup();
+  });
+
+  function showEditor() {
+    home.hidden = true; setup.hidden = true;
+    const brand = $('brandHome'); if (brand) brand.setAttribute('aria-expanded', 'false');
+  }
+  function showSetup() {
+    pick.r = SHAPES.some(s => s.v === (S.ratio || $('aspectRatio').value)) ? (S.ratio || $('aspectRatio').value) : pick.r;
+    home.hidden = true; setup.hidden = false; renderSetup();
+  }
+  async function applySetup() {
+    try { localStorage.setItem(PREFKEY, JSON.stringify(pick)); } catch (_) {}
+    EXP.res = pick.res; EXP.fps = pick.fps;
+    [['resList', pick.res], ['fpsList', pick.fps]].forEach(([id, v]) => {
+      const root = $(id), b = root && root.querySelector(`[data-v="${v}"]`); if (b) b.click();
+    });
+    const ratio = $('aspectRatio');
+    if (ratio && ratio.value !== pick.r) { ratio.value = pick.r; ratio.dispatchEvent(new Event('change')); }
+    else if (S.ratio !== pick.r) { S.ratio = pick.r; await rebuildCanvas(); commit(); }
+    await saveProject();
+    showEditor();
+    try { say(`${pick.r} · ${pick.res}p · ${pick.fps} fps. Add media to begin.`); } catch (_) {}
+  }
+  q('suStart').onclick = applySetup;
+  q('suBack').onclick = async () => { await openHome(); };
+
+  // If the user switches away from an unnamed session, give it a real project record first.
+  async function preserveCurrentProject() {
+    if (activeProjectId === 'current' && hasContent(S)) {
+      const id = `project-${uid()}`, name = niceName(visibleName(S)), state = snap(), updated = Date.now();
+      await db.projects.put({ id, name, state, updated, kind: 'project' });
+      activeProjectId = id; activeProjectName = name;
+    }
+    await saveProject();
+  }
+
+  async function openSavedProject(id) {
+    try {
+      await preserveCurrentProject();
+      const row = await db.projects.get(id);
+      if (!row || !row.state) return say('That saved project could not be found.');
+      activeProjectId = row.id; activeProjectName = niceName(row.name || visibleName(JSON.parse(row.state)));
+      clearTimeout(saveTimer);
+      await restore(row.state); t = 0; undoStack = [snap()]; redoStack = [];
+      if (S.main.length) await seek(0); refresh(0); await saveProject();
+      closeSheet(); showEditor(); say(`Opened “${activeProjectName}”.`);
+    } catch (err) { console.error(err); say('Could not open this project: ' + (err.message || err)); }
+  }
+
+  async function collectUnreferencedMedia() {
+    // Flush the current editor state before calculating references, or a pending edit could lose its media.
+    await saveProject();
+    const projects = await db.projects.toArray();
+    const referenced = new Set();
+    for (const row of projects) {
+      if (!row || !row.state) continue;
+      let state;
+      try { state = typeof row.state === 'string' ? JSON.parse(row.state) : row.state; }
+      catch (_) {
+        console.warn('Media cleanup skipped because a saved project state could not be read.');
+        return 0; // Unknown references must never cause user media to be deleted.
+      }
+      if (!state || typeof state !== 'object' ||
+          !Array.isArray(state.main) || !Array.isArray(state.audio) || !Array.isArray(state.overlays)) {
+        console.warn('Media cleanup skipped because a saved project has an unsupported state shape.');
+        return 0; // Older or partial project records are treated as unknown references.
+      }
+      for (const lane of [state.main, state.audio, state.overlays]) {
+        if (!Array.isArray(lane)) continue;
+        for (const item of lane) if (item && item.mediaId) referenced.add(item.mediaId);
+      }
+    }
+    // Saved templates live in localStorage rather than the projects table. Treat an
+    // unreadable or unknown template schema as a reason to skip collection: deleting
+    // media while references are uncertain would permanently break a user's template.
+    const templateRaw = localStorage.getItem('pmy-templates');
+    if (templateRaw !== null) {
+      let templates;
+      try { templates = JSON.parse(templateRaw); }
+      catch (_) {
+        console.warn('Media cleanup skipped because saved templates could not be read.');
+        return 0;
+      }
+      if (!Array.isArray(templates)) {
+        console.warn('Media cleanup skipped because the saved template list has an unsupported shape.');
+        return 0;
+      }
+      for (const template of templates) {
+        if (!template || typeof template !== 'object' ||
+            !Array.isArray(template.pre) || !Array.isArray(template.post) ||
+            !Array.isArray(template.overlays) || !Array.isArray(template.audio)) {
+          console.warn('Media cleanup skipped because a saved template has an unsupported shape.');
+          return 0;
+        }
+        for (const lane of [template.pre, template.post, template.overlays, template.audio]) {
+          for (const item of lane) if (item && item.mediaId) referenced.add(item.mediaId);
+        }
+        if (template.slotClip && template.slotClip.mediaId) referenced.add(template.slotClip.mediaId);
+      }
+    }
+    const mediaIds = await db.media.toCollection().primaryKeys();
+    const orphanIds = mediaIds.filter(id => !referenced.has(id));
+    if (!orphanIds.length) return 0;
+    await db.media.bulkDelete(orphanIds);
+    for (const id of orphanIds) {
+      if (urls[id]) { URL.revokeObjectURL(urls[id]); delete urls[id]; }
+      if (audios[id]) {
+        try { audios[id].pause(); audios[id].removeAttribute('src'); audios[id].load(); } catch (_) {}
+        delete audios[id];
+      }
+      delete audioLoads[id];
+      delete decoded[id];
+      delete thumbs[id];
+      delete files[id];
+    }
+    return orphanIds.length;
+  }
+
+  async function deleteSavedProject(id) {
+    if (!window.confirm('Delete this saved project? Media used by other projects will be kept; unused imported media may be cleaned up.')) return;
+    try {
+      await db.projects.delete(id);
+      if (activeProjectId === id) {
+        activeProjectId = 'current'; activeProjectName = 'Untitled project';
+        await saveProject();
+      }
+      let removedMedia = 0;
+      try { removedMedia = await collectUnreferencedMedia(); }
+      catch (cleanupError) { console.warn('Unused media cleanup was skipped:', cleanupError); }
+      await loadHome();
+      say(removedMedia
+        ? `Saved project deleted. Cleaned up ${removedMedia} unused media file${removedMedia === 1 ? '' : 's'}.`
+        : 'Saved project deleted. Media still used by a project was kept.');
+    } catch (err) { say('Could not delete the project: ' + (err.message || err)); }
+  }
+
+  async function renderProjectLibrary() {
+    const root = $('hmProjectList'), count = $('hmProjectCount');
+    root.textContent = '';
+    let rows = [];
+    try { rows = await db.projects.toArray(); } catch (err) { console.warn('Could not list projects:', err); }
+    rows = rows.filter(r => r && r.id !== 'current' && r.state && r.name && r.id !== activeProjectId)
+      .sort((a, b) => (b.updated || 0) - (a.updated || 0));
+    count.textContent = `${rows.length} saved`;
+    if (!rows.length) {
+      const p = document.createElement('p'); p.className = 'hm-library-empty';
+      p.textContent = 'Named projects you save will appear here. Your current edit is kept above.'; root.appendChild(p); return;
+    }
+    rows.forEach(row => {
+      const item = document.createElement('article'); item.className = 'hm-project-row';
+      const info = document.createElement('div'); info.className = 'hm-project-info';
+      const name = document.createElement('strong'); name.textContent = row.name || 'Untitled project';
+      const meta = document.createElement('small');
+      try {
+        const st = JSON.parse(row.state);
+        meta.textContent = `${(st.main || []).length} video · ${(st.overlays || []).length} overlay · ${new Date(row.updated || Date.now()).toLocaleDateString()}`;
+      } catch (_) { meta.textContent = 'Saved on this device'; }
+      info.append(name, meta);
+      const controls = document.createElement('div'); controls.className = 'hm-project-controls';
+      const open = document.createElement('button'); open.className = 'hm-open-project'; open.textContent = 'Open'; open.onclick = () => openSavedProject(row.id);
+      const del = document.createElement('button'); del.className = 'hm-delete-project'; del.textContent = 'Delete'; del.onclick = () => deleteSavedProject(row.id);
+      controls.append(open, del); item.append(info, controls); root.appendChild(item);
+    });
+  }
+
+  async function loadHome() {
+    if (loadingHome) return;
+    loadingHome = true;
+    try {
+      // Don't race the editor's IndexedDB restore. Still show home even if restore fails.
+      if (window.projectMediaReady) await window.projectMediaReady.catch(err => console.warn(err));
+      const row = await db.projects.get('current').catch(() => null);
+      let st = null;
+      if (row && row.state) {
+        try { st = JSON.parse(row.state); } catch (_) {}
+      }
+      const hasRecent = hasContent(st);
+      $('hmRecent').classList.toggle('is-empty', !hasRecent);
+      $('hmContinue').hidden = !hasRecent;
+      $('hmNoProject').hidden = hasRecent;
+      $('hmExport').hidden = !hasVideo(st);
+      if (hasRecent) {
+        const name = row.activeProjectName && row.activeProjectName !== 'Untitled project' ? row.activeProjectName : visibleName(st);
+        $('hmProjectTitle').textContent = name;
+        const d = new Date(row.updated || Date.now()).toLocaleDateString();
+        $('hmProjectMeta').textContent = `${(st.main || []).length} video clip${(st.main || []).length === 1 ? '' : 's'} · ${(st.overlays || []).length} overlay${(st.overlays || []).length === 1 ? '' : 's'} · ${(st.audio || []).length} audio track${(st.audio || []).length === 1 ? '' : 's'} · Saved ${d}`;
+        if (SHAPES.some(s => s.v === st.ratio)) pick.r = st.ratio;
+      } else {
+        $('hmProjectTitle').textContent = 'Your last edit';
+        $('hmProjectMeta').textContent = 'Start a project and it will appear here.';
+      }
+      home.hidden = false; setup.hidden = true; renderSetup(); await renderProjectLibrary();
+    } catch (err) {
+      console.error('Could not load home screen:', err);
+      home.hidden = false; setup.hidden = true;
+      try { say('Home is open, but the saved-project list could not be loaded.'); } catch (_) {}
+    } finally { loadingHome = false; }
+  }
+
+  async function openHome() {
+    try { if (typeof stop === 'function') stop(); } catch (_) {}
+    try { clearTimeout(saveTimer); await saveProject(); } catch (err) { console.warn('Could not save before opening home:', err); }
+    try { if (typeof select === 'function') select(null); if (typeof closeSheet === 'function') closeSheet(); } catch (_) {}
+    await loadHome();
+  }
+
+  async function startNewProject() {
+    try {
+      await preserveCurrentProject();
+      activeProjectId = 'current'; activeProjectName = 'Untitled project';
+      const blank = { ratio: pick.r, main: [], audio: [], overlays: [], nextLayer: 1 };
+      clearTimeout(saveTimer); t = 0; sel = null;
+      await restore(JSON.stringify(blank));
+      undoStack = [snap()]; redoStack = []; drawTimeline(); refresh(0); await saveProject();
+      showSetup();
+    } catch (err) { console.error(err); say('Could not start a new project: ' + (err.message || err)); }
+  }
+
+  $('hmContinue').onclick = showEditor;
+  $('hmNew').onclick = startNewProject;
+  $('hmTemplates').onclick = () => { showEditor(); openSheet('tpl'); };
+  $('hmExport').onclick = () => { showEditor(); $('exportBtn').click(); };
+  $('homeBtn').onclick = openHome;
+  const brand = $('brandHome');
+  if (brand) {
+    brand.style.cursor = 'pointer';
+    brand.onclick = openHome;
+    brand.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openHome(); } };
+  }
+  q('suStart').addEventListener('click', () => {}); // keep the primary action explicitly keyboard-focusable
+
+  // First load always opens the dashboard, not just on the very first installation.
+  loadHome();
+})();
+
+
+
+==========================================================================================
+FILE: style.css
+BLOB SHA: de3f1dd30e563b8fbc87b3070b6c12c84abf68ff
+==========================================================================================
+:root { color-scheme:dark; --bg:#080D18; --panel:#10182A; --panel2:#17243A; --panel3:#223451; --red:#00E7F2; --accent:#00E7F2; --sky:#168BFF; --rose:#8B5CF6; --rose-soft:rgba(139,92,246,.16); --magenta:#C45BFF; --teal:#28D8C8; --amber:#E8B86D; --text:#F3F7FF; --muted:#9EACC8; --border:#293852; --border-strong:#405575; --line:#293852; --logo-grad:linear-gradient(125deg,#12F1F4 0%,#168BFF 52%,#8B5CF6 100%); }
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; }
+body { margin:0; background:var(--bg); color:var(--text); font:14px "Avenir Next",Avenir,"Segoe UI",system-ui,sans-serif; display:flex; flex-direction:column; height:100dvh; overflow:hidden; padding-top:env(safe-area-inset-top); }
+button, select, input { font: inherit; }
+button { color:var(--text); background:var(--panel2); border:0; border-radius:12px; padding:0 14px; min-height:40px; cursor:pointer; touch-action:manipulation; transition:transform .12s, background .15s; }
+button:active { transform: scale(.95); }
+button:disabled { opacity:.5; }
+:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+[hidden] { display:none !important; }
+
+.topbar { display:flex; align-items:center; gap:8px; padding:8px 12px; }
+.brand { display:flex; align-items:center; gap:8px; font-weight:700; margin-right:auto; white-space:nowrap; }
+.brand-icon, .empty-logo { display:grid; place-items:center; background:var(--accent); color:#fff; font-weight:700; }
+.brand-icon { width:28px; height:28px; border-radius:9px; font-size:18px; }
+select { background:var(--panel2); color:var(--text); border:0; border-radius:10px; padding:0 8px; min-height:40px; }
+.primary { background:var(--accent); color:#fff; font-weight:700; padding:0 18px; }
+
+main { flex:1; min-height:0; width:100%; max-width:560px; margin:0 auto; display:flex; flex-direction:column; }
+.stage { flex:1 1 0; min-height:150px; container-type:size; display:grid; place-items:center; padding:4px 12px; }
+.preview-frame { position:relative; background:#000; border-radius:14px; overflow:hidden; display:grid; place-items:center; box-shadow:0 0 0 1px var(--border), 0 18px 50px #000a; }
+#sourceVideo { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; display:none; background:#000; }
+#overlayCanvas { position:absolute; inset:0; width:100%; height:100%; pointer-events:auto; touch-action:none; }
+#emptyState { position:relative; z-index:2; text-align:center; color:var(--muted); padding:16px; }
+#emptyState h1 { color:var(--text); font-size:20px; margin:0 0 4px; }
+#emptyState p { margin:0 0 16px; }
+#emptyState a { display:block; margin-top:14px; font-size:12px; color:#00E7F2; }
+.empty-logo { width:56px; height:56px; border-radius:17px; margin:0 auto 14px; font-size:36px; }
+.import-label { display:inline-block; border-radius:12px; padding:13px 22px; cursor:pointer; }
+#status { margin:4px 12px; min-height:18px; color:var(--muted); font-size:12px; text-align:center; overflow-wrap:anywhere; }
+
+.transport { display:grid; grid-template-columns:1fr auto 1fr; align-items:center; padding:0 12px 6px; }
+#timeDisplay { font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
+.play-button { width:54px; height:48px; border-radius:16px; background:var(--accent); font-size:18px; }
+.history { display:flex; gap:6px; justify-content:flex-end; }
+.history button { min-width:40px; padding:0; font-size:18px; background:none; }
+
+.timeline { background:var(--panel); border-radius:20px 20px 0 0; padding:10px 12px 6px; }
+.timeline-ruler { display:flex; justify-content:space-between; color:var(--muted); font-size:10px; padding:0 2px 6px 50px; font-variant-numeric:tabular-nums; }
+#timelineTracks { display:grid; gap:6px; max-height:26dvh; overflow-y:auto; }
+.track { display:grid; grid-template-columns:44px minmax(0,1fr); gap:6px; }
+.track-name { color:var(--muted); font-size:10px; display:flex; align-items:center; }
+.track-lane { display:flex; align-items:center; min-height:42px; min-width:0; border-radius:10px; background:var(--bg); overflow-x:auto; overscroll-behavior-x:contain; scrollbar-width:none; }
+.empty-track { color:#6c6c78; font-size:11px; padding:0 12px; white-space:nowrap; }
+.clip { flex:0 0 auto; height:34px; margin:4px 3px; padding:0 9px; display:flex; align-items:center; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; border-radius:8px; background:#3a3550; border:1px solid #6a6396; color:#fff; font-size:10.5px; }
+.clip.video-clip { background:linear-gradient(#256b5a,#1c4a40); border-color:#3fa088; }
+.clip.audio-clip { background:linear-gradient(#7a5a22,#54401a); border-color:#c39a4a; }
+#playhead { display:block; width:100%; margin:8px 0 0; height:28px; -webkit-appearance:none; appearance:none; background:transparent; touch-action:pan-y; }
+#playhead::-webkit-slider-runnable-track { height:4px; border-radius:2px; background:var(--border); }
+#playhead::-webkit-slider-thumb { -webkit-appearance:none; width:20px; height:20px; margin-top:-8px; border-radius:50%; background:var(--accent); border:3px solid #fff; }
+
+.dock { display:flex; gap:2px; overflow-x:auto; padding:6px 8px calc(6px + env(safe-area-inset-bottom)); background:#101014; border-top:1px solid var(--border); scrollbar-width:none; }
+.dock button { flex:1 0 64px; display:grid; justify-items:center; align-content:center; gap:3px; padding:6px 0; min-height:54px; background:none; font-size:10.5px; color:var(--muted); }
+.dock button.on { color:#fff; background:var(--panel2); }
+.dock svg { width:21px; height:21px; }
+#deleteBtn { color:#ff7a82; }
+
+.sheet { position:fixed; left:0; right:0; bottom:calc(66px + env(safe-area-inset-bottom)); max-width:560px; margin:0 auto; z-index:30; background:var(--panel); border:1px solid var(--border); border-bottom:0; border-radius:16px 16px 0 0; padding:12px 14px calc(16px + env(safe-area-inset-bottom)); box-shadow:0 -12px 32px rgba(25,52,72,.12); animation:up .2s ease-out; max-height:min(68dvh, calc(100dvh - 92px - env(safe-area-inset-top)), 620px); overflow-y:auto; overscroll-behavior:contain; }
+@keyframes up { from { transform:translateY(24px); opacity:0; } }
+.sheet-head { display:flex; justify-content:space-between; align-items:center; font-weight:700; margin-bottom:10px; }
+.sheet-head button { min-height:34px; width:34px; padding:0; }
+.chips { display:flex; gap:8px; overflow-x:auto; scrollbar-width:none; }
+.chips button { flex:0 0 72px; display:grid; gap:6px; justify-items:center; padding:4px 0; background:none; font-size:11px; color:var(--muted); }
+.chips i { width:60px; height:60px; border-radius:12px; border:2px solid transparent; background:linear-gradient(135deg,#ffb35a,#d8386b 45%,#2b6ad9); }
+.chips .on { color:#fff; }
+.chips .on i { border-color:var(--accent); }
+.sheet input[type=text] { width:100%; min-height:44px; border-radius:12px; border:1px solid var(--border); background:var(--bg); color:var(--text); padding:0 12px; }
+.pills { display:flex; gap:8px; margin:10px 0; }
+.pills button { flex:1; padding:0 4px; }
+.pills .on { background:var(--accent); }
+.wide { width:100%; }
+
+dialog { background:var(--panel); color:var(--text); border:1px solid var(--border); border-radius:16px; padding:20px; width:min(92vw,420px); }
+dialog::backdrop { background:rgba(0,0,0,.75); }
+dialog h2 { margin:0 0 10px; font-size:18px; }
+dialog ul { padding-left:18px; margin:0 0 12px; line-height:1.5; }
+dialog a { color:#00E7F2; }
+dialog button { width:100%; margin-top:8px; }
+@media (prefers-reduced-motion: reduce) { * { animation:none !important; transition:none !important; } }
+
+/* timeline v2: centred playhead, time-positioned clips */
+.transport { grid-template-columns:auto 1fr auto; gap:12px; }
+#timeDisplay { text-align:center; }
+.timeline { position:relative; padding:0; }
+.timeline-tools { min-height:40px; display:flex; align-items:center; gap:6px; padding:4px 8px; border-bottom:1px solid var(--border); }
+.timeline-tools-title { color:var(--muted); font-size:9px; font-weight:700; letter-spacing:.7px; white-space:nowrap; }
+.timeline-zoom { display:flex; align-items:center; justify-content:center; gap:3px; min-width:0; flex:1; }
+.timeline-zoom button { flex:0 0 30px; width:30px; min-height:30px; border-radius:8px; padding:0; font-size:15px; }
+.timeline-zoom #tlZoomFit { flex-basis:35px; width:35px; font-size:10px; }
+#tlZoom { flex:1; min-width:38px; max-width:100px; height:26px; margin:0; accent-color:var(--accent); touch-action:pan-y; }
+#tlZoomLabel { min-width:28px; color:var(--muted); text-align:center; font-size:10px; font-variant-numeric:tabular-nums; }
+#copyTillBtn { flex:0 0 auto; min-height:30px; border-radius:8px; padding:0 8px; white-space:nowrap; background:#342229; color:#ffb9bc; font-size:10px; font-weight:700; }
+#copyTillBtn:disabled { background:var(--panel2); color:var(--muted); opacity:.6; }
+#tl { display:flex; overflow:auto; height:min(34dvh,230px); scrollbar-width:none; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; }
+.pad { flex:0 0 50%; }
+#tlInner { flex:0 0 auto; position:relative; padding-bottom:12px; }
+.ruler { position:relative; height:20px; }
+.ruler i { position:absolute; top:2px; width:1px; height:6px; background:#4a4a55; }
+.ruler b { position:absolute; top:8px; font:500 9px "DM Sans",sans-serif; color:var(--muted); transform:translateX(-50%); font-variant-numeric:tabular-nums; }
+.lane { position:relative; margin:4px 0; }
+.clip { position:absolute; margin:0; padding:0 22px; text-shadow:0 1px 3px #000; }
+.clip.video-clip { background-color:#1c4a40; background-size:auto 100%; background-repeat:repeat-x; }
+.clip.audio-clip { background:repeating-linear-gradient(90deg,#ffffff38 0 2px,#0000 2px 5px),linear-gradient(#7a5a22,#54401a); }
+.clip.ov-clip { background:#5a54a6; border-color:#8c86d8; }
+.clip.sel { outline:2px solid #fff; z-index:2; }
+.clip.lift { z-index:6; box-shadow:0 10px 24px #000b; opacity:.92; }
+.h { position:absolute; top:0; bottom:0; width:18px; background:#fff; touch-action:none; }
+.h::after { content:""; position:absolute; left:7px; top:30%; bottom:30%; width:3px; border-radius:2px; background:#555; }
+.h.l { left:0; border-radius:7px 0 0 7px; } .h.r { right:0; border-radius:0 7px 7px 0; }
+.cursor { position:absolute; left:50%; top:40px; height:min(34dvh,230px); width:2px; margin-left:-1px; background:#fff; box-shadow:0 0 0 1px #0009; pointer-events:none; z-index:3; }
+#addClip { position:absolute; right:10px; top:66px; z-index:4; width:44px; height:56px; padding:0; background:#fff; color:#111; font-size:24px; border-radius:10px; }
+.lbl { margin:10px 0 6px; color:var(--muted); font-size:12px; }
+#revBtn.on { background:var(--accent); }
+
+#volRange { width:100%; height:32px; accent-color:var(--accent); touch-action:pan-y; }
+#muteBtn.on { background:var(--accent); }
+
+#trList { flex-wrap:wrap; }
+#trList button { flex:1 0 22%; min-height:44px; font-size:11px; }
+.clip.audio-clip { background-color:#54401a; }
+
+
+#capLang { width:100%; min-height:44px; margin-bottom:10px; }
+.chk { display:flex; align-items:center; gap:8px; margin:0 0 12px; color:var(--muted); }
+
+/* beginner-friendly start screen, toolbar, tips */
+.stage { position:relative; }
+#emptyState { position:absolute; inset:0; z-index:5; display:grid; align-content:center; justify-items:center; gap:12px; padding:16px; background:var(--bg); overflow:auto; }
+#emptyState h1 { font-size:22px; margin:0; }
+.ratios { display:flex; gap:8px; width:100%; max-width:420px; }
+.ratios button { flex:1; display:grid; gap:2px; justify-items:center; min-height:88px; padding:12px 4px; border:2px solid transparent; font-weight:700; }
+.ratios b { font-size:28px; line-height:1; }
+.ratios small { color:var(--muted); font-size:10.5px; font-weight:400; }
+.ratios .on { border-color:var(--accent); background:#2a1a1d; }
+.nav { display:flex; align-items:center; gap:4px; }
+.nav button:not(.play-button) { background:none; padding:0; min-width:38px; font-size:17px; }
+.tip { display:flex; align-items:center; gap:8px; margin:0 12px 6px; padding:6px 6px 6px 12px; background:var(--panel); border-radius:12px; font-size:12px; color:var(--muted); }
+.tip span { flex:1; }
+.tip button { min-height:30px; padding:0 12px; font-size:11px; }
+.lane-hint { position:absolute; left:0; top:50%; transform:translateY(-50%); z-index:1; height:30px; min-height:30px; padding:0 12px; white-space:nowrap; font-size:11px; color:var(--muted); background:transparent; border:1px dashed #4a4a58; border-radius:8px; }
+.dock button { font-size:11px; }
+.dock svg { width:22px; height:22px; }
+#styleList { flex-wrap:wrap; }
+#styleList button { flex:1 0 30%; min-height:44px; }
+
+/* voice-over, templates */
+.dock button.rec { color:#fff; background:var(--accent); }
+.tpl { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+.tpl span { flex:1; font-size:13px; overflow-wrap:anywhere; }
+.tpl button { min-height:38px; }
+#tplSlot { width:100%; min-height:44px; margin-bottom:10px; }
+.wide-btn { width:100%; max-width:420px; min-height:46px; }
+.muted { color:var(--muted); }
+@media (max-width:440px) { .brand-text { display:none; } }
+
+#tl.picking .clip { outline:2px dashed var(--accent); outline-offset:1px; }
+
+/* layout fixes: nothing may be wider than the screen, so the page can never slide sideways */
+html, body { overflow:hidden; overscroll-behavior:none; max-width:100%; }
+body { position:fixed; inset:0; width:100%; }
+.topbar { gap:6px; padding:8px 10px; overflow:hidden; flex-wrap:nowrap; }
+.topbar > * { min-width:0; flex-shrink:1; }
+.topbar button, .topbar select { padding:0 10px; font-size:13px; min-height:38px; white-space:nowrap; }
+.topbar .primary { padding:0 14px; }
+main, .timeline, .dock, .stage { max-width:100%; overflow-x:hidden; }
+.dock { overflow-x:auto; }
+#emptyState { display:flex; flex-direction:column; align-items:center; justify-content:flex-start; overflow-x:hidden; }
+#emptyState > :first-child { margin-top:auto; }
+#emptyState > :last-child { margin-bottom:auto; }
+.rng { width:100%; height:32px; accent-color:var(--accent); touch-action:pan-y; }
+
+
+/* Responsive preview + reliable touch editing for overlay handles */
+.preview-frame { isolation:isolate; }
+.canvas-container { position:absolute !important; inset:0 !important; width:100% !important; height:100% !important; max-width:100% !important; max-height:100% !important; z-index:2; pointer-events:auto; touch-action:none; }
+.canvas-container .lower-canvas, .canvas-container .upper-canvas { width:100% !important; height:100% !important; }
+.canvas-container .upper-canvas { pointer-events:auto; touch-action:none; }
+.home-btn { flex:0 0 36px; width:36px; min-width:36px; padding:0 !important; font-size:21px !important; line-height:1; border:1px solid var(--border); background:var(--panel); }
+.brand[role="button"] { cursor:pointer; }
+.brand[role="button"]:focus-visible { outline:2px solid var(--accent); outline-offset:3px; border-radius:10px; }
+@media (max-width:360px) {
+  .topbar { gap:4px; padding-left:6px; padding-right:6px; }
+  .home-btn { flex-basis:32px; width:32px; min-width:32px; }
+  .topbar button, .topbar select { padding-left:7px; padding-right:7px; font-size:12px; }
+  .topbar .primary { padding-left:9px; padding-right:9px; }
+}
+
+
+/* Shared blocking progress overlay for export, captions, imports, and templates */
+.busy-overlay { position:fixed; inset:0; z-index:1000; display:grid; place-items:center; padding:24px; background:rgba(5,5,8,.84); backdrop-filter:blur(12px); }
+.busy-overlay[hidden] { display:none !important; }
+.busy-card { width:min(100%, 380px); padding:28px 24px 22px; border:1px solid #37313a; border-radius:24px; text-align:center; background:linear-gradient(145deg,#211b22,#121216 72%); box-shadow:0 24px 80px #0009; }
+.busy-symbol { display:grid; place-items:center; width:64px; height:64px; margin:0 auto 18px; border-radius:20px; background:#3a1b21; }
+.busy-spinner { display:block; width:30px; height:30px; border:3px solid #ffffff30; border-top-color:var(--accent); border-right-color:#168BFF; border-radius:50%; animation:busy-spin .8s linear infinite; }
+.busy-eyebrow { margin:0 0 8px; color:#00E7F2; font-size:10px; font-weight:700; letter-spacing:1.8px; }
+.busy-card h2 { margin:0; font-size:21px; line-height:1.25; }
+.busy-card > p:not(.busy-eyebrow) { margin:10px 0 20px; color:var(--muted); font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+#busyProgress { display:block; width:100%; height:7px; overflow:hidden; border:0; border-radius:999px; background:#34323a; color:var(--accent); accent-color:var(--accent); }
+#busyProgress::-webkit-progress-bar { border-radius:999px; background:#34323a; }
+#busyProgress::-webkit-progress-value { border-radius:999px; background:linear-gradient(90deg,#ed1b2a,#00E7F2); transition:width .18s ease; }
+#busyProgress::-moz-progress-bar { border-radius:999px; background:linear-gradient(90deg,#ed1b2a,#00E7F2); }
+#busyProgress:not([value]) { background:linear-gradient(90deg,#29262e,#f01925,#29262e); background-size:200% 100%; animation:busy-sweep 1.3s ease-in-out infinite; }
+.busy-footer { display:flex; justify-content:space-between; gap:12px; margin-top:10px; color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; text-align:left; }
+#busyPercent { color:var(--text); font-weight:700; }
+@keyframes busy-spin { to { transform:rotate(360deg); } }
+@keyframes busy-sweep { from { background-position:100% 0; } to { background-position:-100% 0; } }
+@media (prefers-reduced-motion: reduce) { .busy-spinner, #busyProgress:not([value]) { animation:none; } }
+
+.busy-dismiss { width:100%; min-height:44px; margin-top:18px; background:var(--accent); color:#fff; font-weight:700; }
+.busy-overlay[data-state="error"] .busy-spinner { animation:none; border-color:#00E7F2; }
+.busy-overlay[data-state="error"] .busy-symbol { background:#3a1b21; }
+.busy-overlay[data-state="error"] #busyProgress { display:none; }
+.busy-card > p#busyDetail { max-height:180px; overflow:auto; text-align:left; }
+
+@media (max-width:380px) {
+  .timeline-tools { gap:4px; padding-left:6px; padding-right:6px; }
+  .timeline-tools-title { display:none; }
+  .timeline-zoom { gap:2px; }
+  .timeline-zoom button { flex-basis:27px; width:27px; }
+  .timeline-zoom #tlZoomFit { flex-basis:30px; width:30px; }
+  #tlZoom { min-width:30px; }
+  #tlZoomLabel { min-width:25px; }
+  #copyTillBtn { padding:0 6px; font-size:9px; }
+}
+
+/* Adjustment and overlay-blending controls */
+.apply-all { display:block; width:100%; min-height:36px; margin:2px 0 8px; text-align:left; background:#25252d; border:1px solid var(--border); font-size:12px; }
+.adjust-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px 14px; padding:2px 2px 8px; overflow:visible; }
+.adjust-control { display:flex; flex-direction:column; gap:7px; min-width:0; padding:6px 8px; border-radius:12px; background:#1c1c23; border:1px solid #292932; }
+.adjust-control > span { display:flex; align-items:center; justify-content:space-between; gap:8px; color:var(--text); font-size:11px; }
+.adjust-control output { color:#ff8b91; font-weight:700; font-variant-numeric:tabular-nums; }
+.adjust-control input[type=range] { width:100%; margin:0; accent-color:var(--accent); touch-action:pan-y; }
+.blend-opacity { margin:4px 0 10px; }
+.blend-modes { flex-wrap:wrap; }
+.blend-modes button { flex:1 0 28%; min-height:38px; font-size:11px; }
+.blend-modes button.on { background:var(--accent); }
+.sheet.sheet-tall { max-height:68dvh; }
+@media (max-width:380px) {
+  .adjust-grid { gap:7px; }
+  .adjust-control { padding:6px; }
+  .blend-modes button { flex-basis:44%; }
+}
+
+
+/* Performance diagnostics and cancellation controls for long-running media tasks. */
+.busy-cancel { width:100%; min-height:44px; margin-top:18px; border:1px solid #00E7F2; border-radius:12px; background:#3a1b21; color:#fff; font-weight:700; }
+.busy-cancel:disabled { opacity:.72; cursor:wait; }
+.perf-tools { margin-top:18px; border-top:1px solid var(--line,#37313a); padding-top:12px; }
+.perf-tools > summary { cursor:pointer; min-height:40px; display:flex; align-items:center; font-weight:700; }
+.perf-report { white-space:pre-wrap; overflow-wrap:anywhere; max-height:280px; overflow:auto; padding:12px; border:1px solid var(--line,#37313a); border-radius:10px; background:var(--panel,#121216); color:var(--text,#eee); font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace; user-select:text; }
+
+
+/* Transition preview: two real source clips with an animated incoming layer. */
+.tr-preview { display: grid; gap: 8px; margin: 14px 0 4px; }
+.tr-preview-stage {
+  position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden;
+  border-radius: 12px; background: #090b10; border: 1px solid rgba(255,255,255,.14);
+  isolation: isolate;
+}
+.tr-preview-stage video {
+  position: absolute; inset: 0; display: block; width: 100%; height: 100%;
+  object-fit: contain; background: #090b10;
+}
+#trPreviewBefore { z-index: 1; opacity: 1; }
+#trPreviewAfter { z-index: 2; opacity: 0; }
+.tr-preview-empty {
+  position: absolute; inset: 0; z-index: 3; display: grid; place-items: center;
+  padding: 16px; color: #d4d8e2; text-align: center; font-size: 13px;
+  background: linear-gradient(135deg, rgba(15,18,28,.86), rgba(31,34,49,.8));
+}
+.tr-preview-empty[hidden] { display: none; }
+#trPreviewPlay:disabled { opacity: .48; cursor: not-allowed; }
+
+
+/* COASTLINE PREMIUM — calm editorial surfaces and a focused editing canvas. */
+body { background:var(--bg); color:var(--text); font-family:"Avenir Next",Avenir,"Segoe UI",system-ui,sans-serif; }
+button,select,input { font-family:inherit; }
+button { color:var(--text); background:var(--panel2); border:1px solid var(--border); border-radius:10px; box-shadow:none; transition:background .16s,border-color .16s,color .16s; }
+button:active { transform:none; } button:hover:not(:disabled) { border-color:var(--border-strong); } button:disabled { opacity:.48; }
+:focus-visible { outline:3px solid var(--sky); outline-offset:2px; }
+.topbar { min-height:58px; padding:8px 14px; border-bottom:1px solid var(--border); background:rgba(249,252,253,.96); }
+.brand { gap:10px; } .brand-icon,.empty-logo { background:var(--accent); color:#fff; border-radius:9px; }
+.brand-lockup { display:grid; gap:1px; line-height:1.05; } .brand-lockup small { color:var(--muted); font-size:8px; font-weight:700; letter-spacing:1.25px; }
+.brand-text { color:var(--text); font-weight:750; letter-spacing:-.35px; } .topbar select,select { color:var(--text); background:var(--panel); border:1px solid var(--border); border-radius:9px; }
+.primary,.hm-open-project { background:#168BFF; border-color:#168BFF; color:#fff; font-weight:700; }
+.primary:hover:not(:disabled),.hm-open-project:hover:not(:disabled) { background:#126CC4; border-color:#126CC4; }
+#emptyState { color:var(--muted); } #emptyState h1 { color:var(--text); } #emptyState a,dialog a { color:#168BFF; }
+.import-label { background:#168BFF; color:#fff; border-radius:10px; }
+.preview-frame { background:#dce9ef; border-radius:12px; border:1px solid var(--border-strong); box-shadow:0 8px 24px rgba(25,52,72,.10); }
+#sourceVideo { background:#102635; } #status { color:var(--muted); } #timeDisplay { color:var(--muted); font-variant-numeric:tabular-nums; }
+.nav button,.history button { color:var(--text); background:transparent; border:1px solid transparent; }
+.nav button:hover,.history button:hover { background:var(--panel2); border-color:var(--border); }
+.play-button { background:#168BFF; color:#fff; border:1px solid #168BFF; border-radius:12px; }
+.timeline { background:var(--panel); border:1px solid var(--border); border-bottom:0; border-radius:14px 14px 0 0; }
+.timeline-tools { border-bottom:1px solid var(--border); } .timeline-tools-title,.track-name { color:var(--muted); }
+.timeline-zoom button,#copyTillBtn,#addClip { background:var(--panel2); color:var(--text); border:1px solid var(--border); }
+.track-lane { background:#edf4f7; border:1px solid #d7e5ec; } .empty-track { color:#657d8c; }
+.clip { background:#e8dfe9; border:1px solid #b7a7bd; color:#3b4050; }
+.clip.video-clip { background:#d9ebf4; border-color:#87b9d0; color:#21475d; }
+.clip.audio-clip { background:#f4ead8; border-color:#d7bd8a; color:#624c26; }
+.clip.overlay-clip { background:#f7e8ee; border-color:#dfa9bd; color:#694256; }
+#playhead::-webkit-slider-runnable-track { background:var(--border-strong); } #playhead::-webkit-slider-thumb { background:#168BFF; border-color:#fff; }
+.dock { background:var(--panel); border-top:1px solid var(--border); }
+.dock button { color:var(--muted); border:1px solid transparent; border-radius:9px; }
+.dock button.on { color:var(--text); background:var(--panel2); border-color:var(--border); } .dock svg { width:20px; height:20px; } #deleteBtn { color:#ffb9bc; }
+.sheet-head { color:var(--text); padding-bottom:8px; border-bottom:1px solid var(--border); } .sheet-head button { background:var(--panel2); border:1px solid var(--border); color:var(--text); }
+.lbl,.tip,.perf-tools p { color:var(--muted); }
+.sheet input[type=text],.sheet input[type=number],.sheet select,.sheet textarea { background:#fff; color:var(--text); border:1px solid var(--border-strong); }
+.pills button,.chips button { background:var(--panel2); border:1px solid var(--border); color:var(--text); }
+.pills button.on,.blend-modes button.on { background:rgba(0,231,242,.14); border-color:#00CFEA; color:#F3F7FF; }
+.chips i { background:#e1edf3; border:1px solid var(--border-strong); } .chips .on i { border:2px solid var(--accent); }
+.apply-all { background:var(--panel2); border:1px solid var(--border); color:var(--text); }
+.adjust-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; overflow:visible; }
+.adjust-control { background:#f3f8fa; border:1px solid var(--border); color:var(--text); } .adjust-control>span { color:var(--text); } .adjust-control output { color:#8d4965; }
+.adjust-control input[type=range],#tlZoom,#volRange,#trDuration,#keySim,#keySoft { accent-color:var(--accent); }
+.blend-modes { max-height:none; overflow:visible; } .blend-modes button { background:var(--panel2); border:1px solid var(--border); color:var(--text); }
+.tr-duration { background:var(--panel2); border-color:var(--border); } .tr-duration label,.tr-duration label b { color:var(--text); }
+.tr-preview-stage { background:#e6eff4; border:1px solid var(--border); } .tr-preview-stage video { background:#F3F7FF; }
+.tr-preview-empty { color:#17283C; background:rgba(237,246,250,.94); }
+#busyOverlay { background:rgba(25,52,72,.28); backdrop-filter:blur(3px); }
+.busy-card { background:var(--panel); color:var(--text); border:1px solid var(--border); box-shadow:0 18px 42px rgba(25,52,72,.18); }
+.busy-eyebrow { color:var(--accent); } .busy-symbol { background:var(--panel2); } .busy-spinner { border-color:#cbdde6; border-top-color:var(--accent); }
+#busyProgress,#busyProgress::-webkit-progress-bar { background:#dce8ee; } #busyProgress::-webkit-progress-value,#busyProgress::-moz-progress-bar { background:#168BFF; }
+.busy-footer { color:var(--muted); } #busyPercent { color:var(--text); }
+.busy-cancel { background:var(--rose-soft); border-color:#d7a2b6; color:#ffb9bc; } .busy-dismiss { background:#168BFF; color:#fff; }
+dialog { background:var(--panel); color:var(--text); border:1px solid var(--border); border-radius:14px; box-shadow:0 16px 40px rgba(25,52,72,.18); }
+dialog::backdrop { background:rgba(25,52,72,.32); } dialog ul,dialog p { color:var(--muted); }
+.perf-report { background:#f1f7fa; color:var(--text); border-color:var(--border); } .perf-tools { border-color:var(--border); }
+@media(max-width:620px) { .topbar { gap:6px; padding:7px 9px; } .brand { margin-right:auto; } .brand-lockup small { display:none; } }
+@media(max-height:650px) { .sheet-head { position:sticky; top:-1px; z-index:2; background:var(--panel); } }
+@media(prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; transition-duration:.01ms!important; animation-duration:.01ms!important; } }
+
+
+/* The header uses the same neon aperture artwork as the favicon and Android launcher icon. */
+.brand-icon { background: transparent !important; box-shadow: none !important; padding: 0 !important; overflow: hidden; }
+.brand-icon .brand-mark { display: block; width: 100%; height: 100%; object-fit: contain; }
+
+/* Neon Aperture: restrained studio finish */
+:root { --shadow-soft:0 12px 34px rgba(0,0,0,.24); --focus-ring:rgba(0,231,242,.32); }
+body { background:radial-gradient(ellipse at 52% -35%,rgba(53,116,153,.16),transparent 58%),var(--bg); }
+.topbar { border-bottom:1px solid rgba(105,130,160,.12); background:rgba(9,13,21,.92); }
+.brand-icon,.empty-logo { background:transparent; color:var(--text); }
+.brand-mark { display:block; width:38px; height:38px; object-fit:contain; }
+.brand-text { letter-spacing:-.045em; }
+.primary,.dock button.rec { background:linear-gradient(110deg,#16758F,#6554B8); color:#F8FBFF; box-shadow:0 5px 18px rgba(48,144,177,.16); }
+button:hover { filter:brightness(1.08); }
+:focus-visible { outline:2px solid var(--accent); outline-offset:3px; box-shadow:0 0 0 4px var(--focus-ring); }
+.preview-frame { box-shadow:0 0 0 1px var(--border),var(--shadow-soft); }
+.sheet,.panel,.busy-card { box-shadow:var(--shadow-soft); }
+.clip.video-clip { background:linear-gradient(110deg,#123C55,#174B64); border-color:#287B99; }
+.clip.audio-clip { background:linear-gradient(110deg,#3C326B,#4B3A83); border-color:#7663B6; }
+.clip.ov-clip { background:#34305B; border-color:#8273C5; }
+.ratios .on { border-color:var(--accent); background:rgba(0,231,242,.13); color:var(--text); }
+#emptyState a,dialog a { color:var(--accent); }
+.dock { background:rgba(12,17,27,.96); }
+
+/* MediaY Neon Aperture: shared interaction and selection accents */
+:focus-visible { outline-color:#00E7F2; }
+.primary,.play-button,.busy-dismiss { background:linear-gradient(120deg,#00DDEB,#168BFF 58%,#946CF7); color:#071321; }
+#playhead::-webkit-slider-thumb { background:#00E7F2; }
+#tlZoom { accent-color:#00E7F2; }
+.clip.video-clip { background:linear-gradient(120deg,#075B78,#123C75); border-color:#168BFF; }
+.clip.audio-clip { background:linear-gradient(120deg,#402B78,#6636A0); border-color:#8B5CF6; }
+.clip.ov-clip { background:#572A76; border-color:#C45BFF; }
+
+
+/* Accessibility hardening: readable foregrounds on deliberately light inspector surfaces. */
+.sheet input[type=text],
+.sheet input[type=number],
+.sheet select,
+.sheet textarea {
+  color:#17283C;
+  background:#FFFFFF;
+  border-color:#60758C;
+  caret-color:#17283C;
+}
+.adjust-control {
+  color:#17283C;
+  background:#E8F0F5;
+  border-color:#60758C;
+}
+.adjust-control > span { color:#17283C; }
+.adjust-control output { color:#65304F; }
+.perf-report {
+  color:#17283C;
+  background:#E8F0F5;
+  border-color:#60758C;
+}
+
+
+/* Final Neon Aperture contrast overrides for controls that still inherited legacy colours. */
+#playBtn,
+.nav #playBtn {
+  background:linear-gradient(120deg,#00DDEB,#168BFF 58%,#946CF7);
+  color:#071321;
+}
+.busy-cancel,
+#busyCancel {
+  background:#3B2438;
+  border:1px solid #D98EAF;
+  color:#FFFFFF;
+}
+#deleteBtn {
+  color:#FFFFFF;
+  background:#71304B;
+  border:1px solid #D98EAF;
+}
+.tr-preview-empty,
+#trPreviewEmpty {
+  color:var(--text);
+  background:var(--panel2);
+}
+.clip.video-clip,
+.clip.audio-clip,
+.clip.ov-clip,
+.clip.main,
+.clip.aud,
+.clip.ov {
+  color:#F3F7FF;
+}
+.clip.video-clip *,
+.clip.audio-clip *,
+.clip.ov-clip *,
+.clip.main *,
+.clip.aud *,
+.clip.ov * {
+  color:inherit;
+}
+
+
+/* High-contrast labels on the dark timeline clip surfaces. */
+.clip.video-clip,.clip.audio-clip,.clip.ov-clip,.clip.overlay-clip { color:#F3F7FF; }
+
+
+
+==========================================================================================
+FILE: sw.js
+BLOB SHA: 5d792cf8fdbde3450567dc10475d2436c1cd581e
+==========================================================================================
+// ProjectMedia Y offline shell. Only cache app files that are part of this repository.
+const CACHE = 'pmy-v26';
+const SHELL = ['./', './index.html', './style.css', './setup.css', './mediay-icons.js', './mediay-core.js', './mediay-fast.js', './app.js', './setup.js', './vendor/ffmpeg/ffmpeg.js', './vendor/ffmpeg/814.ffmpeg.js', './vendor/media-libraries/fabric.min.js', './vendor/media-libraries/anime.min.js', './vendor/media-libraries/dexie.min.js'];
+self.addEventListener('install', event => {
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE);
+    await Promise.all(SHELL.map(async path => {
+      try {
+        const response = await fetch(path, { cache: 'reload' });
+        if (response && response.ok) await cache.put(path, response);
+      } catch (_) { /* keep install alive if the host omits an optional route */ }
+    }));
+    await self.skipWaiting();
+  })());
+});
+self.addEventListener('activate', event => {
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.filter(key => key.startsWith('pmy-') && key !== CACHE).map(key => caches.delete(key)));
+    await self.clients.claim();
+  })());
+});
+self.addEventListener('fetch', event => {
+  if (event.request.method !== 'GET') return;
+  event.respondWith((async () => {
+    try {
+      const response = await fetch(event.request);
+      if (response && response.ok) {
+        const copy = response.clone();
+        caches.open(CACHE).then(cache => cache.put(event.request, copy)).catch(() => {});
+      }
+      return response;
+    } catch (_) {
+      return (await caches.match(event.request)) || Response.error();
+    }
+  })());
+});
+
+
+
+==========================================================================================
+FILE: test_ffmpeg_worker.py
+BLOB SHA: 80fd543453502fb454c004ff59b51c0d58441012
+==========================================================================================
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from functools import partial
+from pathlib import Path
+from threading import Thread
+from playwright.sync_api import sync_playwright
+import json
+
+ROOT = Path(__file__).resolve().parent
+handler = partial(SimpleHTTPRequestHandler, directory=str(ROOT))
+server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+Thread(target=server.serve_forever, daemon=True).start()
+base_url = f"http://127.0.0.1:{server.server_port}"
+
+try:
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        page = browser.new_page()
+        page.set_default_timeout(240_000)
+        page.on("pageerror", lambda error: print("PAGE ERROR:", error))
+        page.goto(base_url + "/ffmpeg-worker-smoke.html", wait_until="domcontentloaded")
+        page.wait_for_function("window.testResult !== undefined", timeout=240_000)
+        result = page.evaluate("window.testResult")
+        print(json.dumps(result))
+        browser.close()
+        if not result.get("ok"):
+            raise SystemExit("FFmpeg worker integration test failed: " + str(result.get("error")))
+finally:
+    server.shutdown()
+    server.server_close()
+
+
+
+==========================================================================================
+FILE: test_smoke.py
+BLOB SHA: b64c6419bb8c7492ea52f504e7768cb3fdfb7148
+==========================================================================================
+from pathlib import Path
+from playwright.sync_api import sync_playwright
+
+def assert_computed_contrast(page, selectors, label):
+    report = page.evaluate("""selectors => {
+      const parse = value => {
+        const m = String(value).match(/rgba?\\(\\s*([\\d.]+)[,\\s]+([\\d.]+)[,\\s]+([\\d.]+)(?:\\s*[,/]\\s*([\\d.]+))?\\s*\\)/i);
+        return m ? [Number(m[1]), Number(m[2]), Number(m[3]), m[4] === undefined ? 1 : Number(m[4])] : null;
+      };
+      const luminance = rgb => {
+        const c = rgb.map(v => { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; });
+        return .2126 * c[0] + .7152 * c[1] + .0722 * c[2];
+      };
+      const results = [];
+      for (const selector of selectors) for (const el of document.querySelectorAll(selector)) {
+        const cs = getComputedStyle(el);
+        if (!el.textContent.trim() || el.matches(':disabled') || cs.display === 'none' || cs.visibility === 'hidden' || !el.getClientRects().length) continue;
+        let chain = [], node = el, gradient = false, bg = [8, 13, 24], opacity = 1;
+        while (node) { chain.unshift(node); node = node.parentElement; }
+        for (const item of chain) {
+          const st = getComputedStyle(item);
+          if (item === el && st.backgroundImage !== 'none') { gradient = true; break; }
+          const color = parse(st.backgroundColor);
+          if (color && color[3] > 0) bg = bg.map((v, i) => color[i] * color[3] + v * (1 - color[3]));
+          const nodeOpacity = parseFloat(st.opacity); if (Number.isFinite(nodeOpacity)) opacity *= nodeOpacity;
+        }
+        if (gradient) continue;
+        const fg = parse(cs.color);
+        if (!fg) continue;
+        const alpha = fg[3] * opacity;
+        const visibleFg = fg.slice(0, 3).map((v, i) => v * alpha + bg[i] * (1 - alpha));
+        const ratio = (Math.max(luminance(visibleFg), luminance(bg)) + .05) / (Math.min(luminance(visibleFg), luminance(bg)) + .05);
+        const size = parseFloat(cs.fontSize) || 16, weight = parseInt(cs.fontWeight, 10) || 400;
+        results.push({selector, text:el.textContent.trim().slice(0,32), ratio:Number(ratio.toFixed(2)), threshold:(size >= 24 || (size >= 18.66 && weight >= 700)) ? 3 : 4.5, foreground:cs.color, background:bg.map(v=>Math.round(v))});
+      }
+      return results;
+    }""", selectors)
+    assert report, f"No visible text controls found for {label}"
+    failures = [item for item in report if item["ratio"] + 0.01 < item["threshold"]]
+    assert not failures, f"Computed WCAG contrast failed for {label}: {failures}"
+    print(f"PASS: computed WCAG contrast for {label} ({len(report)} rendered text controls)")
+
+root=Path(__file__).resolve().parent
+html=(root/'index.html').read_text()
+# FFmpeg is covered by a real-origin integration test; stub the vendored script in this DOM-only smoke test.
+html=html.replace('<script src="./vendor/ffmpeg/ffmpeg.js"></script>', '<script>window.FFmpegWASM={};</script>')
+style=(root/'style.css').read_text()
+setup_style=(root/'setup.css').read_text()
+icons=(root/'mediay-icons.js').read_text()
+core=(root/'mediay-core.js').read_text()
+app=(root/'app.js').read_text()
+setup=(root/'setup.js').read_text()
+FABRIC_STUB = r'''window.fabric = (function(){
+  class Obj { constructor(el, props={}) { this.el=el; this.width=(el&&el.width)||100; this.height=(el&&el.height)||100; this.left=0; this.top=0; this.scaleX=1; this.scaleY=1; this.visible=true; this.opacity=1; this.props=props; }
+    set(p){Object.assign(this,p); return this;} getScaledWidth(){return this.width*(this.scaleX||1)} getScaledHeight(){return this.height*(this.scaleY||1)}
+    getBoundingRect(){return {left:this.left||0,top:this.top||0,width:this.getScaledWidth(),height:this.getScaledHeight()}} applyFilters(){}
+  }
+  class Canvas { constructor(el){this.el=el;this.wrapperEl={style:{}};this._objects=[];this.active=null;}
+    on(){} setDimensions(){} clear(){this._objects=[];this.active=null;} requestRenderAll(){} add(o){this._objects.push(o)} remove(o){this._objects=this._objects.filter(x=>x!==o)} getObjects(){return this._objects}
+    getActiveObject(){return this.active} setActiveObject(o){this.active=o} discardActiveObject(){this.active=null} calcOffset(){}
+  }
+  class Textbox extends Obj {constructor(text,p={}){super(null,p);this.text=text;this.width=p.width||100;this.height=50;}}
+  class Image extends Obj {constructor(el,p={}){super(el,p);}}
+  Image.filters={RemoveColor:class{constructor(o){Object.assign(this,o)}}};
+  return {Canvas,Textbox,Image,Shadow:class{constructor(o){Object.assign(this,o)}}};
+})();'''
+ANIME_STUB = r'''window.anime = function(o){if(o&&o.targets&&Array.isArray(o.targets)){Object.assign(o.targets[0],{opacity:1}); if(o.update)o.update();} return {};};'''
+DEXIE_STUB = r'''window.Dexie = class Dexie {
+ constructor(){ const maps={projects:new Map(),media:new Map()}; this.projects={get:async k=>maps.projects.get(k)||null,put:async v=>{maps.projects.set(v.id,structuredClone(v));return v.id},toArray:async()=>Array.from(maps.projects.values()).map(x=>structuredClone(x)),delete:async k=>maps.projects.delete(k)}; this.media={get:async k=>maps.media.get(k)||null,put:async v=>{maps.media.set(v.id,v);return v.id}}; }
+ version(){return {stores:()=>this};}
+};'''
+
+# Build an all-inline version; no network or local file URL is needed for the smoke test.
+html=html.replace('<link rel="manifest" href="./manifest.json">','')
+html=html.replace('<link rel="icon" href="./favicon.svg" type="image/svg+xml">','')
+html=html.replace('<link rel="apple-touch-icon" href="./icon-192.png">','')
+html=html.replace('<link rel="stylesheet" href="./style.css">', '<style>'+style+'</style>')
+html=html.replace('<link rel="stylesheet" href="./setup.css">', '<style>'+setup_style+'</style>')
+for x in ['<link rel="preconnect" href="https://fonts.googleapis.com">','<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">']:
+    html=html.replace(x,'')
+html=html.replace('<script src="./vendor/media-libraries/fabric.min.js" integrity="sha256-uwRC1ppNRnMyD2ibxuFsBaDj8WzPv1UfOU2Qp+fPx3I=" crossorigin="anonymous"></script>', '<script>'+FABRIC_STUB+'</script>')
+html=html.replace('<script src="./vendor/media-libraries/anime.min.js" integrity="sha256-tc4b48P1MPGS4PJXHRlChGCW1mEZy62jS/3JEsSHPzU=" crossorigin="anonymous"></script>', '<script>'+ANIME_STUB+'</script>')
+html=html.replace('<script src="./vendor/media-libraries/dexie.min.js" integrity="sha256-2JhqFVK0mn2MsIWpLGaYWuvzuzO2Stb3uu0kYdm2R/8=" crossorigin="anonymous"></script>', '<script>'+DEXIE_STUB+'</script>')
+
+html=html.replace('<script src="./mediay-icons.js"></script>', '<script>'+icons+'</script>')
+html=html.replace('<script src="./mediay-core.js"></script>', '<script>'+core+'</script>')
+html=html.replace('<script src="./app.js"></script>', '<script>'+app+'</script>')
+html=html.replace('<script src="./setup.js"></script>', '<script>'+setup+'</script>')
+html=html.replace('<script>'+app+'</script>', '<script>try{localStorage.setItem("pmy-consent-v1","yes")}catch(e){}</script><script>'+app+'</script>')
+
+with sync_playwright() as p:
+    browser=p.chromium.launch(headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
+    context=browser.new_context(viewport={'width':390,'height':844}, is_mobile=True, has_touch=True)
+    page=context.new_page(); errors=[]; page.on('pageerror', lambda e: errors.append(str(e)))
+    page.set_content(html, wait_until='domcontentloaded')
+    page.wait_for_selector('#homeScreen:not([hidden])',timeout=10000)
+    if page.locator('#consentDialog[open]').count(): page.locator('#consentBtn').click()
+    assert "async function beginNativeExportService()" in app, 'native export-service start hook is missing'
+    assert "async function endNativeExportService()" in app, 'native export-service cleanup hook is missing'
+    assert "await endNativeExportService()" in app, 'native export service is not stopped during export cleanup'
+    assert "foreground-service notification" in html, 'background export guidance is missing'
+    print('PASS: Android export service hooks and foreground-export guidance are present')
+    assert page.locator('.dock svg[data-mediay-svg]').count() >= 10, 'custom MediaY toolbar SVG icons did not render'
+    assert page.locator('#homeScreen svg[data-mediay-svg]').count() >= 4, 'custom MediaY home SVG icons did not render'
+    assert 'lucide.min.js' not in html and 'fonts.googleapis.com' not in html, 'remote icon/font dependencies remain'
+    print('PASS: home screen appears on startup')
+    print('PASS: original local SVG icons render in home and editor toolbar')
+    page.locator('#hmNew').click(); page.wait_for_selector('#setup:not([hidden])')
+    print('PASS: New project opens setup screen')
+    page.locator('#suStart').click(); page.wait_for_function("document.querySelector('#homeScreen').hidden === true")
+    print('PASS: Start editing closes home/setup and opens editor')
+    page.evaluate("""() => {
+      S.main.push({id:'contrast-clip', mediaId:'missing-contrast', name:'Contrast clip.mp4', in:0, out:5, src:5});
+      select('contrast-clip','main'); t=1; drawTimeline(); refresh(t);
+    }""")
+    assert_computed_contrast(page, ['#status', '#timeDisplay', '.timeline-tools-title', '#tlZoomLabel', '#copyTillBtn', '.dock button', '.track-name', '.timeline-ruler'], 'editor and timeline controls')
+    page.evaluate("S.main=[]; select(null); drawTimeline(); refresh(0);")
+    assert page.locator('#tlZoom').count() == 1, 'timeline zoom slider is missing'
+    assert page.locator('#copyTillBtn').count() == 1, 'Copy till here control is missing'
+    assert page.locator('#adjustBtn').count() == 1, 'Adjust control is missing'
+    assert page.locator('#blendBtn').count() == 1, 'Blending control is missing'
+    transition_count = page.locator('#trList button').count()
+    assert transition_count == 59, f'expected None plus 58 FFmpeg transitions, found {transition_count}'
+    assert page.locator('#trPreviewPlay').count() == 1, 'transition preview control is missing'
+    assert page.locator('#trPreviewStage').count() == 1, 'transition preview stage is missing'
+    assert page.evaluate("typeof previewSelectedTransition === 'function'"), 'transition preview handler is missing'
+    assert "transitionPreviewAbortController" in app, 'transition preview cancellation controller is missing'
+    assert "Timed out loading a clip for the transition preview" in app, 'media metadata load has no bounded timeout'
+    assert "Timed out seeking media for the transition preview" in app, 'media seek has no bounded timeout'
+    assert "setTransitionPreviewVideo(before, previous, Math.max(previous.in, previous.out - seconds * (previous.speed || 1)), token, previewSignal)" in app, 'outgoing preview does not receive cancellation state'
+    assert "setTransitionPreviewVideo(after, c, c.in, token, previewSignal)" in app, 'incoming preview does not receive cancellation state'
+    transition_failure = page.evaluate("""async () => {
+      resetTransitionPreview();
+      const token = transitionPreviewToken;
+      const controller = new AbortController();
+      try {
+        await setTransitionPreviewVideo(document.createElement('video'),
+          {mediaId:'missing-transition-preview-media', in:0, out:1}, 0, token, controller.signal);
+        return '';
+      } catch (error) { return error.message; }
+    }""")
+    assert 'missing' in transition_failure.lower(), transition_failure
+    print('PASS: transition preview has cancellation, bounded media waits, and missing-media failure handling')
+    old_zoom = page.evaluate('PX')
+    page.locator('#tlZoomIn').click()
+    assert page.evaluate('PX') == min(90, old_zoom + 6), 'timeline zoom-in control did not change scale'
+    page.locator('#tlZoomFit').click()
+    print('PASS: timeline zoom controls work and all 58 built-in transitions are offered')
+    page.evaluate("""() => {
+      S.main.push({id:'adjust-test-a', mediaId:'missing-adjust-a', name:'adjust-a.mp4', in:0, out:5, src:5});
+      S.main.push({id:'adjust-test-b', mediaId:'missing-adjust-b', name:'adjust-b.mp4', in:0, out:5, src:5});
+      select('adjust-test-a','main');
+    }""")
+    page.locator('#adjustBtn').click()
+    page.wait_for_timeout(250)
+    assert_computed_contrast(page, ['.adjust-control > span', '.adjust-control output'], 'adjustment labels and values')
+    page.locator('[data-adjust="brightness"]').evaluate("(e)=>{e.value='24';e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}")
+    page.locator('#adjustApplyAll').click()
+    adjust_result = page.evaluate("({a:S.main[0].adjust,b:S.main[1].adjust,filter:adjustmentFilter(S.main[0])})")
+    assert adjust_result['a']['brightness'] == 24 and adjust_result['b']['brightness'] == 24, adjust_result
+    assert 'eq=brightness=0.120' in adjust_result['filter'], adjust_result
+    assert 'fade=type=in:duration=' not in adjust_result['filter'], adjust_result
+    page.evaluate("S.main=[]; select(null); drawTimeline(); refresh(0);")
+    print('PASS: Adjust sliders and Apply to all copy valid export settings to every video clip')
+    page.locator('#homeBtn').click(); page.wait_for_selector('#homeScreen:not([hidden])')
+    print('PASS: Home button returns to dashboard')
+    page.locator('#hmNew').click(); page.locator('#suStart').click(); page.wait_for_function("document.querySelector('#homeScreen').hidden === true")
+    page.evaluate("S.overlays.push({id:'test-overlay', type:'text', text:'TEST', style:0, name:'TEST', layer:1, start:0, dur:3, left:10, top:10, scaleX:1, scaleY:1}); drawTimeline();")
+    hidden=page.locator('#emptyState').evaluate('(e)=>e.hidden')
+    assert hidden, 'empty-state overlay is still visible when an overlay exists'
+    print('PASS: empty-state panel stays hidden once an overlay exists')
+    page.evaluate("""() => {
+      S.overlays.push({id:'blend-test-a', type:'image', mediaId:'missing-blend-a', name:'blend-a.png', start:0, dur:3, layer:2, left:10, top:10, scaleX:1, scaleY:1});
+      S.overlays.push({id:'blend-test-b', type:'image', mediaId:'missing-blend-b', name:'blend-b.png', start:0, dur:3, layer:3, left:20, top:20, scaleX:1, scaleY:1});
+      select('blend-test-a','overlay');
+    }""")
+    page.locator('#blendBtn').click()
+    page.locator('#blendModes [data-blend="multiply"]').click()
+    page.locator('#blendOpacity').evaluate("(e)=>{e.value='55';e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}")
+    page.locator('#blendApplyAll').click()
+    blend_result = page.evaluate("({a:S.overlays.find(o=>o.id==='blend-test-a'),b:S.overlays.find(o=>o.id==='blend-test-b')})")
+    assert blend_result['a']['blend'] == 'multiply' and blend_result['b']['blend'] == 'multiply', blend_result
+    assert abs(blend_result['a']['opacity'] - .55) < .001 and abs(blend_result['b']['opacity'] - .55) < .001, blend_result
+    page.locator('#sheetClose').click()
+    page.evaluate("select(null); drawTimeline();")
+    print('PASS: blending mode and opacity apply to all overlay layers')
+    image_result = page.evaluate("""async () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 2; canvas.height = 2;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#f01925'; ctx.fillRect(0, 0, 2, 2);
+      const png = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+      const id = 'overlay-image-recovery-test';
+      const file = new File([png], 'overlay-test.png', {type:'image/png'});
+      await db.media.put({id, name:file.name, type:file.type, blob:file});
+      files[id] = file;
+      // Simulate a stale/broken object URL while the original bytes remain in IndexedDB.
+      const recovered = await loadOverlayImage('data:image/png;base64,not-a-valid-image', {id:'overlay', mediaId:id, name:file.name});
+      const stored = await db.media.get(id);
+      const ok = recovered.width === 2 && recovered.height === 2 && stored.type === 'image/png';
+      if (urls[id] && urls[id].startsWith('blob:')) URL.revokeObjectURL(urls[id]);
+      return {ok, width:recovered.width, height:recovered.height, storedType:stored.type};
+    }""")
+    assert image_result['ok'], image_result
+    print('PASS: template overlay image can recover from a broken preview URL')
+    page.evaluate("S.main.push({id:'test-video', mediaId:'missing-media', name:'Smoke test video.mp4', in:0, out:5, src:5}); t=7; select('test-video','main');")
+    copy_result = page.evaluate("""async () => {
+      await copyTillPlayhead();
+      return {count:S.main.length, duration:total(), selected:sel && sel.id, enabled:!$('copyTillBtn').disabled};
+    }""")
+    assert copy_result['count'] == 2, copy_result
+    assert abs(copy_result['duration'] - 7) < 0.01, copy_result
+    assert copy_result['selected'] != 'test-video' and not copy_result['enabled'], copy_result
+    print('PASS: Copy till here duplicates a clip up to the playhead')
+    # Regression coverage for the playhead trim actions across the main, audio, and overlay lanes.
+    page.evaluate("""() => {
+      S.main = [
+        {id:'trim-main-start', mediaId:'missing-trim-a', name:'trim-a.mp4', in:0.5, out:8, src:8, speed:2},
+        {id:'trim-main-next', mediaId:'missing-trim-b', name:'trim-b.mp4', in:0, out:5, src:5, speed:1}
+      ];
+      S.audio = [{id:'trim-audio-start', mediaId:'missing-audio', name:'trim-audio.mp3', in:0, out:8, src:8, start:4}];
+      S.overlays = [{id:'trim-overlay', type:'text', text:'T', name:'trim-overlay', start:2, dur:6, layer:1}];
+      sel = {id:'trim-main-start', lane:'main'}; t = 1.25; undoStack = [snap()]; redoStack = []; drawTimeline(); refresh(t); updateChrome();
+    }""")
+    # Let queued browser scroll events run; refresh-driven scrolling must never move the playhead.
+    page.wait_for_timeout(75)
+    playhead_after_refresh = page.evaluate("t")
+    assert abs(playhead_after_refresh - 1.25) < 0.001, playhead_after_refresh
+    assert not page.locator('#trimStartBtn').is_disabled(), 'From here should enable when playhead is inside a selected clip'
+    page.locator('#trimStartBtn').click()
+    main_start = page.evaluate("({in:S.main[0].in, out:S.main[0].out, speed:S.main[0].speed, t, duration:dur(S.main[0])})")
+    assert abs(main_start['in'] - 3.0) < 0.001, main_start
+    assert abs(main_start['duration'] - 2.5) < 0.001, main_start
+    assert abs(main_start['t']) < 0.001, main_start
+    print('PASS: From here trims source time correctly for a speed-adjusted main clip')
+    page.locator('#undoBtn').click()
+    page.wait_for_function("S.main[0].in === 0.5")
+    assert abs(page.evaluate("S.main[0].out") - 8) < 0.001, 'undo should restore the complete original trim range'
+    page.locator('#redoBtn').click()
+    page.wait_for_function("S.main[0].in === 3")
+    assert abs(page.evaluate("dur(S.main[0])") - 2.5) < 0.001, 'redo should restore the trimmed source range'
+    print('PASS: From here trim participates correctly in Undo and Redo')
+
+    page.evaluate("""() => {
+      S.main = [{id:'trim-main-end', mediaId:'missing-trim-c', name:'trim-c.mp4', in:0, out:8, src:8, speed:1}];
+      sel = {id:'trim-main-end', lane:'main'}; t = 3; drawTimeline(); refresh(t); updateChrome();
+    }""")
+    page.locator('#trimEndBtn').click()
+    main_end = page.evaluate("({out:S.main[0].out, duration:dur(S.main[0])})")
+    assert abs(main_end['out'] - 3) < 0.001 and abs(main_end['duration'] - 3) < 0.001, main_end
+    print('PASS: To here trims the main clip ending at the playhead')
+
+    page.evaluate("""() => {
+      S.main = [{id:'timeline-support-audio', mediaId:'missing-support-audio', name:'support.mp4', in:0, out:20, src:20, speed:1}]; sel = {id:'trim-audio-start', lane:'audio'}; t = 6; drawTimeline(); refresh(t); updateChrome();
+    }""")
+    page.locator('#trimStartBtn').click()
+    audio_start = page.evaluate("({in:S.audio[0].in, out:S.audio[0].out, start:S.audio[0].start})")
+    assert abs(audio_start['in'] - 2) < 0.001 and abs(audio_start['start'] - 6) < 0.001, audio_start
+    print('PASS: From here trims audio source and moves its timeline start together')
+
+    page.evaluate("""() => {
+      S.audio = [{id:'trim-audio-end', mediaId:'missing-audio-end', name:'end.mp3', in:0, out:8, src:8, start:1}];
+      S.main = [{id:'timeline-support-audio-end', mediaId:'missing-support-audio-end', name:'support-end.mp4', in:0, out:20, src:20, speed:1}]; sel = {id:'trim-audio-end', lane:'audio'}; t = 4; drawTimeline(); refresh(t); updateChrome();
+    }""")
+    page.locator('#trimEndBtn').click()
+    audio_end = page.evaluate("({out:S.audio[0].out, start:S.audio[0].start})")
+    assert abs(audio_end['out'] - 3) < 0.001 and abs(audio_end['start'] - 1) < 0.001, audio_end
+    print('PASS: To here trims an audio clip without shifting its timeline start')
+
+    page.evaluate("""() => {
+      S.main = [{id:'timeline-support-overlay', mediaId:'missing-support-overlay', name:'support-overlay.mp4', in:0, out:20, src:20, speed:1}]; sel = {id:'trim-overlay', lane:'overlay'}; t = 4; drawTimeline(); refresh(t); updateChrome();
+    }""")
+    page.locator('#trimStartBtn').click()
+    overlay_start = page.evaluate("({start:S.overlays[0].start, dur:S.overlays[0].dur})")
+    assert abs(overlay_start['start'] - 4) < 0.001 and abs(overlay_start['dur'] - 4) < 0.001, overlay_start
+    page.evaluate("t = 5; refresh(t); updateChrome();")
+    page.locator('#trimEndBtn').click()
+    overlay_end = page.evaluate("({start:S.overlays[0].start, dur:S.overlays[0].dur})")
+    assert abs(overlay_end['start'] - 4) < 0.001 and abs(overlay_end['dur'] - 1) < 0.001, overlay_end
+    print('PASS: From here and To here trim overlay timing and duration correctly')
+
+    page.evaluate("""() => {
+      S.main = [{id:'timeline-support-video-overlay', mediaId:'missing-support-video-overlay', name:'support-video-overlay.mp4', in:0, out:20, src:20, speed:1}];
+      S.overlays = [{
+        id:'trim-overlay-video', type:'video', mediaId:'missing-video-overlay',
+        name:'picture-in-picture.mp4', start:2, dur:6, sourceIn:1, srcDur:10, layer:1,
+        el:{currentTime:0, paused:true, play:()=>Promise.resolve(), pause:()=>{}}
+      }];
+      canvas.clear(); canvas.add({pmId:'trim-overlay-video', layer:1, visible:true});
+      sel = {id:'trim-overlay-video', lane:'overlay'}; t = 4; drawTimeline(); refresh(t); updateChrome();
+    }""")
+    page.wait_for_timeout(40)
+    assert not page.locator('#trimStartBtn').is_disabled(), 'video overlay From here should enable inside its source range'
+    page.locator('#trimStartBtn').click()
+    video_overlay_start = page.evaluate("({start:S.overlays[0].start,dur:S.overlays[0].dur,sourceIn:S.overlays[0].sourceIn,previewTime:S.overlays[0].el.currentTime})")
+    assert abs(video_overlay_start['start'] - 4) < 0.001 and abs(video_overlay_start['dur'] - 4) < 0.001, video_overlay_start
+    assert abs(video_overlay_start['sourceIn'] - 3) < 0.001 and abs(video_overlay_start['previewTime'] - 3) < 0.001, video_overlay_start
+    assert abs(page.evaluate("overlaySourceAt({sourceIn:3,start:4},6)") - 5) < 0.001, 'export video source mapping should account for prior source trim'
+    assert abs(page.evaluate("overlaySourceAt({sourceIn:3,start:8},6)") - 3) < 0.001, 'export seek before overlay start should preserve its trimmed source-in'
+    page.evaluate("t = 5; refresh(t); updateChrome();")
+    page.wait_for_timeout(40)
+    page.locator('#trimEndBtn').click()
+    video_overlay_end = page.evaluate("({start:S.overlays[0].start,dur:S.overlays[0].dur,sourceIn:S.overlays[0].sourceIn})")
+    assert abs(video_overlay_end['start'] - 4) < 0.001 and abs(video_overlay_end['dur'] - 1) < 0.001, video_overlay_end
+    assert abs(video_overlay_end['sourceIn'] - 3) < 0.001, video_overlay_end
+    print('PASS: video overlay trimming preserves source-in across preview, export seek, and audio mixing')
+
+    page.evaluate("""() => {
+      S.main = [{id:'trim-one-frame', mediaId:'missing-one-frame', name:'one-frame.mp4', in:0, out:1, src:1, speed:1}];
+      sel = {id:'trim-one-frame', lane:'main'}; t = 1/30; drawTimeline(); refresh(t); updateChrome();
+    }""")
+    page.wait_for_timeout(75)
+    assert not page.locator('#trimStartBtn').is_disabled(), 'trim should allow frame-accurate edits, not require a 0.2 second margin'
+    page.locator('#trimStartBtn').click()
+    one_frame = page.evaluate("({in:S.main[0].in,duration:dur(S.main[0])})")
+    assert abs(one_frame['in'] - (1/30)) < 0.0001, one_frame
+    assert abs(one_frame['duration'] - (29/30)) < 0.0001, one_frame
+    print('PASS: trim precision supports a one-frame edit at 30 fps')
+
+    page.evaluate("""() => {
+      S.main = [{id:'trim-boundary', mediaId:'missing-boundary', name:'boundary.mp4', in:0, out:5, src:5}];
+      sel = {id:'trim-boundary', lane:'main'}; t = 0; drawTimeline(); refresh(t); updateChrome();
+    }""")
+    assert page.locator('#trimStartBtn').is_disabled(), 'From here should disable at the clip boundary'
+    assert page.locator('#trimEndBtn').is_disabled(), 'To here should disable at the clip boundary'
+    page.evaluate("trimSelectionAtPlayhead('start')")
+    boundary = page.evaluate("({in:S.main[0].in,out:S.main[0].out})")
+    assert boundary == {'in':0,'out':5}, boundary
+    print('PASS: trim buttons reject boundary positions that would create zero-length clips')
+
+    # Fast draft is an explicit quality/speed trade-off and must update both export controls.
+    draft_settings = page.evaluate("""() => {
+      const old = {res:EXP.res, fps:EXP.fps};
+      applyExportPreset('draft');
+      const chosen = {
+        res:EXP.res, fps:EXP.fps,
+        resSelected:[...$('resList').children].some(b => +b.dataset.v === 480 && b.classList.contains('on')),
+        fpsSelected:[...$('fpsList').children].some(b => +b.dataset.v === 24 && b.classList.contains('on'))
+      };
+      EXP.res = old.res; EXP.fps = old.fps;
+      for (const b of $('resList').children) b.classList.toggle('on', +b.dataset.v === EXP.res);
+      for (const b of $('fpsList').children) b.classList.toggle('on', +b.dataset.v === EXP.fps);
+      return chosen;
+    }""")
+    assert draft_settings == {'res':480,'fps':24,'resSelected':True,'fpsSelected':True}, draft_settings
+    print('PASS: Fast draft preset switches both resolution and frame rate together')
+
+    caption_chunks = page.evaluate("""async () => {
+      const oldAsr = asr, oldCancel = captionCancelRequested;
+      const oldLang = $('capLang').value, oldTranslate = $('capTr').checked;
+      const sizes = [], progress = [], timestampModes = [];
+      asr = async (pcm, options) => {
+        sizes.push(pcm.length);
+        timestampModes.push(options.return_timestamps);
+        return {chunks:[{text:'alpha beta gamma delta', timestamp:[0,1]}]};
+      };
+      captionCancelRequested = false;
+      try {
+        const drafts = await captionFrom(
+          new Float32Array(CAPTION_SAMPLE_RATE * 61),
+          {start:5, in:0, out:61, sp:2, label:'test media'},
+          p => progress.push(p.percent)
+        );
+        return {
+          sizes, count:drafts.length,
+          starts:drafts.map(x => x.start),
+          durations:drafts.map(x => x.dur),
+          progress, timestampModes
+        };
+      } finally {
+        asr = oldAsr; captionCancelRequested = oldCancel;
+        $('capLang').value = oldLang; $('capTr').checked = oldTranslate;
+      }
+    }""")
+    assert caption_chunks['sizes'] == [30*16000,30*16000,16000], caption_chunks
+    assert caption_chunks['count'] == 3, caption_chunks
+    # Captions lead their speech by 0.04 s and are held 0.14 s after it (mediay-core.js CAPTION), at 2x speed.
+    assert all(abs(a-b) < 0.03 for a,b in zip(caption_chunks['starts'],[5,20,35])), caption_chunks
+    assert all(0.45 < d < 0.65 for d in caption_chunks['durations']), caption_chunks
+    assert caption_chunks['progress'] == [1/3,2/3,1], caption_chunks
+    assert caption_chunks['timestampModes'] == [True,True,True], caption_chunks
+    print('PASS: auto captions stream 30-second inference chunks, use native segment timestamps, and retain source-time offsets')
+
+    word_aligned = page.evaluate("""async () => {
+      const oldAsr = asr, oldCancel = captionCancelRequested;
+      asr = async (_pcm, options) => {
+        if (options.return_timestamps !== true) throw new Error('native segment timestamps were not requested');
+        return {chunks:[
+          {text:'Hello there, this works.', timestamp:[1.0,2.5]},
+          {text:'Again', timestamp:[4.0,4.3]}
+        ]};
+      };
+      captionCancelRequested = false;
+      try {
+        const drafts = await captionFrom(new Float32Array(CAPTION_SAMPLE_RATE*5),
+          {start:10,in:3,out:8,sp:2,label:'word timing test'}, () => {});
+        return drafts.map(x => ({text:x.text,start:x.start,dur:x.dur}));
+      } finally { asr=oldAsr; captionCancelRequested=oldCancel; }
+    }""")
+    assert len(word_aligned) == 2, word_aligned
+    assert word_aligned[0]['text'] == 'Hello there, this works.', word_aligned
+    assert abs(word_aligned[0]['start'] - 10.5) < 0.03, word_aligned
+    assert 0.7 < word_aligned[0]['dur'] < 0.95, word_aligned
+    assert word_aligned[1]['text'] == 'Again', word_aligned
+    assert abs(word_aligned[1]['start'] - 12) < 0.03 and 0.15 < word_aligned[1]['dur'] < 0.3, word_aligned
+    print('PASS: segment-level subtitle timing preserves speech boundaries and clip-speed mapping')
+
+    caption_persistence = page.evaluate("""async () => {
+      const draft = {id:'persist-caption-check',layer:S.nextLayer,type:'text',text:'Saved caption',style:0,start:1.25,dur:.75,top:250};
+      const count = await commitCaptionDrafts([draft]);
+      const checkpoint = await db.projects.get('current');
+      const persisted = checkpoint && normalizeState(checkpoint.state);
+      const stored = persisted && persisted.overlays.find(x => x.id === draft.id);
+      await restore(checkpoint.state);
+      const restored = S.overlays.find(x => x.id === draft.id);
+      return {count, stored:stored && {start:stored.start,dur:stored.dur}, restored:restored && {text:restored.text,start:restored.start,dur:restored.dur}};
+    }""")
+    assert caption_persistence['count'] == 1, caption_persistence
+    assert caption_persistence['stored'] == {'start':1.25,'dur':.75}, caption_persistence
+    assert caption_persistence['restored'] == {'text':'Saved caption','start':1.25,'dur':.75}, caption_persistence
+    print('PASS: generated captions are saved, verified, and survive project-state restoration')
+
+    caption_cancel = page.evaluate("""async () => {
+      const oldAsr = asr, oldCancel = captionCancelRequested;
+      const before = {overlays:S.overlays.length, nextLayer:S.nextLayer};
+      asr = async () => {
+        captionCancelRequested = true;
+        return {chunks:[{text:'should never be committed',timestamp:[0,1]}]};
+      };
+      captionCancelRequested = false;
+      let name = '';
+      try {
+        await captionFrom(new Float32Array(CAPTION_SAMPLE_RATE*30), {start:0,in:0,out:30,sp:1,label:'test'}, () => {});
+      } catch (error) { name = error.name; }
+      finally { asr = oldAsr; captionCancelRequested = oldCancel; }
+      return {name, before, after:{overlays:S.overlays.length,nextLayer:S.nextLayer}};
+    }""")
+    assert caption_cancel['name'] == 'AbortError', caption_cancel
+    assert caption_cancel['before'] == caption_cancel['after'], caption_cancel
+    print('PASS: cancelling caption inference discards uncommitted caption drafts')
+
+    signal_checks = page.evaluate("""() => {
+      const silent = new Float32Array(16000 * 2);
+      const speechLike = new Float32Array(16000);
+      for (let i=0;i<speechLike.length;i++) speechLike[i]=0.08*Math.sin(i*0.1);
+      return {silent:hasAudibleSignal(silent), speech:hasAudibleSignal(speechLike)};
+    }""")
+    assert signal_checks == {'silent':False,'speech':True}, signal_checks
+    print('PASS: silent tracks are skipped before running speech inference')
+
+    perf_contract = page.evaluate("""() => {
+      const metric = createMediaYMetric('Test report', {resolution:480,fps:24});
+      metric.stage('Audio decoding');
+      metric.command('seg0.mp4',12,true);
+      metric.stage('Inference');
+      metric.command('seg1.mp4',8,false);
+      const report = metric.finish('test');
+      recentMediaYMetrics.export = report;
+      renderMediaYPerformanceReport();
+      return {
+        kind:report.kind,
+        outcome:report.outcome,
+        total:report.durationMs,
+        stages:Object.keys(report.stages),
+        clipCommands:report.ffmpegCommands['clip encoding'],
+        visible:$('perfReport').textContent
+      };
+    }""")
+    assert perf_contract['kind'] == 'Test report' and perf_contract['outcome'] == 'test', perf_contract
+    assert perf_contract['total'] >= 0, perf_contract
+    assert 'Audio decoding' in perf_contract['stages'] and 'Inference' in perf_contract['stages'], perf_contract
+    assert perf_contract['clipCommands']['count'] == 2 and perf_contract['clipCommands']['failures'] == 1, perf_contract
+    assert 'Test report report' in perf_contract['visible'] and 'clip encoding' in perf_contract['visible'], perf_contract
+    print('PASS: performance report aggregates stage duration and FFmpeg command timings')
+
+    cancel_button_result = page.evaluate("""() => {
+      captionRunning = true;
+      captionCancelRequested = false;
+      $('busyCancel').hidden = false;
+      updateBusy('Transcribing speech…','test cancellation button',20,'Captions');
+      return {visible:!$('busyCancel').hidden,disabled:$('busyCancel').disabled};
+    }""")
+    assert cancel_button_result == {'visible':True,'disabled':False}, cancel_button_result
+    page.locator('#busyCancel').click()
+    cancel_click_result = page.evaluate("""() => ({
+      requested:captionCancelRequested,
+      disabled:$('busyCancel').disabled,
+      label:$('busyCancel').textContent
+    })""")
+    assert cancel_click_result['requested'] and cancel_click_result['disabled'] and 'Cancellation requested' in cancel_click_result['label'], cancel_click_result
+    page.evaluate("""() => {
+      captionRunning = false; captionCancelRequested = false;
+      $('busyCancel').hidden = true; $('busyOverlay').hidden = true;
+      document.body.removeAttribute('aria-busy');
+    }""")
+    print('PASS: caption cancellation remains clickable above the blocking progress overlay')
+    # ---- background service bookkeeping: one start, one stop, never leaked ----
+    service_calls = page.evaluate("""async () => {
+      const calls = [];
+      const old = window.Capacitor;
+      window.Capacitor = { isNativePlatform: () => true, Plugins: { MediaYExportService: {
+        start: async () => { calls.push('start'); }, stop: async () => { calls.push('stop'); } } } };
+      try {
+        const both = await Promise.all([Background.begin(), Background.begin()]);   // export + captions overlap
+        await Background.end(); const afterFirstEnd = calls.slice();
+        await Background.end(); const afterSecondEnd = calls.slice();
+        await Background.end();                                                      // extra end must be harmless
+        window.Capacitor.Plugins.MediaYExportService.start = async () => { throw new Error('denied'); };
+        const failed = await Background.begin(); await Background.end();
+        return { both, afterFirstEnd, afterSecondEnd, final: calls, failed, active: Background.active };
+      } finally { window.Capacitor = old; }
+    }""")
+    assert service_calls['both'] == [True, True], service_calls
+    assert service_calls['afterFirstEnd'] == ['start'], service_calls          # still held by the second job
+    assert service_calls['afterSecondEnd'] == ['start', 'stop'], service_calls
+    assert service_calls['final'] == ['start', 'stop'], service_calls          # unbalanced end() never stops anything twice
+    assert service_calls['failed'] is False and service_calls['active'] is False, service_calls
+    print('PASS: native background service is started once, stopped once, and survives overlapping jobs and start failures')
+
+    # ---- in-place project refresh (replaces "close and reopen the app and the project") ----
+    refresh_result = page.evaluate("""async () => {
+      const cap = {id:'refresh-check',layer:S.nextLayer,type:'text',caption:true,text:'Refresh me',style:0,start:0.5,dur:1,top:250};
+      await commitCaptionDrafts([cap]);
+      const before = snap();
+      let disposed = 0;
+      asr = async () => ({chunks:[]}); asr.dispose = async () => { disposed++; };
+      const outcome = await reopenProjectInPlace('smoke test');
+      const objects = canvas.getObjects().filter(o => o.text === 'Refresh me').length;
+      return { ok: outcome.ok, same: snap() === before, objects, asrReleased: asr === null, disposed,
+               ffReleased: !ff, overlays: S.overlays.filter(o => o.id === 'refresh-check').length };
+    }""")
+    assert refresh_result['ok'] and refresh_result['same'] and refresh_result['objects'] == 1, refresh_result
+    assert refresh_result['asrReleased'] and refresh_result['disposed'] == 1 and refresh_result['ffReleased'], refresh_result
+    assert refresh_result['overlays'] == 1, refresh_result
+    print('PASS: in-place refresh keeps the project identical, rebuilds the preview, and releases the speech model and video engine')
+
+    guards = page.evaluate("""async () => {
+      const out = {};
+      captionRunning = true; exportInProgress = 0;
+      const before = S.overlays.length;
+      await $('goExport').onclick(null, 0);                      // export must refuse while captions run
+      out.exportBlockedDuringCaptions = !$('busyOverlay') || $('busyOverlay').hidden === true;
+      captionRunning = false;
+      exportInProgress = 1;
+      await $('capGo').onclick();                                // captions must refuse while an export runs
+      out.captionsBlockedDuringExport = !captionRunning;
+      exportInProgress = 0;
+      out.untouched = S.overlays.length === before;
+      return out;
+    }""")
+    assert guards['exportBlockedDuringCaptions'] and guards['captionsBlockedDuringExport'] and guards['untouched'], guards
+    print('PASS: exports and caption generation never run at the same time')
+
+    # ---- speech engine loading: retry, corrupt-cache recovery, honest offline errors, cancellation ----
+    speech = page.evaluate("""async () => {
+      speechRetryDelayMs = 0;
+      const out = {}; const events = [];
+      const realUpdate = updateBusy;
+      const seed = pipelineImpl => speechModules.set('cpu', { env: { backends: { onnx: { wasm: {} } } }, pipeline: pipelineImpl });
+      // (a) two network failures, then success
+      let calls = 0; seed(async () => { calls++; if (calls < 3) throw new Error('Failed to fetch'); return { fake: 'model' }; });
+      captionCancelRequested = false;
+      const model = await createSpeechPipeline(false);
+      out.retry = { calls, ok: model.fake === 'model', backend: asrBackend };
+      // (b) a damaged cached file is deleted once, then the download is retried
+      const deleted = []; const realCaches = window.caches;
+      Object.defineProperty(window, 'caches', { configurable: true, value: { delete: async name => { deleted.push(name); return true; } } });
+      let corruptCalls = 0; seed(async () => { corruptCalls++; if (corruptCalls === 1) throw new Error('protobuf parsing failed'); return { fake: 'model2' }; });
+      const model2 = await createSpeechPipeline(false);
+      out.corrupt = { calls: corruptCalls, deleted, ok: model2.fake === 'model2' };
+      Object.defineProperty(window, 'caches', { configurable: true, value: realCaches });
+      // (c) never reachable: the message must say offline + how big + that it works offline afterwards
+      const onlineDesc = Object.getOwnPropertyDescriptor(Navigator.prototype, 'onLine');
+      Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => false });
+      seed(async () => { throw new Error('Failed to fetch'); });
+      try { await createSpeechPipeline(false); out.offline = 'no error'; } catch (e) { out.offline = e.message; }
+      delete navigator.onLine;
+      // (d) cancellation is honoured before any download is attempted
+      let cancelCalls = 0; seed(async () => { cancelCalls++; return {}; });
+      captionCancelRequested = true;
+      try { await createSpeechPipeline(false); out.cancel = 'no error'; } catch (e) { out.cancel = e.name; }
+      out.cancelCalls = cancelCalls; captionCancelRequested = false;
+      // (e) progress across several files is one overall percentage that never goes backwards
+      const percents = [];
+      updateBusy = (title, detail, pct) => { if (typeof pct === 'number') percents.push(pct); };
+      seed(async (task, id, options) => {
+        const cb = options.progress_callback;
+        cb({ status: 'progress', file: 'a.onnx', loaded: 10, total: 100 }); cb({ status: 'progress', file: 'b.onnx', loaded: 0, total: 100 });
+        cb({ status: 'progress', file: 'a.onnx', loaded: 100, total: 100 }); cb({ status: 'progress', file: 'b.onnx', loaded: 100, total: 100 });
+        return {};
+      });
+      await createSpeechPipeline(false);
+      updateBusy = realUpdate;
+      out.percents = percents.filter(x => x !== 0);
+      speechModules.clear();
+      hideBusy();
+      return out;
+    }""")
+    assert speech['retry'] == {'calls': 3, 'ok': True, 'backend': 'wasm'}, speech
+    assert speech['corrupt']['calls'] == 2 and speech['corrupt']['deleted'] == ['transformers-cache'] and speech['corrupt']['ok'], speech
+    assert 'offline' in speech['offline'] and '40 MB' in speech['offline'], speech
+    assert speech['cancel'] == 'AbortError' and speech['cancelCalls'] == 0, speech
+    assert speech['percents'] == sorted(speech['percents']) and speech['percents'][-1] == 100, speech
+    print('PASS: speech engine loading retries, repairs a damaged cache, reports offline honestly, honours cancel and reports one overall percentage')
+
+    def handle_dialog(d): d.accept('Smoke test project')
+    page.on('dialog',handle_dialog)
+    page.locator('#saveBtn').click(); page.wait_for_timeout(100)
+    page.locator('#homeBtn').click(); page.wait_for_selector('#homeScreen:not([hidden])'); page.wait_for_timeout(100)
+    saved = page.locator('#hmProjectTitle').inner_text()
+    assert 'Smoke test project' in saved, saved
+    print('PASS: Save creates a named project visible as the recent project')
+    page.locator('#hmNew').click(); page.wait_for_selector('#setup:not([hidden])')
+    page.locator('#suStart').click(); page.locator('#homeBtn').click(); page.wait_for_selector('#homeScreen:not([hidden])')
+    library = page.locator('#hmProjectList').inner_text()
+    assert 'Smoke test project' in library, library
+    print('PASS: Starting a new project preserves the previously saved project')
+    print('Page errors:', errors)
+    assert not errors, errors
+    browser.close()
+
