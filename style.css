@@ -435,3 +435,25 @@ button:hover { filter:brightness(1.08); }
 
 /* High-contrast labels on the dark timeline clip surfaces. */
 .clip.video-clip,.clip.audio-clip,.clip.ov-clip,.clip.overlay-clip { color:#F3F7FF; }
+
+
+/* Keep the application viewport locked to the device width. The timeline itself
+   remains horizontally pannable; the surrounding page must never drift sideways. */
+html, body {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+body, main, .topbar, .transport, .timeline, .timeline-tools, .sheet {
+  min-width: 0;
+}
+main > *, .transport > *, .timeline-tools > * {
+  min-width: 0;
+}
+#tl {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
