@@ -10424,3 +10424,156 @@ if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "before"
     create() if mode == "before" else apply()
 
+
+
+========================================================================================
+FILE: scripts/fetch_speech_engine.sh
+BLOB SHA: 64fba5dbb8a879300f5d56df9ab066e1450eb7ed
+========================================================================================
+#!/usr/bin/env bash
+# Downloads the pinned speech engine files (library + ONNX Runtime WASM) from the npm registry and verifies
+# their SHA-256 checksums against vendor/transformers/SHA256SUMS. Nothing is trusted unless the checksums match.
+# Used by the CI workflows before the tests and before the APK web bundle is assembled.
+# Local use:  bash scripts/fetch_speech_engine.sh
+set -euo pipefail
+cd "$(dirname "$0")/.."
+VERSION="2.17.2"
+DEST="vendor/transformers"
+mkdir -p "$DEST"
+if (cd "$DEST" && sha256sum -c SHA256SUMS >/dev/null 2>&1); then
+  echo "Speech engine files already present and verified."
+  exit 0
+fi
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+(cd "$TMP" && npm pack "@xenova/transformers@${VERSION}" --silent >/dev/null && tar -xzf ./*.tgz)
+for f in transformers.min.js ort-wasm-simd.wasm ort-wasm.wasm; do cp "$TMP/package/dist/$f" "$DEST/$f"; done
+cp "$TMP/package/LICENSE" "$DEST/LICENSE"
+(cd "$DEST" && sha256sum -c SHA256SUMS)
+echo "Speech engine ${VERSION} downloaded and verified."
+
+
+
+========================================================================================
+FILE: favicon.svg
+BLOB SHA: d5c75d2c065ffeef23263f30be734413179f4e2a
+========================================================================================
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">MediaY Neon Aperture</title><desc id="desc">A geometric cyan and white Y surrounding a violet camera aperture, with cyan and violet editing timeline bars.</desc>
+<defs>
+ <linearGradient id="cyan" x1="16" y1="10" x2="55" y2="100" gradientUnits="userSpaceOnUse"><stop stop-color="#12F1F4"/><stop offset="1" stop-color="#168BFF"/></linearGradient>
+ <linearGradient id="violet" x1="50" y1="18" x2="108" y2="105" gradientUnits="userSpaceOnUse"><stop stop-color="#B58BFF"/><stop offset="1" stop-color="#713BDB"/></linearGradient>
+ <linearGradient id="white" x1="70" y1="10" x2="111" y2="67" gradientUnits="userSpaceOnUse"><stop stop-color="#FFFFFF"/><stop offset="1" stop-color="#C9D8F2"/></linearGradient>
+ <linearGradient id="stem" x1="52" y1="74" x2="76" y2="120" gradientUnits="userSpaceOnUse"><stop stop-color="#25EAF3"/><stop offset="1" stop-color="#178DFF"/></linearGradient>
+</defs>
+<g stroke-linejoin="round">
+ <!-- Y arms -->
+ <path d="M13 12H34L54 45L45 58L27 37Z" fill="url(#cyan)"/>
+ <path d="M115 12H94L74 45L83 58L101 37Z" fill="url(#white)"/>
+ <!-- segmented left arm -->
+ <path d="M21 25H37L42 32H25Z M29 38H45L49 45H33Z" fill="#071321" opacity=".9"/>
+ <!-- Aperture ring and six blades -->
+ <circle cx="64" cy="51" r="25" fill="#11112D" stroke="#8B5CF6" stroke-width="4"/>
+ <circle cx="64" cy="51" r="19.5" fill="#0B1222" stroke="#20DDF4" stroke-width="1.5"/>
+ <path d="M64 32L77 39L73 53L60 55L52 43Z" fill="#13DCEB"/>
+ <path d="M77 39L83 52L73 64L65 54L73 53Z" fill="#8B5CF6"/>
+ <path d="M83 52L77 66L62 70L64 56L73 64Z" fill="#6C43D5"/>
+ <path d="M77 66L63 70L51 62L62 53L62 70Z" fill="#18A9FF"/>
+ <path d="M51 62L45 49L52 36L62 48L62 53Z" fill="#22E5ED"/>
+ <path d="M45 49L52 36L64 32L62 48L52 53Z" fill="#327CF5"/>
+ <circle cx="64" cy="51" r="5" fill="#0A1220"/>
+ <!-- Y stem -->
+ <path d="M49 72L64 78L79 72L75 120H53Z" fill="url(#stem)"/>
+ <path d="M64 78V119" stroke="#D8FFFF" stroke-width="2" opacity=".75"/>
+ <!-- timeline/editing rails -->
+ <path d="M9 91H43V98H9Z M9 104H43V108H9Z" fill="#10DDEB"/>
+ <path d="M85 91H119V98H85Z M85 104H119V108H85Z" fill="#8B5CF6"/>
+ <path d="M48 91H55V98H48Z M73 91H80V98H73Z" fill="#B58BFF"/>
+</g>
+</svg>
+
+
+========================================================================================
+FILE: manifest.json
+BLOB SHA: d6561a3df65f35d58fde911d19db921e4b26654a
+========================================================================================
+{
+  "id": "./",
+  "name": "MediaY — Video Studio",
+  "short_name": "MediaY",
+  "description": "A focused, mobile-first video editing studio.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#080D18",
+  "theme_color": "#080D18",
+  "categories": [
+    "video",
+    "multimedia",
+    "productivity"
+  ],
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
+
+
+
+========================================================================================
+FILE: mediay-icons.js
+BLOB SHA: 15807bd249981bb89bfc9ea0e42a5f17503e36d1
+========================================================================================
+(function(global){'use strict';
+const paths={
+'image-plus':'<rect x="3" y="3" width="14" height="14" rx="2"/><path d="m4 14 4-4 3 3 2-2 4 4M19 8h4m-2-2v4"/>','replace':'<path d="M20 7h-4a5 5 0 0 0-4 2L9 13a5 5 0 0 1-4 2H3"/><path d="m17 4 3 3-3 3M4 17H8a5 5 0 0 0 4-2l3-4a5 5 0 0 1 4-2h2"/><path d="m7 14-3 3 3 3"/>','music':'<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>','mic':'<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5m-4 0h8"/>','type':'<path d="M4 6V4h16v2M12 4v16M8 20h8"/>','captions':'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 10h4m2 0h4M7 14h3m3 0h4"/>','layers':'<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/>','check':'<path d="m5 12 4 4L19 6"/>','scissors':'<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="m8.2 8.2 12.8 12.8M14 10l7-7M8.2 15.8 12 12"/>','skip-back':'<path d="M5 5v14M19 5 9 12l10 7V5Z"/>','skip-forward':'<path d="M19 5v14M5 5l10 7-10 7V5Z"/>','gauge':'<path d="M4.9 19a9 9 0 1 1 14.2 0"/><path d="m12 13 4-4M7 19h10"/>','volume-2':'<path d="M4 10v4h4l5 4V6l-5 4H4Z"/><path d="M17 9a5 5 0 0 1 0 6m2-9a9 9 0 0 1 0 12"/>','sliders-horizontal':'<path d="M4 6h9m4 0h3M4 12h3m4 0h9M4 18h9m4 0h3"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="15" cy="18" r="2"/>','blend':'<circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/>','arrow-left-right':'<path d="M3 8h18m-4-4 4 4-4 4M21 16H3m4-4-4 4 4 4"/>','palette':'<path d="M12 3a9 9 0 1 0 0 18h1.2a2 2 0 0 0 1.5-3.3 1.7 1.7 0 0 1 1.3-2.8H18a3 3 0 0 0 3-3c0-5-4-8.9-9-8.9Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7.5" r="1"/><circle cx="15" cy="8" r="1"/>','move-horizontal':'<path d="M3 12h18m-4-4 4 4-4 4M7 8l-4 4 4 4"/>','trash-2':'<path d="M3 6h18M8 6V4h8v2m-11 0 1 15h12l1-15M10 11v6m4-6v6"/>','play':'<path d="m8 5 12 7-12 7V5Z"/>','arrow-right':'<path d="M4 12h16m-6-6 6 6-6 6"/>','plus':'<path d="M12 5v14M5 12h14"/>','film':'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16m10-16v16M3 9h4m-4 6h4m10-6h4m-4 6h4"/>','arrow-up-right':'<path d="M7 17 17 7M7 7h10v10"/>'
+};
+function render(root){const scope=root&&root.querySelectorAll?root:document;scope.querySelectorAll('[data-lucide],[data-mediay-icon]').forEach(node=>{if(node.hasAttribute('data-mediay-svg'))return;const name=node.getAttribute('data-mediay-icon')||node.getAttribute('data-lucide'),markup=paths[name];if(!markup)return;const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('width','24');svg.setAttribute('height','24');svg.setAttribute('fill','none');svg.setAttribute('stroke','currentColor');svg.setAttribute('stroke-width','1.75');svg.setAttribute('stroke-linecap','round');svg.setAttribute('stroke-linejoin','round');svg.setAttribute('aria-hidden','true');svg.setAttribute('data-mediay-svg',name);if(node.className&&typeof node.className==='string')svg.setAttribute('class',node.className);svg.innerHTML=markup;node.replaceWith(svg);});}
+global.MediaYIcons=Object.freeze({render,names:Object.freeze(Object.keys(paths))});
+})(window);
+
+
+
+========================================================================================
+FILE: tests/fixtures/offline/models/tiny/config.json
+BLOB SHA: 4540d6124f9c82578d4f9b4e1b78a10c118fc711
+========================================================================================
+{"model_type": "bert", "architectures": ["BertModel"], "hidden_size": 1}
+
+
+========================================================================================
+FILE: vendor/ffmpeg/README.md
+BLOB SHA: 2d761dfb7d7a7bef5e1049bf90605933eff797b7
+========================================================================================
+# MediaY FFmpeg worker assets
+
+These files are the small UMD wrapper and worker chunk from `@ffmpeg/ffmpeg` 0.12.15.
+
+- `ffmpeg.js`: exposes `FFmpegWASM.FFmpeg`.
+- `814.ffmpeg.js`: class worker chunk loaded by the wrapper.
+- `LICENSE`: upstream MIT license.
+
+The wrapper and worker are served from the same origin as MediaY. The upstream wrapper derives the worker URL from the script's own location, so it must be loaded from this local path using a normal script tag; loading it dynamically from a CDN may point the browser at a cross-origin worker URL and fail with an unloaded FFmpeg engine.
+
+The much larger `@ffmpeg/core` JS and WASM files are fetched at runtime from jsDelivr and converted to blob URLs before loading. MediaY's current code pins the core to `@ffmpeg/core@0.12.6`.
+
+Upstream project: https://github.com/ffmpegwasm/ffmpeg.wasm
+Vendored source copy: https://github.com/simonw/tools/tree/befbcec31fc3990b87957a7322da61a6c59708bc/ffmpeg-wasm
+
