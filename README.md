@@ -13,3 +13,10 @@ build run it automatically. Only `SHA256SUMS` and this README are committed.
 
 The speech MODEL (Xenova/whisper-tiny, ~40 MB) is not bundled: it downloads from huggingface.co on first use and is kept in
 the browser Cache Storage (`transformers-cache`).
+
+
+## Android test APKs and signing
+
+The APK produced by the normal GitHub Actions build is a **debug APK** signed with the runner's generated debug keystore. A fresh runner can generate a different key, so debug APKs from separate workflow runs are not guaranteed to install as updates over one another. If Android reports a signature conflict, uninstall the older debug build before installing the newer one; this removes app-private local projects and imported media, so export or back up anything important first.
+
+A production-signed APK can only be built with the project's original signing keystore and credentials. CI success or a successful APK build does not establish that the APK was installed or tested on a physical Android phone.
