@@ -368,7 +368,7 @@ button:hover { filter:brightness(1.08); }
 /* Slider fill/thumb contrast follows the surface: dark accent on light cards, cyan on dark panes. */
 #sheet input[type=range],
 #sheet .adjust-control input[type=range],
-#sheet #blendOpacity { accent-color:#7DD3FC !important; }
+#sheet #blendOpacity { accent-color:#00647A !important; }
 
 .sheet input[type=text],
 .sheet input[type=number],
