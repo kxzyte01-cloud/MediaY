@@ -48,7 +48,7 @@ def assert_computed_contrast(page, selectors, label):
         });
         const ratio = Math.min(...ratios);
         const size = parseFloat(cs.fontSize) || 16, weight = parseInt(cs.fontWeight, 10) || 400;
-        results.push({selector, text:label.slice(0,32), ratio:Number(ratio.toFixed(2)), threshold:(size >= 24 || (size >= 18.66 && weight >= 700)) ? 3 : 4.5, foreground:cs.color, background:bg.map(v=>Math.round(v))});
+        results.push({selector, text:label.slice(0,32), ratio:Number(ratio.toFixed(2)), threshold:(size >= 24 || (size >= 18.66 && weight >= 700)) ? 3 : 4.5, foreground:cs.color, backgrounds:backgrounds.map(bg=>bg.map(v=>Math.round(v)))});
       }
       return results;
     }""", selectors)
