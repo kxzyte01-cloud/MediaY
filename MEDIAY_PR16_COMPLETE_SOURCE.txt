@@ -4787,3 +4787,572 @@ The trim/performance branch may merge after syntax, browser tests, FFmpeg worker
 
 Before calling the latency work complete, run the representative on-device benchmarks above and record the actual timings. Do not publish a release based on a successful build alone.
 
+
+
+==========================================================================================
+FILE: docs/speech-engine-and-offline.md
+BLOB SHA: d237eb8696dd341e9e108192f7af434049c361d5
+==========================================================================================
+# Speech captions: what needs the internet, what is stored where
+
+Automatic captions use three separate pieces. They fail, cache and recover independently.
+
+| Piece | Size | Where it comes from | Stored where | Needs internet? |
+|---|---|---|---|---|
+| Speech library (JavaScript) | 0.9 MB | **Bundled in the app** by the build (fetched from npm and SHA-256 verified by `scripts/fetch_speech_engine.sh`): `vendor/transformers/transformers.min.js` (@xenova/transformers 2.17.2) | Inside the APK | No |
+| Speech runtime (WebAssembly) | 10 MB (+9 MB fallback) | **Bundled in the app**: `vendor/transformers/ort-wasm-simd.wasm`, `ort-wasm.wasm` | Inside the APK | No |
+| Speech model (Whisper tiny) | ~40 MB | huggingface.co, first use only | Browser Cache Storage `transformers-cache` inside the app's private storage | **Yes, once.** Then no, while Android keeps the app's storage |
+
+Optional GPU engine (transformers 3.x, `useWebGPU`): its library is loaded from cdn.jsdelivr.net each time it is used
+(not bundled). If it cannot be loaded, MediaY uses the bundled CPU engine automatically.
+
+## Behaviour
+- **First captions run, online:** library + runtime load from the app, then the 40 MB model downloads with one overall percentage.
+  Files that finished downloading are kept if the download is interrupted; the next attempt continues with the rest.
+- **Later runs, offline:** work, provided the model files are still in the cache. Android can clear them if the user clears app
+  storage or the phone is critically low on space. Then the next run needs the internet once more.
+- **First run, offline:** MediaY says so plainly ("not downloaded yet… connect once, about 40 MB") instead of a technical error.
+- **Damaged cache:** a model file that fails to parse is deleted once and downloaded again automatically.
+- **Retries:** up to 3 model attempts (1.5 s, 3 s back-off). The online fallback copy of the library gets 3 attempts with a fresh URL
+  each time (browsers remember a failed `import()` of the same URL).
+- **Cancel:** checked between attempts and between 30-second audio windows. A download that is already in progress cannot be
+  aborted mid-file (the library offers no way to), so the cancel takes effect when that step ends.
+
+## Other downloads the app makes (not captions)
+- FFmpeg core (31 MB, jsdelivr): downloaded on first export, cached in Cache Storage. **The first export needs the internet.**
+- Fabric, Dexie, anime.js, Lucide and the DM Sans font load from CDNs on every start (the Android shell does not bundle them yet).
+
+## Making captions fully offline later
+Place the Whisper model files under `models/Xenova/whisper-tiny/` in the web bundle and set `env.allowLocalModels = true`,
+`env.localModelPath = './models/'` in `createSpeechPipeline`. This is NOT done: the model could not be downloaded in the
+build environment and it would add ~40 MB to the APK.
+
+## Verification
+`python tests/offline_speech_runtime.py` runs a real ONNX inference through the bundled library and runtime with every
+external request blocked (it also fails if the bundled WASM is removed, which is the failure mode of a library-only bundle).
+
+
+
+==========================================================================================
+FILE: docs/timeline-trim-architecture.md
+BLOB SHA: c2ad42c5f8d962dc2f30ddd582fd3d33502c396c
+==========================================================================================
+# MediaY Timeline Trimming: Architecture and Release Gates
+
+## Current model and user-facing behavior
+
+MediaY currently models the main video lane as a serial list. A clip's timeline duration is derived from `(out - in) / speed`; changing that duration shifts every later main-lane clip because the lane has no explicit gap items. Audio clips and overlays are separate timed items with absolute `start` values. Those independent lanes do not move automatically when the main lane shrinks.
+
+The playhead trim controls intentionally operate on the selected item:
+
+- **From here** keeps the selected item's content from the playhead onward.
+- **To here** keeps its content up to the playhead.
+- Main video maps timeline time to source time using clip speed.
+- Audio trims source `in/out` and adjusts `start` when its lead-in is removed.
+- Image/text overlays adjust timeline `start/dur`.
+- Video overlays also carry `sourceIn` and `srcDur`; preview seeking, FFmpeg input seeking, and overlay-audio mixing must use the same source-time mapping.
+- Trims require at least one project frame (currently 1/30 second) on both sides, pause playback before mutation, and remain undoable/redoable.
+
+This is not yet global ripple editing. Shortening a main clip moves later main clips earlier, while audio and overlays retain their absolute times. The UI and documentation must not imply otherwise.
+
+## Non-negotiable invariants
+
+1. **No invalid ranges.** Each trim must leave a valid, positive source range and at least one project frame on either side. Do not mutate state when validation fails.
+2. **One time mapping per media type.** Keep timeline time and source-media time separate. Playback, thumbnails, preview, audio, and export must agree on the same mapping.
+3. **One edit, one history entry.** A user action either commits completely as one Undo step or leaves the project unchanged.
+4. **Stop playback before structural edits.** Do not let the playback loop and an edit concurrently change the playhead or selected source frame.
+5. **Never confuse viewport state with edit state.** Programmatic timeline scrolling must not trigger a user scrub. The expected scroll change is ignored once; genuine user scrolling continues to seek.
+6. **Preserve source offsets.** When an overlay's timeline start changes, do not silently reset the source frame to zero. Reset `sourceIn` only when the underlying media is replaced.
+7. **Keep the existing project shape readable.** Missing `sourceIn` in older saved projects means zero; normalization must not invalidate older projects.
+
+## Next architecture: transactional edit commands
+
+Before adding ripple, slip, or roll edits, centralize timeline changes behind one edit-command boundary. UI handlers should describe the intent; a shared edit layer should do the work.
+
+Each command should:
+
+1. Capture a stable target ID, lane, playhead frame, and edit mode. Resolve the ID again immediately before applying the edit.
+2. Preflight finite times, media bounds, lane membership, clip duration, and all affected linked items.
+3. Apply changes to a candidate project state, not the live state.
+4. Validate the candidate state across every affected lane.
+5. Commit the full state once, create one Undo entry, then refresh the timeline and preview from the committed state.
+6. If media is missing, a range is invalid, or applying the command throws, discard the candidate state and keep the original edit untouched.
+
+The existing snapshot-based Undo/Redo can remain as the first implementation, but it must only receive a fully validated committed state. The UI must never duplicate edit math across buttons, pointer drags, and keyboard shortcuts.
+
+## Timebase and precision
+
+The current timeline stores seconds as floating-point values and exports at 30 fps. One-frame trim boundaries are the correct immediate minimum, but the durable model should use integer project-frame positions for timeline edits and convert to source seconds at media boundaries. Centralize the project frame rate instead of scattering the number `30` across the application.
+
+For variable-frame-rate media or source media at a different frame rate, timeline frame positions and source-media timestamps must remain distinct. Rounding should happen at well-defined boundaries, not after each edit. Tests should cover speeds below and above 1x, short clips, fractional source times, and clips near source EOF.
+
+## Ripple scope must be explicit
+
+Adopt separate commands rather than one ambiguous “trim” operation:
+
+- **Trim item:** change only the selected item's source in/out or visible duration.
+- **Ripple trim on the selected lane:** remove the selected-lane time and shift later items on that lane.
+- **Ripple all tracks:** remove a project time range and shift other lanes according to an explicit policy.
+- **Slip:** change source in/out together while preserving timeline position and duration.
+- **Roll:** move a cut point between neighboring clips while preserving the combined duration.
+
+Global ripple is not safe to implement by simply subtracting a duration from every later `start`. If the removed interval crosses an audio clip, split it into source ranges before and after the cut. If it crosses a video overlay, split it and preserve `sourceIn` on the right-hand fragment. Image/text overlays can be clipped by visible duration; audio/video items need source-range-aware splitting. Overlay transform, opacity, blend mode, keying, volume, and fade settings must survive both fragments. Provide separate controls for selected-lane ripple and all-track ripple so users can predict whether music and titles move.
+
+## Regression and release gates
+
+Every edit operation needs tests for:
+
+- start/middle/end positions, one-frame fragments, zero/negative/non-finite times, and source EOF;
+- normal speed, slow motion, fast motion, and a previously trimmed clip;
+- video, audio, image, text, and video-overlay items;
+- preview frame, exported video frame, and mixed audio agreeing on the same source time;
+- Undo, Redo, autosave, project restore, and a failed edit leaving no partial mutation;
+- programmatic auto-scroll, zoom, touch scrubbing, and playback not fighting over the playhead;
+- existing export-fade and Adjust/Blending smoke tests remaining green.
+
+Do not merge a trim/ripple change until JavaScript syntax, browser smoke tests, real FFmpeg worker integration, and Android build checks pass. Then verify on a real Android device with a saved project, at least one speed-adjusted clip, one video overlay with audio, and a second export after Undo/Redo. A green browser test alone does not prove the device export path.
+
+## Open-source behavior references
+
+Use these as behavior references, not as code to paste into MediaY:
+
+- Kdenlive documents distinct normal/overwrite/insert modes, plus ripple trim to playhead: https://docs.kdenlive.org/en/user_interface/menu/tool_menu.html and https://docs.kdenlive.org/en/user_interface/editing.html
+- Shotcut distinguishes normal trim from ripple trim and includes explicit “Ripple All Tracks” and “Ripple Markers” settings: https://www.shotcut.org/howtos/keyboard-shortcuts/ and https://www.shotcut.org/notes/configuration/
+
+The product advantage should be predictability: frame-accurate, reversible edits with identical preview/export timing and an explicit answer to “which tracks will move?” before destructive timeline operations.
+
+
+
+==========================================================================================
+FILE: favicon.svg
+BLOB SHA: d5c75d2c065ffeef23263f30be734413179f4e2a
+==========================================================================================
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">MediaY Neon Aperture</title><desc id="desc">A geometric cyan and white Y surrounding a violet camera aperture, with cyan and violet editing timeline bars.</desc>
+<defs>
+ <linearGradient id="cyan" x1="16" y1="10" x2="55" y2="100" gradientUnits="userSpaceOnUse"><stop stop-color="#12F1F4"/><stop offset="1" stop-color="#168BFF"/></linearGradient>
+ <linearGradient id="violet" x1="50" y1="18" x2="108" y2="105" gradientUnits="userSpaceOnUse"><stop stop-color="#B58BFF"/><stop offset="1" stop-color="#713BDB"/></linearGradient>
+ <linearGradient id="white" x1="70" y1="10" x2="111" y2="67" gradientUnits="userSpaceOnUse"><stop stop-color="#FFFFFF"/><stop offset="1" stop-color="#C9D8F2"/></linearGradient>
+ <linearGradient id="stem" x1="52" y1="74" x2="76" y2="120" gradientUnits="userSpaceOnUse"><stop stop-color="#25EAF3"/><stop offset="1" stop-color="#178DFF"/></linearGradient>
+</defs>
+<g stroke-linejoin="round">
+ <!-- Y arms -->
+ <path d="M13 12H34L54 45L45 58L27 37Z" fill="url(#cyan)"/>
+ <path d="M115 12H94L74 45L83 58L101 37Z" fill="url(#white)"/>
+ <!-- segmented left arm -->
+ <path d="M21 25H37L42 32H25Z M29 38H45L49 45H33Z" fill="#071321" opacity=".9"/>
+ <!-- Aperture ring and six blades -->
+ <circle cx="64" cy="51" r="25" fill="#11112D" stroke="#8B5CF6" stroke-width="4"/>
+ <circle cx="64" cy="51" r="19.5" fill="#0B1222" stroke="#20DDF4" stroke-width="1.5"/>
+ <path d="M64 32L77 39L73 53L60 55L52 43Z" fill="#13DCEB"/>
+ <path d="M77 39L83 52L73 64L65 54L73 53Z" fill="#8B5CF6"/>
+ <path d="M83 52L77 66L62 70L64 56L73 64Z" fill="#6C43D5"/>
+ <path d="M77 66L63 70L51 62L62 53L62 70Z" fill="#18A9FF"/>
+ <path d="M51 62L45 49L52 36L62 48L62 53Z" fill="#22E5ED"/>
+ <path d="M45 49L52 36L64 32L62 48L52 53Z" fill="#327CF5"/>
+ <circle cx="64" cy="51" r="5" fill="#0A1220"/>
+ <!-- Y stem -->
+ <path d="M49 72L64 78L79 72L75 120H53Z" fill="url(#stem)"/>
+ <path d="M64 78V119" stroke="#D8FFFF" stroke-width="2" opacity=".75"/>
+ <!-- timeline/editing rails -->
+ <path d="M9 91H43V98H9Z M9 104H43V108H9Z" fill="#10DDEB"/>
+ <path d="M85 91H119V98H85Z M85 104H119V108H85Z" fill="#8B5CF6"/>
+ <path d="M48 91H55V98H48Z M73 91H80V98H73Z" fill="#B58BFF"/>
+</g>
+</svg>
+
+
+==========================================================================================
+FILE: ffmpeg-worker-smoke.html
+BLOB SHA: 8aed7f17b54ea7eb6dc359bdd68ea5b2c2708cd0
+==========================================================================================
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MediaY FFmpeg Worker Smoke Test</title>
+  <script src="./vendor/ffmpeg/ffmpeg.js"></script>
+</head>
+<body>
+  <h1>MediaY FFmpeg worker integration test</h1>
+  <p id="stage">Starting…</p>
+  <pre id="log"></pre>
+  <script>
+  (async () => {
+    const stage = document.querySelector('#stage');
+    const log = document.querySelector('#log');
+    const write = (message) => { stage.textContent = message; log.textContent += message + '\n'; };
+    let ff;
+    try {
+      if (!window.FFmpegWASM || !FFmpegWASM.FFmpeg) throw new Error('Local FFmpeg wrapper did not expose FFmpegWASM.FFmpeg.');
+      const base = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd/';
+      const objectUrls = [];
+      const remoteBlobURL = async (url, mime) => {
+        write('Downloading ' + url.split('/').pop() + '…');
+        const response = await fetch(url, { mode: 'cors', cache: 'force-cache' });
+        if (!response.ok) throw new Error('HTTP ' + response.status + ' loading ' + url);
+        const objectURL = URL.createObjectURL(new Blob([await response.blob()], {type:mime}));
+        objectUrls.push(objectURL);
+        return objectURL;
+      };
+      ff = new FFmpegWASM.FFmpeg();
+      ff.on('log', ({message}) => { if (/error|failed|invalid/i.test(message || '')) log.textContent += String(message) + '\n'; });
+      const coreURL = await remoteBlobURL(base + 'ffmpeg-core.js', 'text/javascript');
+      const wasmURL = await remoteBlobURL(base + 'ffmpeg-core.wasm', 'application/wasm');
+      write('Starting local same-origin worker…');
+      await ff.load({coreURL, wasmURL});
+      if (!ff.loaded) throw new Error('FFmpeg load resolved but the worker is not marked loaded.');
+      write('Rendering a small test MP4…');
+      const code = await ff.exec(['-f','lavfi','-i','color=c=red:s=64x64:r=10:d=0.5','-frames:v','5','-c:v','libx264','-pix_fmt','yuv420p','smoke.mp4']);
+      if (code !== 0) throw new Error('FFmpeg exited with code ' + code);
+      const output = await ff.readFile('smoke.mp4');
+      if (!output || output.length < 100) throw new Error('FFmpeg returned an empty MP4.');
+
+      // Regression test for the exact phone failure: shorthand d=.4 is rejected by this core.
+      write('Testing fade and Adjust filter chain…');
+      const filters = "fps=10,eq=brightness=0.12:contrast=1.2:saturation=1.35,curves=all='0/0 0.25/0.28 0.5/0.5 0.75/0.78 1/1',unsharp=5:5:1.0:5:5:0.0,noise=alls=5:allf=t+u,fade=type=in:duration=0.2,fade=type=out:start_time=0.3:duration=0.2";
+      const effectCode = await ff.exec(['-f','lavfi','-i','color=c=red:s=64x64:r=10:d=0.5','-vf',filters,'-frames:v','5','-c:v','libx264','-pix_fmt','yuv420p','effects-smoke.mp4']);
+      if (effectCode !== 0) throw new Error('FFmpeg could not encode fade + Adjust filter chain (code ' + effectCode + ').');
+      const effects = await ff.readFile('effects-smoke.mp4');
+      if (!effects || effects.length < 100) throw new Error('FFmpeg returned an empty adjusted/faded MP4.');
+
+      write('Testing alpha-masked blend mode…');
+      const canvas = document.createElement('canvas');
+      canvas.width = 64; canvas.height = 64;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = 'rgba(0,255,0,0.5)'; ctx.fillRect(16,16,32,32);
+      const png = await new Promise(resolve => canvas.toBlob(resolve,'image/png'));
+      await ff.writeFile('blend-overlay.png', new Uint8Array(await png.arrayBuffer()));
+      const blendGraph = "[0:v]format=yuv444p,split[baseKeep][baseBlend];[1:v]scale=64:64,format=rgba,split[overlayColor][overlayAlpha];[overlayColor]format=yuv444p[overlayYuv];[baseBlend][overlayYuv]blend=all_mode=multiply:all_opacity=1[blendFrame];[overlayAlpha]alphaextract,format=yuv444p,geq=lum='(lum(X,Y)-16)*255/219':cb='(lum(X,Y)-16)*255/219':cr='(lum(X,Y)-16)*255/219'[blendMask];[baseKeep][blendFrame][blendMask]maskedmerge=enable='between(t,0,0.5)'[out]";
+      const blendCode = await ff.exec(['-f','lavfi','-i','color=c=red:s=64x64:r=10:d=0.5','-i','blend-overlay.png','-filter_complex',blendGraph,'-map','[out]','-c:v','libx264','-pix_fmt','yuv420p','-t','0.5','blend-smoke.mp4']);
+      if (blendCode !== 0) throw new Error('FFmpeg could not render the masked overlay blend mode (code ' + blendCode + ').');
+      const blendOut = await ff.readFile('blend-smoke.mp4');
+      if (!blendOut || blendOut.length < 100) throw new Error('FFmpeg returned an empty blended MP4.');
+      window.testResult = {ok:true, bytes:output.length, adjustedBytes:effects.length, blendedBytes:blendOut.length, message:'same-origin worker encoded MP4, fade/Adjust effects, and alpha-masked blend'};
+      write('PASS — encoded base, fade/Adjust, and blend test videos.');
+      ff.terminate();
+      objectUrls.forEach(URL.revokeObjectURL);
+    } catch (error) {
+      window.testResult = {ok:false, error:String(error && error.message || error), stack:String(error && error.stack || '')};
+      write('FAIL — ' + window.testResult.error);
+      try { if (ff) ff.terminate(); } catch (_) {}
+    }
+  })();
+  </script>
+</body>
+</html>
+
+
+
+==========================================================================================
+FILE: index.html
+BLOB SHA: 5a9da196b79e07d4cee5fb5395461a47a7c740ec
+==========================================================================================
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#080D18">
+  <meta name="description" content="MediaY — a focused video studio for editing on your device.">
+  <title>MediaY — Video Studio</title>
+  <link rel="manifest" href="./manifest.json">
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./setup.css">
+  <script src="./vendor/media-libraries/fabric.min.js" integrity="sha256-uwRC1ppNRnMyD2ibxuFsBaDj8WzPv1UfOU2Qp+fPx3I=" crossorigin="anonymous"></script>
+  <script src="./vendor/media-libraries/anime.min.js" integrity="sha256-tc4b48P1MPGS4PJXHRlChGCW1mEZy62jS/3JEsSHPzU=" crossorigin="anonymous"></script>
+  <script src="./vendor/media-libraries/dexie.min.js" integrity="sha256-2JhqFVK0mn2MsIWpLGaYWuvzuzO2Stb3uu0kYdm2R/8=" crossorigin="anonymous"></script>
+  <script src="./vendor/ffmpeg/ffmpeg.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <button id="homeBtn" class="home-nav" type="button" aria-label="Open project home">⌂ <span>Home</span></button>
+    <div class="brand"><span class="brand-icon"><img class="brand-mark" src="./favicon.svg" alt="" aria-hidden="true"></span><span class="brand-lockup"><strong class="brand-text">MediaY</strong><small>VIDEO STUDIO</small></span></div>
+    <select id="aspectRatio" aria-label="Aspect ratio">
+      <option value="9:16">9:16</option><option value="16:9">16:9</option><option value="1:1">1:1</option>
+    </select>
+    <button id="tplBtn">Templates</button>
+    <button id="saveBtn">Save</button>
+    <button id="exportBtn" class="primary">Export</button>
+  </header>
+
+  <main>
+    <div class="stage">
+      <div id="emptyState">
+        <div class="empty-logo"><img src="./favicon.svg" alt="" aria-hidden="true"></div>
+        <h1>What are you making?</h1>
+        <label for="mediaInput" class="primary import-label">Import media</label>
+        <small class="muted">You can pick several videos at once.</small>
+        <button id="tplStart" class="wide-btn">Use my template</button>
+        <a href="./legal.html">Terms, privacy &amp; licenses</a>
+      </div>
+      <div id="previewFrame" class="preview-frame">
+        <video id="sourceVideo" playsinline preload="metadata"></video>
+        <canvas id="overlayCanvas"></canvas>
+        
+      </div>
+    </div>
+    <input id="tplInput" type="file" accept="video/*" multiple hidden>
+    <input id="repInput" type="file" hidden>
+    <input id="mediaInput" type="file" accept="video/*,image/*,audio/*" multiple hidden>
+    <p id="status" role="status">Ready to create.</p>
+
+    <section class="transport">
+      <div class="nav"><button id="toStart" aria-label="Go to start">⏮</button><button id="playBtn" class="play-button" aria-label="Play">▶</button><button id="toEnd" aria-label="Go to end">⏭</button></div>
+      <span id="timeDisplay">00:00 / 00:00</span>
+      <div class="history"><button id="undoBtn" aria-label="Undo">↶</button><button id="redoBtn" aria-label="Redo">↷</button></div>
+    </section>
+    <div id="tipBar" class="tip"><span id="tip"></span><button id="tipOff">Got it</button></div>
+    <section class="timeline">
+      <div class="timeline-tools" role="toolbar" aria-label="Timeline tools">
+        <span class="timeline-tools-title">TIMELINE</span>
+        <div class="timeline-zoom" aria-label="Timeline zoom controls">
+          <button id="tlZoomOut" type="button" aria-label="Zoom out timeline" title="Zoom out">−</button>
+          <input id="tlZoom" type="range" min="6" max="90" step="3" value="30" aria-label="Timeline zoom">
+          <button id="tlZoomIn" type="button" aria-label="Zoom in timeline" title="Zoom in">+</button>
+          <button id="tlZoomFit" type="button" aria-label="Fit timeline" title="Fit timeline">Fit</button>
+          <span id="tlZoomLabel" aria-live="polite">1.0×</span>
+        </div>
+        <button id="copyTillBtn" type="button" title="Repeat the selected item from its end to the playhead" aria-label="Copy the selected item until the playhead" disabled>Copy till here</button>
+      </div>
+      <div id="tl"><div class="pad"></div><div id="tlInner"></div><div class="pad"></div></div>
+      <i class="cursor"></i>
+      <button id="addClip" aria-label="Add media">＋</button>
+      <input id="playhead" type="range" min="0" max="1000" value="0" hidden>
+    </section>
+  </main>
+
+  <div id="sheet" class="sheet" hidden>
+    <div class="sheet-head"><span data-pane="fx">Filters</span><span data-pane="adjust" hidden>Adjust</span><span data-pane="blend" hidden>Blending</span><span data-pane="text" hidden>Text</span><span data-pane="export" hidden>Export</span><span data-pane="speed" hidden>Speed</span><span data-pane="vol" hidden>Volume</span><span data-pane="tr" hidden>Transition</span><span data-pane="cap" hidden>Auto captions</span><span data-pane="tpl" hidden>Templates</span><span data-pane="key" hidden>Chroma key</span><button id="sheetClose" aria-label="Close">✕</button></div>
+    <div data-pane="fx"><div id="fxList" class="chips"></div></div>
+    <div data-pane="adjust" hidden>
+      <button id="adjustApplyAll" class="apply-all" type="button">▱ Apply to all</button>
+      <div id="adjustControls" class="adjust-grid">
+        <label class="adjust-control"><span>Brightness <output id="adjustValBrightness">0</output></span><input type="range" min="-100" max="100" step="1" value="0" data-adjust="brightness"></label>
+        <label class="adjust-control"><span>Contrast <output id="adjustValContrast">100%</output></span><input type="range" min="0" max="200" step="1" value="100" data-adjust="contrast"></label>
+        <label class="adjust-control"><span>Saturation <output id="adjustValSaturation">100%</output></span><input type="range" min="0" max="200" step="1" value="100" data-adjust="saturation"></label>
+        <label class="adjust-control"><span>Sharpen <output id="adjustValSharpen">0</output></span><input type="range" min="0" max="100" step="1" value="0" data-adjust="sharpen"></label>
+        <label class="adjust-control"><span>Highlights <output id="adjustValHighlights">0</output></span><input type="range" min="-100" max="100" step="1" value="0" data-adjust="highlights"></label>
+        <label class="adjust-control"><span>Shadows <output id="adjustValShadows">0</output></span><input type="range" min="-100" max="100" step="1" value="0" data-adjust="shadows"></label>
+        <label class="adjust-control"><span>Grain <output id="adjustValGrain">0</output></span><input type="range" min="0" max="100" step="1" value="0" data-adjust="grain"></label>
+      </div>
+      <p class="lbl">Adjustments update the preview where supported and are rendered during export. Use Apply to all to copy these settings to every video clip.</p>
+    </div>
+    <div data-pane="blend" hidden>
+      <button id="blendApplyAll" class="apply-all" type="button">▱ Apply to all</button>
+      <label class="adjust-control blend-opacity"><span>Opacity <output id="blendOpacityLabel">100%</output></span><input id="blendOpacity" type="range" min="0" max="100" step="1" value="100"></label>
+      <p class="lbl">Blending mode</p>
+      <div id="blendModes" class="pills blend-modes"></div>
+      <p class="lbl">Blend modes and opacity are included in the exported video for picture overlays.</p>
+    </div>
+    <div data-pane="export" hidden>
+      <p class="lbl">Quality: 1080p is best for YouTube. 2K and 4K are very heavy for a phone, so the app drops to 1080p if it runs out of memory</p><div id="resList" class="pills"></div>
+      <p class="lbl">Frames per second</p><div id="fpsList" class="pills"></div>
+      <button id="fastExportBtn" class="wide" type="button">⚡ Fast draft — 480p / 24 fps</button>
+      <p class="lbl">Fast draft prioritizes speed for review copies. Choose a higher resolution or frame rate for your final export.</p>
+      <label class="lbl" style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" id="useDeviceEncoder" checked><span>Use this phone’s video encoder when supported. Turn off to always use the standard encoder.</span></label>
+      <button id="goExport" class="primary wide">Export video</button>
+      <details class="perf-tools">
+        <summary>Performance diagnostics</summary>
+        <p class="lbl">Reports separate initialization, encoding, transitions, audio mixing, save, model load, audio decode, and inference time. Copy this report when reporting a slowdown.</p>
+        <button id="copyPerfReport" class="wide" type="button">Copy performance report</button>
+        <pre id="perfReport" class="perf-report" aria-live="polite">No diagnostics yet. Run an export or generate captions to record stage timings on this device.</pre>
+      </details>
+          <p class="lbl">Android exports use an ongoing foreground-service notification so rendering can continue when you switch apps. Device power settings may still interrupt processing; return to MediaY if progress pauses. In browser builds, keep this tab open.</p>
+    </div>
+    <div data-pane="key" hidden>
+      <div id="keyColors" class="pills"><button data-c="#00ff00">Green</button><button data-c="#0000ff">Blue</button><button data-c="off">Off</button></div>
+      <label class="chk">Other color <input id="keyCol" type="color" value="#00ff00"></label>
+      <p class="lbl">Strength: how much of that color to remove</p>
+      <input id="keySim" class="rng" type="range" min="0" max="100" value="50">
+      <p class="lbl">Edge softness (used in the exported video)</p>
+      <input id="keySoft" class="rng" type="range" min="0" max="100" value="20">
+      <p class="lbl">Put your green-screen video on the Overlay layer, resize it, and it plays over the main video.</p>
+    </div>
+    <div data-pane="tpl" hidden>
+      <div id="tplList"></div>
+      <p class="lbl">Save this project as a template</p>
+      <input id="tplName" type="text" maxlength="40" placeholder="Template name, e.g. Evening News">
+      <p class="lbl">Which clip is the news video? It is swapped each time you use the template.</p>
+      <select id="tplSlot" aria-label="News video clip"></select>
+      <button id="tplSave" class="primary wide">Save template</button>
+    </div>
+    <div data-pane="cap" hidden>
+      <select id="capLang" aria-label="Spoken language"></select>
+      <label class="chk"><input type="checkbox" id="capTr"> Translate speech to English</label>
+      <button id="capGo" class="primary wide">Generate captions</button>
+      <button id="capCancelBtn" class="wide" type="button" hidden>Request cancellation</button>
+      <p class="lbl">Speech is processed in 30-second chunks with progress. Cancelling before completion leaves the project unchanged. The model (about 40 MB) downloads on the first run.</p>
+      <p class="lbl">Long or high-resolution videos can still take time to decode. The model is cached by the browser when supported.</p>
+    </div>
+    <div data-pane="tr" hidden>
+      <p class="lbl">Choose a transition for the cut before this clip. Includes the full built-in FFmpeg transition set.</p>
+      <div id="trList" class="pills"></div>
+      <div class="tr-duration"><label for="trDuration">Duration <b id="trDurationLabel">0.5 s</b></label><input id="trDuration" class="rng" type="range" min="0.2" max="1.5" step="0.1" value="0.5"></div>
+      <section class="tr-preview" aria-label="Transition visual preview">
+        <div id="trPreviewStage" class="tr-preview-stage">
+          <video id="trPreviewBefore" muted playsinline preload="metadata" aria-label="Previous clip preview"></video>
+          <video id="trPreviewAfter" muted playsinline preload="metadata" aria-label="Incoming clip preview"></video>
+          <div id="trPreviewEmpty" class="tr-preview-empty">Select the second clip and choose a transition above.</div>
+        </div>
+        <button id="trPreviewPlay" class="wide" type="button" disabled>Preview selected transition</button>
+        <p id="trPreviewStatus" class="lbl" aria-live="polite">Choose a transition to see an animated preview using your clips.</p>
+      </section>
+      <p class="lbl">The preview shows the selected transition with your clips. Complex FFmpeg effects may look slightly different in the exported MP4.</p>
+    </div>
+    <div data-pane="vol" hidden>
+      <input id="volRange" type="range" min="0" max="200" value="100" aria-label="Volume">
+      <p id="volLbl" class="lbl">100%</p>
+      <button id="muteBtn" class="wide">Mute clip</button>
+    </div>
+    <div data-pane="speed" hidden>
+      <div id="speedList" class="pills"></div>
+      <button id="revBtn" class="wide">⟲ Reverse clip</button>
+    </div>
+    <div data-pane="text" hidden>
+      <input id="textInput" type="text" maxlength="200" placeholder="Type your caption">
+      <div id="styleList" class="pills"></div>
+      <button id="addText" class="primary wide">Add to video</button>
+    </div>
+  </div>
+
+  <nav id="dockMain" class="dock" aria-label="Add to your video">
+    <button id="importBtn"><i data-lucide="image-plus"></i>Media</button>
+    <button id="repMain"><i data-lucide="replace"></i>Replace</button>
+    <button id="audioBtn"><i data-lucide="music"></i>Audio</button>
+    <button id="voiceBtn"><i data-lucide="mic"></i>Voice</button>
+    <button id="textBtn" data-sheet="text"><i data-lucide="type"></i>Text</button>
+    <button id="capBtn" data-sheet="cap"><i data-lucide="captions"></i>Captions</button>
+    <button id="pipBtn"><i data-lucide="layers"></i>Overlay</button>
+  </nav>
+  <nav id="dockEdit" class="dock" aria-label="Edit the selected clip" hidden>
+    <button id="doneBtn"><i data-lucide="check"></i>Done</button>
+    <button id="splitBtn" data-for="main"><i data-lucide="scissors"></i>Split</button>
+    <button id="trimStartBtn" data-for="main audio overlay" title="Keep the selected clip from the playhead through its end"><i data-lucide="skip-back"></i>From here</button>
+    <button id="trimEndBtn" data-for="main audio overlay" title="Keep the selected clip from its start up to the playhead"><i data-lucide="skip-forward"></i>To here</button>
+    <button id="speedBtn" data-sheet="speed" data-for="main"><i data-lucide="gauge"></i>Speed</button>
+    <button id="volBtn" data-sheet="vol" data-for="main audio"><i data-lucide="volume-2"></i>Volume</button>
+    <button id="fxBtn" data-sheet="fx" data-for="main"><i data-lucide="palette"></i>Filters</button>
+    <button id="adjustBtn" data-sheet="adjust" data-for="main"><i data-lucide="sliders-horizontal"></i>Adjust</button>
+    <button id="blendBtn" data-sheet="blend" data-for="overlay"><i data-lucide="blend"></i>Blending</button>
+    <button id="fadeBtn" data-for="main audio"><i data-lucide="blend"></i>Fade</button>
+    <button id="trBtn" data-sheet="tr" data-for="main"><i data-lucide="arrow-left-right"></i>Transition</button>
+    <button id="styleBtn" data-sheet="text" data-for="overlay"><i data-lucide="type"></i>Edit text</button>
+    <button id="keyBtn" data-sheet="key" data-for="overlay"><i data-lucide="palette"></i>Chroma key</button>
+    <button id="fitBtn" data-for="overlay audio"><i data-lucide="move-horizontal"></i>Whole video</button>
+    <button id="replBtn" data-for="main audio overlay"><i data-lucide="replace"></i>Replace</button>
+    <button id="deleteBtn" data-for="main audio overlay"><i data-lucide="trash-2"></i>Delete</button>
+  </nav>
+
+  <dialog id="consentDialog" aria-labelledby="consentTitle">
+    <h2 id="consentTitle">Before you start</h2>
+    <ul>
+      <li>Only edit photos, videos, music and fonts you own or have permission to use.</li>
+      <li>Your media and projects stay on this device. Nothing is uploaded.</li>
+      <li>The app is provided “as is”, without warranty. Keep a copy of videos you export.</li>
+    </ul>
+    <p><a href="./legal.html">Read the terms, privacy policy and licenses</a></p>
+    <button id="consentBtn" class="primary">I agree and continue</button>
+  </dialog>
+
+  <div id="busyOverlay" class="busy-overlay" role="dialog" aria-modal="true" aria-labelledby="busyTitle" aria-describedby="busyDetail" hidden>
+    <div class="busy-card">
+      <div class="busy-symbol" aria-hidden="true"><span class="busy-spinner"></span></div>
+      <p class="busy-eyebrow">MEDIAY WORKSPACE</p>
+      <h2 id="busyTitle">Working on your video…</h2>
+      <p id="busyDetail">Please keep this tab open while the task finishes.</p>
+      <progress id="busyProgress" max="100"></progress>
+      <div class="busy-footer"><span id="busyStage">Processing</span><span id="busyPercent"></span></div>
+      <button id="busyCancel" class="busy-cancel" type="button" hidden>Request cancellation</button>
+      <button id="busyDismiss" class="busy-dismiss" type="button" hidden>Close</button>
+    </div>
+  </div>
+
+  <script src="./mediay-icons.js"></script>
+  <script src="./mediay-core.js"></script>
+  <script src="./mediay-fast.js"></script>
+  <script src="./app.js"></script>
+  <script src="./setup.js"></script>
+  <script>if (window.MediaYIcons) MediaYIcons.render(document);</script>
+</body>
+</html>
+
+
+
+==========================================================================================
+FILE: legal.html
+BLOB SHA: 06802130f5293f571e79b574fdba8860762e4a9e
+==========================================================================================
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#EDF6FA">
+  <title>Terms, Privacy and Licenses — ProjectMedia Y</title>
+  <style>
+    :root { color-scheme:light; --bg:#edf6fa; --panel:#f9fcfd; --text:#193448; --muted:#536d7d; --border:#cfdee6; --accent:#1e668c; }
+    body { margin:0; background:var(--bg); color:var(--text); font:16px/1.6 "Avenir Next",Avenir,"Segoe UI",system-ui,sans-serif; }
+    main { max-width:680px; margin:auto; padding:20px 18px 48px; }
+    h1 { font-size:24px; margin:8px 0 4px; } h2 { font-size:19px; margin:32px 0 8px; padding-top:8px; border-top:1px solid var(--border); }
+    h3 { font-size:16px; margin:18px 0 4px; } p,li { color:var(--muted); } a { color:var(--accent); }
+    .meta { color:var(--muted); font-size:14px; } table { width:100%; border-collapse:collapse; font-size:14px; display:block; overflow-x:auto; background:var(--panel); }
+    th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
+  </style>
+</head>
+<body>
+<main>
+  <p><a href="./index.html">← Back to the app</a></p>
+  <h1>Terms, Privacy and Licenses</h1>
+  <p class="meta">ProjectMedia Y · Last updated October 19, 2026</p>
+
+  <h2>1. Terms of use</h2>
+  <p>By using ProjectMedia Y (“the app”) you agree to these terms. If you don’t agree, please don’t use the app.</p>
+  <h3>Your media is your responsibility</h3>
+  <p>Only import, edit and export photos, videos, music, fonts and other material that you own or have permission to use. You are responsible for what you create and share, including respecting copyright, trademark, privacy and publicity rights of others. Do not use the app to make content that is illegal, harassing, hateful, sexually exploits minors, or that impersonates a real person in a misleading or harmful way.</p>
+  <h3>No warranty</h3>
+  <p>The app is provided “as is” and “as available”, without warranties of any kind, express or implied, including fitness for a particular purpose and non-infringement. Video editing is demanding on phones, and the app may crash, run slowly or produce unexpected results.</p>
+  <h3>Limit of liability</h3>
+  <p>To the fullest extent permitted by law, the developer is not liable for any indirect, incidental or consequential damages, or for lost data, lost projects or lost profits arising from your use of the app. Projects are stored only in your browser or app storage and can be lost if you clear site data or uninstall the app, so keep a copy of anything important.</p>
+  <h3>Changes</h3>
+  <p>These terms may be updated. The date above shows the latest version. Nothing in these terms limits rights you have under consumer law that cannot be excluded.</p>
+
+  <h2>2. Privacy policy</h2>
+  <p><b>Short version:</b> the app has no accounts, no ads, no analytics and no servers that receive your media. Your videos stay on your device.</p>
+  <h3>What stays on your device</h3>
+  <p>Media you choose and your project data are saved in your browser’s local storage (IndexedDB) on your device. They are never uploaded to the developer. Exporting happens on your device. The app only reads files you pick yourself.</p>
+  <h3>What the app does not collect</h3>
+  <p>The developer does not collect your name, email, location, contacts, advertising ID or usage statistics. The microphone is used only while you record a voice-over; the recording is saved on your device and is not uploaded. Templates you save also stay on your device.</p>
+  <h3>Third-party services that see your IP address</h3>
+  <p>To start, the app downloads code and fonts from public content delivery networks: cdnjs.cloudflare.com, unpkg.com, cdn.jsdelivr.net, fonts.googleapis.com and fonts.gstatic.com. If you use Auto captions, the app also downloads a speech model once from huggingface.co and its content network; your audio is processed on your device and is not uploaded. The web version is also hosted on GitHub Pages. These providers can see your IP address and basic device information when your device requests files, under their own privacy policies.</p>
+  <h3>Deleting your data</h3>
+  <p>Clear the site data for this app in your browser, or uninstall the Android app, to remove saved projects and media.</p>
+  <h3>Children</h3>
+  <p>The app is not directed at children. A parent or guardian should supervise use by minors.</p>
+
+  <h2>3. Copyright complaints</h2>
+  <p>The app does not host, publish or share user content, so it has no content to remove. If you believe the app itself copies your work, open an issue at <a href="https://github.com/kxzyte01-cloud/Media-Y/issues">github.com/kxzyte01-cloud/Media-Y/issues</a> and describe what you found.</p>
+
+  <h2>4. Open-source licenses</h2>
+  <p>The source code of ProjectMedia Y is available at <a href="https://github.com/kxzyte01-cloud/Media-Y">github.com/kxzyte01-cloud/Media-Y</a> under the license shown in that repository. The app uses these third-party components, each under its own license:</p>
+  <table>
+    <tr><th>Component</th><th>License</th></tr>
+    <tr><td>Fabric.js</td><td>MIT</td></tr>
+    <tr><td>Anime.js</td><td>MIT</td></tr>
+    <tr><td>Dexie.js</td><td>Apache License 2.0</td></tr>
+    <tr><td>MediaY original SVG icons</td><td>Original in-project artwork</td></tr>
+    <tr><td>FFmpeg.wasm wrapper (@ffmpeg/ffmpeg, @ffmpeg/util)</td><td>MIT</td></tr>
+    <tr><td>FFmpeg.wasm core (@ffmpeg/core), loaded when you export</td><td>FFmpeg and its libraries, including x264, under GPL version 2 or later. Source: <a href="https://ffmpeg.org/download.html">ffmpeg.org</a> and <a href="https://github.com/ffmpegwasm/ffmpeg.wasm-core">ffmpeg.wasm-core</a></td></tr>
+    <tr><td>Transformers.js (@xenova/transformers) and ONNX Runtime Web, used for Auto captions</td><td>Apache License 2.0 and MIT</td></tr>
+    <tr><td>Whisper speech model (OpenAI), ONNX conversion by Xenova</td><td>MIT</td></tr>
+    
+    <tr><td>Capacitor (Android app wrapper)</td><td>MIT</td></tr>
+  </table>
+  <p>“FFmpeg” is a trademark of Fabrice Bellard. All other names and trademarks belong to their owners. ProjectMedia Y is not affiliated with or endorsed by them.</p>
+</main>
+</body>
+</html>
+
