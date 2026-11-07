@@ -9456,3 +9456,971 @@ test('undo and redo schedule persistence only after the restored state is applie
   assert.match(redo, /if \(!redoStack\.length\) return/);
 });
 
+
+
+========================================================================================
+FILE: tests/offline_speech_runtime.py
+BLOB SHA: f3162249b562e2e8a886c6a5fbc20e0bb0609e9b
+========================================================================================
+"""Proves the bundled speech engine (JavaScript + WASM runtime) runs with ALL external network blocked.
+
+It loads vendor/transformers/transformers.min.js in headless Chromium, points the library at the bundled WASM
+runtime exactly as app.js does (SPEECH_ENGINE.bundledRuntime), and runs a real ONNX inference on a tiny local model.
+The Whisper model weights are NOT bundled, so this does not claim offline captions: only that the code and runtime
+need no internet. Run: python tests/offline_speech_runtime.py
+"""
+import base64, functools, http.server, json, re, socketserver, subprocess, threading
+from pathlib import Path
+from playwright.sync_api import sync_playwright
+
+ROOT = Path(__file__).resolve().parent.parent
+FETCH = ROOT / "scripts" / "fetch_speech_engine.sh"
+MODEL_B64 = ROOT / "tests" / "fixtures" / "offline" / "tiny_model.onnx.b64"   # a 343-byte ONNX graph, stored as text
+PAGE = """<!doctype html><meta charset=utf-8><script type="module">
+window.run = async () => {
+  const { env, AutoModel, Tensor } = await import('/vendor/transformers/transformers.min.js');
+  env.allowLocalModels = true; env.allowRemoteModels = false; env.useBrowserCache = false;
+  env.localModelPath = '/tests/fixtures/offline/models/';
+  env.backends.onnx.wasm.wasmPaths = new URL('/vendor/transformers/', location.href).href;   // same as app.js
+  env.backends.onnx.wasm.numThreads = 1;
+  const model = await AutoModel.from_pretrained('tiny', { quantized: false });
+  const ids = a => new Tensor('int64', BigInt64Array.from(a.map(BigInt)), [1, a.length]);
+  const out = await model({ input_ids: ids([1, 2, 3]), attention_mask: ids([1, 1, 1]), token_type_ids: ids([0, 0, 0]) });
+  return Array.from(out.last_hidden_state.data);
+};
+window.ready = true;
+</script>"""
+
+class Quiet(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *args): pass
+
+def main():
+    # The third-party speech engine files are not committed; they are downloaded and checksum-verified on demand.
+    subprocess.run(["bash", str(FETCH)], check=True, cwd=ROOT)
+    app_js = (ROOT / "app.js").read_text()
+    assert re.search(r"wasmPaths\s*=\s*absoluteUrl\(SPEECH_ENGINE\.bundledRuntime\)", app_js) and "bundledRuntimeAvailable" in app_js, "app.js must point the library at the bundled WASM runtime"
+    socketserver.TCPServer.allow_reuse_address = True
+    server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), functools.partial(Quiet, directory=str(ROOT)))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    external = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        context = browser.new_context(service_workers="block")
+        def block(route):
+            external.append(route.request.url); route.abort()
+        context.route(lambda url: not url.startswith(base), block)
+        context.route(base + "/__offline_test__.html", lambda route: route.fulfill(body=PAGE, content_type="text/html"))
+        model_bytes = base64.b64decode(MODEL_B64.read_text())
+        context.route(base + "/tests/fixtures/offline/models/tiny/onnx/model.onnx", lambda route: route.fulfill(body=model_bytes, content_type="application/octet-stream"))
+        page = context.new_page()
+        page.goto(base + "/__offline_test__.html")
+        page.wait_for_function("window.ready === true")
+        values = page.evaluate("window.run()")
+        browser.close()
+    server.shutdown()
+    assert values == [2, 3, 4], values
+    assert not external, f"the speech engine tried to use the internet: {external}"
+    print("PASS: bundled speech engine runs a real ONNX inference with all external network blocked", json.dumps(values))
+
+if __name__ == "__main__":
+    main()
+
+
+
+========================================================================================
+FILE: tests/streaming-export.test.js
+BLOB SHA: 055c5c3c75ffd2c6b7956fc2d389a51300efbbb4
+========================================================================================
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+const app = read('app.js');
+const wrapperPath = path.join(__dirname, '..', 'vendor/ffmpeg/ffmpeg.js');
+const workerPath = path.join(__dirname, '..', 'vendor/ffmpeg/814.ffmpeg.js');
+const ffmpegVendorMissing = !fs.existsSync(wrapperPath) || !fs.existsSync(workerPath);
+const workflow = read('.github/workflows/built.yml');
+
+test('native export reads FFmpeg output in bounded worker chunks', () => {
+  assert.ok(app.includes('async function saveFFmpegOutput(engine, outputPath)'));
+  assert.ok(app.includes('engine.readFileChunk(outputPath, offset, CHUNK_BYTES)'));
+  assert.ok(app.includes('nativeStore.appendStreamingChunk({ data: btoa(binary) })'));
+  const nativePath = app.slice(app.indexOf('async function saveFFmpegOutput'), app.indexOf('// Native Android builds register'))
+    .split('if (!nativeStore')[0];
+  assert.ok(!nativePath.includes('readFile(outputPath)'));
+});
+
+test('FFmpeg wrapper and worker expose the bounded range-read protocol', { skip: ffmpegVendorMissing ? 'Vendor FFmpeg bundle is omitted from this source snapshot' : false }, () => {
+  const wrapper = fs.readFileSync(wrapperPath, 'utf8');
+  const worker = fs.readFileSync(workerPath, 'utf8');
+  assert.ok(wrapper.includes('readFileChunk='));
+  assert.ok(worker.includes('case t.READ_FILE_CHUNK'));
+});
+
+test('Android MediaStore streaming export publishes only after all chunks are written', () => {
+  const begin = workflow.indexOf('public synchronized void beginStreamingSave');
+  const append = workflow.indexOf('public synchronized void appendStreamingChunk');
+  const finish = workflow.indexOf('public synchronized void finishStreamingSave');
+  assert.ok(begin >= 0 && append > begin && finish > append);
+  const section = workflow.slice(begin, workflow.indexOf('public void saveVideo(PluginCall call)', finish));
+  assert.ok(section.includes('MediaStore.Video.Media.IS_PENDING, 1'));
+  assert.ok(section.includes('MediaStore.Video.Media.IS_PENDING, 0'));
+  assert.ok(section.includes('abortStreamingSaveInternal()'));
+  assert.ok(section.includes('4 * 1024 * 1024'));
+});
+
+test('build workflow uses read-only contents permission and isolates release write permission', () => {
+  assert.ok(workflow.includes('permissions:\n  contents: read'));
+  assert.ok(workflow.includes('  build:\n    permissions:\n      contents: read'));
+  assert.ok(workflow.includes('  publish-release:\n'));
+  assert.ok(workflow.includes('      contents: write'));
+  assert.ok(workflow.includes('actions/download-artifact@v4'));
+});
+
+test('FFmpeg worker range reads return exact offsets and end-of-file metadata', { skip: !fs.existsSync(workerPath) ? 'Vendor FFmpeg worker is omitted from this source snapshot' : false }, async () => {
+  const worker = fs.readFileSync(workerPath, 'utf8');
+  const bytes = new TextEncoder().encode('abcdefghij');
+  const messages = [];
+  const fakeFS = {
+    stat: () => ({ size: bytes.length }),
+    open: filePath => ({ path: filePath }),
+    read: (stream, target, targetOffset, length, position) => {
+      const count = Math.max(0, Math.min(length, bytes.length - position));
+      target.set(bytes.subarray(position, position + count), targetOffset);
+      return count;
+    },
+    close: () => {}
+  };
+  const self = {
+    postMessage: message => messages.push(message),
+    createFFmpegCore: async () => ({
+      FS: fakeFS,
+      setLogger: () => {},
+      setProgress: () => {}
+    })
+  };
+  const context = {
+    self,
+    importScripts: () => {},
+    btoa: value => Buffer.from(value, 'binary').toString('base64'),
+    Uint8Array, Math, Number, Error, Promise, JSON
+  };
+  vm.runInNewContext(worker, context);
+  await self.onmessage({ data: { id: 1, type: 'LOAD', data: { coreURL: 'core.js', wasmURL: 'core.wasm' } } });
+  await self.onmessage({ data: { id: 2, type: 'READ_FILE_CHUNK', data: { path: 'final.mp4', offset: 5, length: 4 } } });
+  await self.onmessage({ data: { id: 3, type: 'READ_FILE_CHUNK', data: { path: 'final.mp4', offset: 8, length: 4 } } });
+  const first = messages.find(message => message.id === 2).data;
+  const last = messages.find(message => message.id === 3).data;
+  assert.equal(new TextDecoder().decode(first.data), 'fghi');
+  assert.equal(first.bytesRead, 4);
+  assert.equal(first.fileSize, 10);
+  assert.equal(first.eof, false);
+  assert.equal(new TextDecoder().decode(last.data), 'ij');
+  assert.equal(last.bytesRead, 2);
+  assert.equal(last.eof, true);
+});
+
+
+
+========================================================================================
+FILE: tests/vendor-integrity.test.js
+BLOB SHA: e1c668ee023bfa0ba62abd4978ba2de151ff5fd1
+========================================================================================
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+
+const root = path.join(__dirname, '..');
+const expected = {
+  'fabric.min.js': 'uwRC1ppNRnMyD2ibxuFsBaDj8WzPv1UfOU2Qp+fPx3I=',
+  'anime.min.js': 'tc4b48P1MPGS4PJXHRlChGCW1mEZy62jS/3JEsSHPzU=',
+  'dexie.min.js': '2JhqFVK0mn2MsIWpLGaYWuvzuzO2Stb3uu0kYdm2R/8='
+};
+
+const missingVendorFiles = Object.keys(expected).filter(name => !fs.existsSync(path.join(root, 'vendor', 'media-libraries', name)));
+
+test('vendored editor libraries match their pinned SHA-256 SRI digests', { skip: missingVendorFiles.length ? 'Vendor editor libraries are omitted from this source snapshot: ' + missingVendorFiles.join(', ') : false }, () => {
+  for (const [name, digest] of Object.entries(expected)) {
+    const file = path.join(root, 'vendor', 'media-libraries', name);
+    const actual = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('base64');
+    assert.equal(actual, digest, name + ' integrity mismatch');
+  }
+});
+
+
+
+========================================================================================
+FILE: test_ffmpeg_worker.py
+BLOB SHA: 80fd543453502fb454c004ff59b51c0d58441012
+========================================================================================
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from functools import partial
+from pathlib import Path
+from threading import Thread
+from playwright.sync_api import sync_playwright
+import json
+
+ROOT = Path(__file__).resolve().parent
+handler = partial(SimpleHTTPRequestHandler, directory=str(ROOT))
+server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+Thread(target=server.serve_forever, daemon=True).start()
+base_url = f"http://127.0.0.1:{server.server_port}"
+
+try:
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        page = browser.new_page()
+        page.set_default_timeout(240_000)
+        page.on("pageerror", lambda error: print("PAGE ERROR:", error))
+        page.goto(base_url + "/ffmpeg-worker-smoke.html", wait_until="domcontentloaded")
+        page.wait_for_function("window.testResult !== undefined", timeout=240_000)
+        result = page.evaluate("window.testResult")
+        print(json.dumps(result))
+        browser.close()
+        if not result.get("ok"):
+            raise SystemExit("FFmpeg worker integration test failed: " + str(result.get("error")))
+finally:
+    server.shutdown()
+    server.server_close()
+
+
+
+========================================================================================
+FILE: test_smoke.py
+BLOB SHA: b64c6419bb8c7492ea52f504e7768cb3fdfb7148
+========================================================================================
+from pathlib import Path
+from playwright.sync_api import sync_playwright
+
+def assert_computed_contrast(page, selectors, label):
+    report = page.evaluate("""selectors => {
+      const parse = value => {
+        const m = String(value).match(/rgba?\\(\\s*([\\d.]+)[,\\s]+([\\d.]+)[,\\s]+([\\d.]+)(?:\\s*[,/]\\s*([\\d.]+))?\\s*\\)/i);
+        return m ? [Number(m[1]), Number(m[2]), Number(m[3]), m[4] === undefined ? 1 : Number(m[4])] : null;
+      };
+      const luminance = rgb => {
+        const c = rgb.map(v => { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; });
+        return .2126 * c[0] + .7152 * c[1] + .0722 * c[2];
+      };
+      const results = [];
+      for (const selector of selectors) for (const el of document.querySelectorAll(selector)) {
+        const cs = getComputedStyle(el);
+        if (!el.textContent.trim() || el.matches(':disabled') || cs.display === 'none' || cs.visibility === 'hidden' || !el.getClientRects().length) continue;
+        let chain = [], node = el, gradient = false, bg = [8, 13, 24], opacity = 1;
+        while (node) { chain.unshift(node); node = node.parentElement; }
+        for (const item of chain) {
+          const st = getComputedStyle(item);
+          if (item === el && st.backgroundImage !== 'none') { gradient = true; break; }
+          const color = parse(st.backgroundColor);
+          if (color && color[3] > 0) bg = bg.map((v, i) => color[i] * color[3] + v * (1 - color[3]));
+          const nodeOpacity = parseFloat(st.opacity); if (Number.isFinite(nodeOpacity)) opacity *= nodeOpacity;
+        }
+        if (gradient) continue;
+        const fg = parse(cs.color);
+        if (!fg) continue;
+        const alpha = fg[3] * opacity;
+        const visibleFg = fg.slice(0, 3).map((v, i) => v * alpha + bg[i] * (1 - alpha));
+        const ratio = (Math.max(luminance(visibleFg), luminance(bg)) + .05) / (Math.min(luminance(visibleFg), luminance(bg)) + .05);
+        const size = parseFloat(cs.fontSize) || 16, weight = parseInt(cs.fontWeight, 10) || 400;
+        results.push({selector, text:el.textContent.trim().slice(0,32), ratio:Number(ratio.toFixed(2)), threshold:(size >= 24 || (size >= 18.66 && weight >= 700)) ? 3 : 4.5, foreground:cs.color, background:bg.map(v=>Math.round(v))});
+      }
+      return results;
+    }""", selectors)
+    assert report, f"No visible text controls found for {label}"
+    failures = [item for item in report if item["ratio"] + 0.01 < item["threshold"]]
+    assert not failures, f"Computed WCAG contrast failed for {label}: {failures}"
+    print(f"PASS: computed WCAG contrast for {label} ({len(report)} rendered text controls)")
+
+root=Path(__file__).resolve().parent
+html=(root/'index.html').read_text()
+# FFmpeg is covered by a real-origin integration test; stub the vendored script in this DOM-only smoke test.
+html=html.replace('<script src="./vendor/ffmpeg/ffmpeg.js"></script>', '<script>window.FFmpegWASM={};</script>')
+style=(root/'style.css').read_text()
+setup_style=(root/'setup.css').read_text()
+icons=(root/'mediay-icons.js').read_text()
+core=(root/'mediay-core.js').read_text()
+app=(root/'app.js').read_text()
+setup=(root/'setup.js').read_text()
+FABRIC_STUB = r'''window.fabric = (function(){
+  class Obj { constructor(el, props={}) { this.el=el; this.width=(el&&el.width)||100; this.height=(el&&el.height)||100; this.left=0; this.top=0; this.scaleX=1; this.scaleY=1; this.visible=true; this.opacity=1; this.props=props; }
+    set(p){Object.assign(this,p); return this;} getScaledWidth(){return this.width*(this.scaleX||1)} getScaledHeight(){return this.height*(this.scaleY||1)}
+    getBoundingRect(){return {left:this.left||0,top:this.top||0,width:this.getScaledWidth(),height:this.getScaledHeight()}} applyFilters(){}
+  }
+  class Canvas { constructor(el){this.el=el;this.wrapperEl={style:{}};this._objects=[];this.active=null;}
+    on(){} setDimensions(){} clear(){this._objects=[];this.active=null;} requestRenderAll(){} add(o){this._objects.push(o)} remove(o){this._objects=this._objects.filter(x=>x!==o)} getObjects(){return this._objects}
+    getActiveObject(){return this.active} setActiveObject(o){this.active=o} discardActiveObject(){this.active=null} calcOffset(){}
+  }
+  class Textbox extends Obj {constructor(text,p={}){super(null,p);this.text=text;this.width=p.width||100;this.height=50;}}
+  class Image extends Obj {constructor(el,p={}){super(el,p);}}
+  Image.filters={RemoveColor:class{constructor(o){Object.assign(this,o)}}};
+  return {Canvas,Textbox,Image,Shadow:class{constructor(o){Object.assign(this,o)}}};
+})();'''
+ANIME_STUB = r'''window.anime = function(o){if(o&&o.targets&&Array.isArray(o.targets)){Object.assign(o.targets[0],{opacity:1}); if(o.update)o.update();} return {};};'''
+DEXIE_STUB = r'''window.Dexie = class Dexie {
+ constructor(){ const maps={projects:new Map(),media:new Map()}; this.projects={get:async k=>maps.projects.get(k)||null,put:async v=>{maps.projects.set(v.id,structuredClone(v));return v.id},toArray:async()=>Array.from(maps.projects.values()).map(x=>structuredClone(x)),delete:async k=>maps.projects.delete(k)}; this.media={get:async k=>maps.media.get(k)||null,put:async v=>{maps.media.set(v.id,v);return v.id}}; }
+ version(){return {stores:()=>this};}
+};'''
+
+# Build an all-inline version; no network or local file URL is needed for the smoke test.
+html=html.replace('<link rel="manifest" href="./manifest.json">','')
+html=html.replace('<link rel="icon" href="./favicon.svg" type="image/svg+xml">','')
+html=html.replace('<link rel="apple-touch-icon" href="./icon-192.png">','')
+html=html.replace('<link rel="stylesheet" href="./style.css">', '<style>'+style+'</style>')
+html=html.replace('<link rel="stylesheet" href="./setup.css">', '<style>'+setup_style+'</style>')
+for x in ['<link rel="preconnect" href="https://fonts.googleapis.com">','<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">']:
+    html=html.replace(x,'')
+html=html.replace('<script src="./vendor/media-libraries/fabric.min.js" integrity="sha256-uwRC1ppNRnMyD2ibxuFsBaDj8WzPv1UfOU2Qp+fPx3I=" crossorigin="anonymous"></script>', '<script>'+FABRIC_STUB+'</script>')
+html=html.replace('<script src="./vendor/media-libraries/anime.min.js" integrity="sha256-tc4b48P1MPGS4PJXHRlChGCW1mEZy62jS/3JEsSHPzU=" crossorigin="anonymous"></script>', '<script>'+ANIME_STUB+'</script>')
+html=html.replace('<script src="./vendor/media-libraries/dexie.min.js" integrity="sha256-2JhqFVK0mn2MsIWpLGaYWuvzuzO2Stb3uu0kYdm2R/8=" crossorigin="anonymous"></script>', '<script>'+DEXIE_STUB+'</script>')
+
+html=html.replace('<script src="./mediay-icons.js"></script>', '<script>'+icons+'</script>')
+html=html.replace('<script src="./mediay-core.js"></script>', '<script>'+core+'</script>')
+html=html.replace('<script src="./app.js"></script>', '<script>'+app+'</script>')
+html=html.replace('<script src="./setup.js"></script>', '<script>'+setup+'</script>')
+html=html.replace('<script>'+app+'</script>', '<script>try{localStorage.setItem("pmy-consent-v1","yes")}catch(e){}</script><script>'+app+'</script>')
+
+with sync_playwright() as p:
+    browser=p.chromium.launch(headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
+    context=browser.new_context(viewport={'width':390,'height':844}, is_mobile=True, has_touch=True)
+    page=context.new_page(); errors=[]; page.on('pageerror', lambda e: errors.append(str(e)))
+    page.set_content(html, wait_until='domcontentloaded')
+    page.wait_for_selector('#homeScreen:not([hidden])',timeout=10000)
+    if page.locator('#consentDialog[open]').count(): page.locator('#consentBtn').click()
+    assert "async function beginNativeExportService()" in app, 'native export-service start hook is missing'
+    assert "async function endNativeExportService()" in app, 'native export-service cleanup hook is missing'
+    assert "await endNativeExportService()" in app, 'native export service is not stopped during export cleanup'
+    assert "foreground-service notification" in html, 'background export guidance is missing'
+    print('PASS: Android export service hooks and foreground-export guidance are present')
+    assert page.locator('.dock svg[data-mediay-svg]').count() >= 10, 'custom MediaY toolbar SVG icons did not render'
+    assert page.locator('#homeScreen svg[data-mediay-svg]').count() >= 4, 'custom MediaY home SVG icons did not render'
+    assert 'lucide.min.js' not in html and 'fonts.googleapis.com' not in html, 'remote icon/font dependencies remain'
+    print('PASS: home screen appears on startup')
+    print('PASS: original local SVG icons render in home and editor toolbar')
+    page.locator('#hmNew').click(); page.wait_for_selector('#setup:not([hidden])')
+    print('PASS: New project opens setup screen')
+    page.locator('#suStart').click(); page.wait_for_function("document.querySelector('#homeScreen').hidden === true")
+    print('PASS: Start editing closes home/setup and opens editor')
+    page.evaluate("""() => {
+      S.main.push({id:'contrast-clip', mediaId:'missing-contrast', name:'Contrast clip.mp4', in:0, out:5, src:5});
+      select('contrast-clip','main'); t=1; drawTimeline(); refresh(t);
+    }""")
+    assert_computed_contrast(page, ['#status', '#timeDisplay', '.timeline-tools-title', '#tlZoomLabel', '#copyTillBtn', '.dock button', '.track-name', '.timeline-ruler'], 'editor and timeline controls')
+    page.evaluate("S.main=[]; select(null); drawTimeline(); refresh(0);")
+    assert page.locator('#tlZoom').count() == 1, 'timeline zoom slider is missing'
+    assert page.locator('#copyTillBtn').count() == 1, 'Copy till here control is missing'
+    assert page.locator('#adjustBtn').count() == 1, 'Adjust control is missing'
+    assert page.locator('#blendBtn').count() == 1, 'Blending control is missing'
+    transition_count = page.locator('#trList button').count()
+    assert transition_count == 59, f'expected None plus 58 FFmpeg transitions, found {transition_count}'
+    assert page.locator('#trPreviewPlay').count() == 1, 'transition preview control is missing'
+    assert page.locator('#trPreviewStage').count() == 1, 'transition preview stage is missing'
+    assert page.evaluate("typeof previewSelectedTransition === 'function'"), 'transition preview handler is missing'
+    assert "transitionPreviewAbortController" in app, 'transition preview cancellation controller is missing'
+    assert "Timed out loading a clip for the transition preview" in app, 'media metadata load has no bounded timeout'
+    assert "Timed out seeking media for the transition preview" in app, 'media seek has no bounded timeout'
+    assert "setTransitionPreviewVideo(before, previous, Math.max(previous.in, previous.out - seconds * (previous.speed || 1)), token, previewSignal)" in app, 'outgoing preview does not receive cancellation state'
+    assert "setTransitionPreviewVideo(after, c, c.in, token, previewSignal)" in app, 'incoming preview does not receive cancellation state'
+    transition_failure = page.evaluate("""async () => {
+      resetTransitionPreview();
+      const token = transitionPreviewToken;
+      const controller = new AbortController();
+      try {
+        await setTransitionPreviewVideo(document.createElement('video'),
+          {mediaId:'missing-transition-preview-media', in:0, out:1}, 0, token, controller.signal);
+        return '';
+      } catch (error) { return error.message; }
+    }""")
+    assert 'missing' in transition_failure.lower(), transition_failure
+    print('PASS: transition preview has cancellation, bounded media waits, and missing-media failure handling')
+    old_zoom = page.evaluate('PX')
+    page.locator('#tlZoomIn').click()
+    assert page.evaluate('PX') == min(90, old_zoom + 6), 'timeline zoom-in control did not change scale'
+    page.locator('#tlZoomFit').click()
+    print('PASS: timeline zoom controls work and all 58 built-in transitions are offered')
+    page.evaluate("""() => {
+      S.main.push({id:'adjust-test-a', mediaId:'missing-adjust-a', name:'adjust-a.mp4', in:0, out:5, src:5});
+      S.main.push({id:'adjust-test-b', mediaId:'missing-adjust-b', name:'adjust-b.mp4', in:0, out:5, src:5});
+      select('adjust-test-a','main');
+    }""")
+    page.locator('#adjustBtn').click()
+    page.wait_for_timeout(250)
+    assert_computed_contrast(page, ['.adjust-control > span', '.adjust-control output'], 'adjustment labels and values')
+    page.locator('[data-adjust="brightness"]').evaluate("(e)=>{e.value='24';e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}")
+    page.locator('#adjustApplyAll').click()
+    adjust_result = page.evaluate("({a:S.main[0].adjust,b:S.main[1].adjust,filter:adjustmentFilter(S.main[0])})")
+    assert adjust_result['a']['brightness'] == 24 and adjust_result['b']['brightness'] == 24, adjust_result
+    assert 'eq=brightness=0.120' in adjust_result['filter'], adjust_result
+    assert 'fade=type=in:duration=' not in adjust_result['filter'], adjust_result
+    page.evaluate("S.main=[]; select(null); drawTimeline(); refresh(0);")
+    print('PASS: Adjust sliders and Apply to all copy valid export settings to every video clip')
+    page.locator('#homeBtn').click(); page.wait_for_selector('#homeScreen:not([hidden])')
+    print('PASS: Home button returns to dashboard')
+    page.locator('#hmNew').click(); page.locator('#suStart').click(); page.wait_for_function("document.querySelector('#homeScreen').hidden === true")
+    page.evaluate("S.overlays.push({id:'test-overlay', type:'text', text:'TEST', style:0, name:'TEST', layer:1, start:0, dur:3, left:10, top:10, scaleX:1, scaleY:1}); drawTimeline();")
+    hidden=page.locator('#emptyState').evaluate('(e)=>e.hidden')
+    assert hidden, 'empty-state overlay is still visible when an overlay exists'
+    print('PASS: empty-state panel stays hidden once an overlay exists')
+    page.evaluate("""() => {
+      S.overlays.push({id:'blend-test-a', type:'image', mediaId:'missing-blend-a', name:'blend-a.png', start:0, dur:3, layer:2, left:10, top:10, scaleX:1, scaleY:1});
+      S.overlays.push({id:'blend-test-b', type:'image', mediaId:'missing-blend-b', name:'blend-b.png', start:0, dur:3, layer:3, left:20, top:20, scaleX:1, scaleY:1});
+      select('blend-test-a','overlay');
+    }""")
+    page.locator('#blendBtn').click()
+    page.locator('#blendModes [data-blend="multiply"]').click()
+    page.locator('#blendOpacity').evaluate("(e)=>{e.value='55';e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}")
+    page.locator('#blendApplyAll').click()
+    blend_result = page.evaluate("({a:S.overlays.find(o=>o.id==='blend-test-a'),b:S.overlays.find(o=>o.id==='blend-test-b')})")
+    assert blend_result['a']['blend'] == 'multiply' and blend_result['b']['blend'] == 'multiply', blend_result
+    assert abs(blend_result['a']['opacity'] - .55) < .001 and abs(blend_result['b']['opacity'] - .55) < .001, blend_result
+    page.locator('#sheetClose').click()
+    page.evaluate("select(null); drawTimeline();")
+    print('PASS: blending mode and opacity apply to all overlay layers')
+    image_result = page.evaluate("""async () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 2; canvas.height = 2;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#f01925'; ctx.fillRect(0, 0, 2, 2);
+      const png = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+      const id = 'overlay-image-recovery-test';
+      const file = new File([png], 'overlay-test.png', {type:'image/png'});
+      await db.media.put({id, name:file.name, type:file.type, blob:file});
+      files[id] = file;
+      // Simulate a stale/broken object URL while the original bytes remain in IndexedDB.
+      const recovered = await loadOverlayImage('data:image/png;base64,not-a-valid-image', {id:'overlay', mediaId:id, name:file.name});
+      const stored = await db.media.get(id);
+      const ok = recovered.width === 2 && recovered.height === 2 && stored.type === 'image/png';
+      if (urls[id] && urls[id].startsWith('blob:')) URL.revokeObjectURL(urls[id]);
+      return {ok, width:recovered.width, height:recovered.height, storedType:stored.type};
+    }""")
+    assert image_result['ok'], image_result
+    print('PASS: template overlay image can recover from a broken preview URL')
+    page.evaluate("S.main.push({id:'test-video', mediaId:'missing-media', name:'Smoke test video.mp4', in:0, out:5, src:5}); t=7; select('test-video','main');")
+    copy_result = page.evaluate("""async () => {
+      await copyTillPlayhead();
+      return {count:S.main.length, duration:total(), selected:sel && sel.id, enabled:!$('copyTillBtn').disabled};
+    }""")
+    assert copy_result['count'] == 2, copy_result
+    assert abs(copy_result['duration'] - 7) < 0.01, copy_result
+    assert copy_result['selected'] != 'test-video' and not copy_result['enabled'], copy_result
+    print('PASS: Copy till here duplicates a clip up to the playhead')
+    # Regression coverage for the playhead trim actions across the main, audio, and overlay lanes.
+    page.evaluate("""() => {
+      S.main = [
+        {id:'trim-main-start', mediaId:'missing-trim-a', name:'trim-a.mp4', in:0.5, out:8, src:8, speed:2},
+        {id:'trim-main-next', mediaId:'missing-trim-b', name:'trim-b.mp4', in:0, out:5, src:5, speed:1}
+      ];
+      S.audio = [{id:'trim-audio-start', mediaId:'missing-audio', name:'trim-audio.mp3', in:0, out:8, src:8, start:4}];
+      S.overlays = [{id:'trim-overlay', type:'text', text:'T', name:'trim-overlay', start:2, dur:6, layer:1}];
+      sel = {id:'trim-main-start', lane:'main'}; t = 1.25; undoStack = [snap()]; redoStack = []; drawTimeline(); refresh(t); updateChrome();
+    }""")
+    # Let queued browser scroll events run; refresh-driven scrolling must never move the playhead.
+    page.wait_for_timeout(75)
+    playhead_after_refresh = page.evaluate("t")
+    assert abs(playhead_after_refresh - 1.25) < 0.001, playhead_after_refresh
+    assert not page.locator('#trimStartBtn').is_disabled(), 'From here should enable when playhead is inside a selected clip'
+    page.locator('#trimStartBtn').click()
+    main_start = page.evaluate("({in:S.main[0].in, out:S.main[0].out, speed:S.main[0].speed, t, duration:dur(S.main[0])})")
+    assert abs(main_start['in'] - 3.0) < 0.001, main_start
+    assert abs(main_start['duration'] - 2.5) < 0.001, main_start
+    assert abs(main_start['t']) < 0.001, main_start
+    print('PASS: From here trims source time correctly for a speed-adjusted main clip')
+    page.locator('#undoBtn').click()
+    page.wait_for_function("S.main[0].in === 0.5")
+    assert abs(page.evaluate("S.main[0].out") - 8) < 0.001, 'undo should restore the complete original trim range'
+    page.locator('#redoBtn').click()
+    page.wait_for_function("S.main[0].in === 3")
+    assert abs(page.evaluate("dur(S.main[0])") - 2.5) < 0.001, 'redo should restore the trimmed source range'
+    print('PASS: From here trim participates correctly in Undo and Redo')
+
+    page.evaluate("""() => {
+      S.main = [{id:'trim-main-end', mediaId:'missing-trim-c', name:'trim-c.mp4', in:0, out:8, src:8, speed:1}];
+      sel = {id:'trim-main-end', lane:'main'}; t = 3; drawTimeline(); refresh(t); updateChrome();
+    }""")
+    page.locator('#trimEndBtn').click()
+    main_end = page.evaluate("({out:S.main[0].out, duration:dur(S.main[0])})")
+    assert abs(main_end['out'] - 3) < 0.001 and abs(main_end['duration'] - 3) < 0.001, main_end
+    print('PASS: To here trims the main clip ending at the playhead')
+
+    page.evaluate("""() => {
+      S.main = [{id:'timeline-support-audio', mediaId:'missing-support-audio', name:'support.mp4', in:0, out:20, src:20, speed:1}]; sel = {id:'trim-audio-start', lane:'audio'}; t = 6; drawTimeline(); refresh(t); updateChrome();
+    }""")
+    page.locator('#trimStartBtn').click()
+    audio_start = page.evaluate("({in:S.audio[0].in, out:S.audio[0].out, start:S.audio[0].start})")
+    assert abs(audio_start['in'] - 2) < 0.001 and abs(audio_start['start'] - 6) < 0.001, audio_start
+    print('PASS: From here trims audio source and moves its timeline start together')
+
+    page.evaluate("""() => {
+      S.audio = [{id:'trim-audio-end', mediaId:'missing-audio-end', name:'end.mp3', in:0, out:8, src:8, start:1}];
+      S.main = [{id:'timeline-support-audio-end', mediaId:'missing-support-audio-end', name:'support-end.mp4', in:0, out:20, src:20, speed:1}]; sel = {id:'trim-audio-end', lane:'audio'}; t = 4; drawTimeline(); refresh(t); updateChrome();
+    }""")
+    page.locator('#trimEndBtn').click()
+    audio_end = page.evaluate("({out:S.audio[0].out, start:S.audio[0].start})")
+    assert abs(audio_end['out'] - 3) < 0.001 and abs(audio_end['start'] - 1) < 0.001, audio_end
+    print('PASS: To here trims an audio clip without shifting its timeline start')
+
+    page.evaluate("""() => {
+      S.main = [{id:'timeline-support-overlay', mediaId:'missing-support-overlay', name:'support-overlay.mp4', in:0, out:20, src:20, speed:1}]; sel = {id:'trim-overlay', lane:'overlay'}; t = 4; drawTimeline(); refresh(t); updateChrome();
+    }""")
+    page.locator('#trimStartBtn').click()
+    overlay_start = page.evaluate("({start:S.overlays[0].start, dur:S.overlays[0].dur})")
+    assert abs(overlay_start['start'] - 4) < 0.001 and abs(overlay_start['dur'] - 4) < 0.001, overlay_start
+    page.evaluate("t = 5; refresh(t); updateChrome();")
+    page.locator('#trimEndBtn').click()
+    overlay_end = page.evaluate("({start:S.overlays[0].start, dur:S.overlays[0].dur})")
+    assert abs(overlay_end['start'] - 4) < 0.001 and abs(overlay_end['dur'] - 1) < 0.001, overlay_end
+    print('PASS: From here and To here trim overlay timing and duration correctly')
+
+    page.evaluate("""() => {
+      S.main = [{id:'timeline-support-video-overlay', mediaId:'missing-support-video-overlay', name:'support-video-overlay.mp4', in:0, out:20, src:20, speed:1}];
+      S.overlays = [{
+        id:'trim-overlay-video', type:'video', mediaId:'missing-video-overlay',
+        name:'picture-in-picture.mp4', start:2, dur:6, sourceIn:1, srcDur:10, layer:1,
+        el:{currentTime:0, paused:true, play:()=>Promise.resolve(), pause:()=>{}}
+      }];
+      canvas.clear(); canvas.add({pmId:'trim-overlay-video', layer:1, visible:true});
+      sel = {id:'trim-overlay-video', lane:'overlay'}; t = 4; drawTimeline(); refresh(t); updateChrome();
+    }""")
+    page.wait_for_timeout(40)
+    assert not page.locator('#trimStartBtn').is_disabled(), 'video overlay From here should enable inside its source range'
+    page.locator('#trimStartBtn').click()
+    video_overlay_start = page.evaluate("({start:S.overlays[0].start,dur:S.overlays[0].dur,sourceIn:S.overlays[0].sourceIn,previewTime:S.overlays[0].el.currentTime})")
+    assert abs(video_overlay_start['start'] - 4) < 0.001 and abs(video_overlay_start['dur'] - 4) < 0.001, video_overlay_start
+    assert abs(video_overlay_start['sourceIn'] - 3) < 0.001 and abs(video_overlay_start['previewTime'] - 3) < 0.001, video_overlay_start
+    assert abs(page.evaluate("overlaySourceAt({sourceIn:3,start:4},6)") - 5) < 0.001, 'export video source mapping should account for prior source trim'
+    assert abs(page.evaluate("overlaySourceAt({sourceIn:3,start:8},6)") - 3) < 0.001, 'export seek before overlay start should preserve its trimmed source-in'
+    page.evaluate("t = 5; refresh(t); updateChrome();")
+    page.wait_for_timeout(40)
+    page.locator('#trimEndBtn').click()
+    video_overlay_end = page.evaluate("({start:S.overlays[0].start,dur:S.overlays[0].dur,sourceIn:S.overlays[0].sourceIn})")
+    assert abs(video_overlay_end['start'] - 4) < 0.001 and abs(video_overlay_end['dur'] - 1) < 0.001, video_overlay_end
+    assert abs(video_overlay_end['sourceIn'] - 3) < 0.001, video_overlay_end
+    print('PASS: video overlay trimming preserves source-in across preview, export seek, and audio mixing')
+
+    page.evaluate("""() => {
+      S.main = [{id:'trim-one-frame', mediaId:'missing-one-frame', name:'one-frame.mp4', in:0, out:1, src:1, speed:1}];
+      sel = {id:'trim-one-frame', lane:'main'}; t = 1/30; drawTimeline(); refresh(t); updateChrome();
+    }""")
+    page.wait_for_timeout(75)
+    assert not page.locator('#trimStartBtn').is_disabled(), 'trim should allow frame-accurate edits, not require a 0.2 second margin'
+    page.locator('#trimStartBtn').click()
+    one_frame = page.evaluate("({in:S.main[0].in,duration:dur(S.main[0])})")
+    assert abs(one_frame['in'] - (1/30)) < 0.0001, one_frame
+    assert abs(one_frame['duration'] - (29/30)) < 0.0001, one_frame
+    print('PASS: trim precision supports a one-frame edit at 30 fps')
+
+    page.evaluate("""() => {
+      S.main = [{id:'trim-boundary', mediaId:'missing-boundary', name:'boundary.mp4', in:0, out:5, src:5}];
+      sel = {id:'trim-boundary', lane:'main'}; t = 0; drawTimeline(); refresh(t); updateChrome();
+    }""")
+    assert page.locator('#trimStartBtn').is_disabled(), 'From here should disable at the clip boundary'
+    assert page.locator('#trimEndBtn').is_disabled(), 'To here should disable at the clip boundary'
+    page.evaluate("trimSelectionAtPlayhead('start')")
+    boundary = page.evaluate("({in:S.main[0].in,out:S.main[0].out})")
+    assert boundary == {'in':0,'out':5}, boundary
+    print('PASS: trim buttons reject boundary positions that would create zero-length clips')
+
+    # Fast draft is an explicit quality/speed trade-off and must update both export controls.
+    draft_settings = page.evaluate("""() => {
+      const old = {res:EXP.res, fps:EXP.fps};
+      applyExportPreset('draft');
+      const chosen = {
+        res:EXP.res, fps:EXP.fps,
+        resSelected:[...$('resList').children].some(b => +b.dataset.v === 480 && b.classList.contains('on')),
+        fpsSelected:[...$('fpsList').children].some(b => +b.dataset.v === 24 && b.classList.contains('on'))
+      };
+      EXP.res = old.res; EXP.fps = old.fps;
+      for (const b of $('resList').children) b.classList.toggle('on', +b.dataset.v === EXP.res);
+      for (const b of $('fpsList').children) b.classList.toggle('on', +b.dataset.v === EXP.fps);
+      return chosen;
+    }""")
+    assert draft_settings == {'res':480,'fps':24,'resSelected':True,'fpsSelected':True}, draft_settings
+    print('PASS: Fast draft preset switches both resolution and frame rate together')
+
+    caption_chunks = page.evaluate("""async () => {
+      const oldAsr = asr, oldCancel = captionCancelRequested;
+      const oldLang = $('capLang').value, oldTranslate = $('capTr').checked;
+      const sizes = [], progress = [], timestampModes = [];
+      asr = async (pcm, options) => {
+        sizes.push(pcm.length);
+        timestampModes.push(options.return_timestamps);
+        return {chunks:[{text:'alpha beta gamma delta', timestamp:[0,1]}]};
+      };
+      captionCancelRequested = false;
+      try {
+        const drafts = await captionFrom(
+          new Float32Array(CAPTION_SAMPLE_RATE * 61),
+          {start:5, in:0, out:61, sp:2, label:'test media'},
+          p => progress.push(p.percent)
+        );
+        return {
+          sizes, count:drafts.length,
+          starts:drafts.map(x => x.start),
+          durations:drafts.map(x => x.dur),
+          progress, timestampModes
+        };
+      } finally {
+        asr = oldAsr; captionCancelRequested = oldCancel;
+        $('capLang').value = oldLang; $('capTr').checked = oldTranslate;
+      }
+    }""")
+    assert caption_chunks['sizes'] == [30*16000,30*16000,16000], caption_chunks
+    assert caption_chunks['count'] == 3, caption_chunks
+    # Captions lead their speech by 0.04 s and are held 0.14 s after it (mediay-core.js CAPTION), at 2x speed.
+    assert all(abs(a-b) < 0.03 for a,b in zip(caption_chunks['starts'],[5,20,35])), caption_chunks
+    assert all(0.45 < d < 0.65 for d in caption_chunks['durations']), caption_chunks
+    assert caption_chunks['progress'] == [1/3,2/3,1], caption_chunks
+    assert caption_chunks['timestampModes'] == [True,True,True], caption_chunks
+    print('PASS: auto captions stream 30-second inference chunks, use native segment timestamps, and retain source-time offsets')
+
+    word_aligned = page.evaluate("""async () => {
+      const oldAsr = asr, oldCancel = captionCancelRequested;
+      asr = async (_pcm, options) => {
+        if (options.return_timestamps !== true) throw new Error('native segment timestamps were not requested');
+        return {chunks:[
+          {text:'Hello there, this works.', timestamp:[1.0,2.5]},
+          {text:'Again', timestamp:[4.0,4.3]}
+        ]};
+      };
+      captionCancelRequested = false;
+      try {
+        const drafts = await captionFrom(new Float32Array(CAPTION_SAMPLE_RATE*5),
+          {start:10,in:3,out:8,sp:2,label:'word timing test'}, () => {});
+        return drafts.map(x => ({text:x.text,start:x.start,dur:x.dur}));
+      } finally { asr=oldAsr; captionCancelRequested=oldCancel; }
+    }""")
+    assert len(word_aligned) == 2, word_aligned
+    assert word_aligned[0]['text'] == 'Hello there, this works.', word_aligned
+    assert abs(word_aligned[0]['start'] - 10.5) < 0.03, word_aligned
+    assert 0.7 < word_aligned[0]['dur'] < 0.95, word_aligned
+    assert word_aligned[1]['text'] == 'Again', word_aligned
+    assert abs(word_aligned[1]['start'] - 12) < 0.03 and 0.15 < word_aligned[1]['dur'] < 0.3, word_aligned
+    print('PASS: segment-level subtitle timing preserves speech boundaries and clip-speed mapping')
+
+    caption_persistence = page.evaluate("""async () => {
+      const draft = {id:'persist-caption-check',layer:S.nextLayer,type:'text',text:'Saved caption',style:0,start:1.25,dur:.75,top:250};
+      const count = await commitCaptionDrafts([draft]);
+      const checkpoint = await db.projects.get('current');
+      const persisted = checkpoint && normalizeState(checkpoint.state);
+      const stored = persisted && persisted.overlays.find(x => x.id === draft.id);
+      await restore(checkpoint.state);
+      const restored = S.overlays.find(x => x.id === draft.id);
+      return {count, stored:stored && {start:stored.start,dur:stored.dur}, restored:restored && {text:restored.text,start:restored.start,dur:restored.dur}};
+    }""")
+    assert caption_persistence['count'] == 1, caption_persistence
+    assert caption_persistence['stored'] == {'start':1.25,'dur':.75}, caption_persistence
+    assert caption_persistence['restored'] == {'text':'Saved caption','start':1.25,'dur':.75}, caption_persistence
+    print('PASS: generated captions are saved, verified, and survive project-state restoration')
+
+    caption_cancel = page.evaluate("""async () => {
+      const oldAsr = asr, oldCancel = captionCancelRequested;
+      const before = {overlays:S.overlays.length, nextLayer:S.nextLayer};
+      asr = async () => {
+        captionCancelRequested = true;
+        return {chunks:[{text:'should never be committed',timestamp:[0,1]}]};
+      };
+      captionCancelRequested = false;
+      let name = '';
+      try {
+        await captionFrom(new Float32Array(CAPTION_SAMPLE_RATE*30), {start:0,in:0,out:30,sp:1,label:'test'}, () => {});
+      } catch (error) { name = error.name; }
+      finally { asr = oldAsr; captionCancelRequested = oldCancel; }
+      return {name, before, after:{overlays:S.overlays.length,nextLayer:S.nextLayer}};
+    }""")
+    assert caption_cancel['name'] == 'AbortError', caption_cancel
+    assert caption_cancel['before'] == caption_cancel['after'], caption_cancel
+    print('PASS: cancelling caption inference discards uncommitted caption drafts')
+
+    signal_checks = page.evaluate("""() => {
+      const silent = new Float32Array(16000 * 2);
+      const speechLike = new Float32Array(16000);
+      for (let i=0;i<speechLike.length;i++) speechLike[i]=0.08*Math.sin(i*0.1);
+      return {silent:hasAudibleSignal(silent), speech:hasAudibleSignal(speechLike)};
+    }""")
+    assert signal_checks == {'silent':False,'speech':True}, signal_checks
+    print('PASS: silent tracks are skipped before running speech inference')
+
+    perf_contract = page.evaluate("""() => {
+      const metric = createMediaYMetric('Test report', {resolution:480,fps:24});
+      metric.stage('Audio decoding');
+      metric.command('seg0.mp4',12,true);
+      metric.stage('Inference');
+      metric.command('seg1.mp4',8,false);
+      const report = metric.finish('test');
+      recentMediaYMetrics.export = report;
+      renderMediaYPerformanceReport();
+      return {
+        kind:report.kind,
+        outcome:report.outcome,
+        total:report.durationMs,
+        stages:Object.keys(report.stages),
+        clipCommands:report.ffmpegCommands['clip encoding'],
+        visible:$('perfReport').textContent
+      };
+    }""")
+    assert perf_contract['kind'] == 'Test report' and perf_contract['outcome'] == 'test', perf_contract
+    assert perf_contract['total'] >= 0, perf_contract
+    assert 'Audio decoding' in perf_contract['stages'] and 'Inference' in perf_contract['stages'], perf_contract
+    assert perf_contract['clipCommands']['count'] == 2 and perf_contract['clipCommands']['failures'] == 1, perf_contract
+    assert 'Test report report' in perf_contract['visible'] and 'clip encoding' in perf_contract['visible'], perf_contract
+    print('PASS: performance report aggregates stage duration and FFmpeg command timings')
+
+    cancel_button_result = page.evaluate("""() => {
+      captionRunning = true;
+      captionCancelRequested = false;
+      $('busyCancel').hidden = false;
+      updateBusy('Transcribing speech…','test cancellation button',20,'Captions');
+      return {visible:!$('busyCancel').hidden,disabled:$('busyCancel').disabled};
+    }""")
+    assert cancel_button_result == {'visible':True,'disabled':False}, cancel_button_result
+    page.locator('#busyCancel').click()
+    cancel_click_result = page.evaluate("""() => ({
+      requested:captionCancelRequested,
+      disabled:$('busyCancel').disabled,
+      label:$('busyCancel').textContent
+    })""")
+    assert cancel_click_result['requested'] and cancel_click_result['disabled'] and 'Cancellation requested' in cancel_click_result['label'], cancel_click_result
+    page.evaluate("""() => {
+      captionRunning = false; captionCancelRequested = false;
+      $('busyCancel').hidden = true; $('busyOverlay').hidden = true;
+      document.body.removeAttribute('aria-busy');
+    }""")
+    print('PASS: caption cancellation remains clickable above the blocking progress overlay')
+    # ---- background service bookkeeping: one start, one stop, never leaked ----
+    service_calls = page.evaluate("""async () => {
+      const calls = [];
+      const old = window.Capacitor;
+      window.Capacitor = { isNativePlatform: () => true, Plugins: { MediaYExportService: {
+        start: async () => { calls.push('start'); }, stop: async () => { calls.push('stop'); } } } };
+      try {
+        const both = await Promise.all([Background.begin(), Background.begin()]);   // export + captions overlap
+        await Background.end(); const afterFirstEnd = calls.slice();
+        await Background.end(); const afterSecondEnd = calls.slice();
+        await Background.end();                                                      // extra end must be harmless
+        window.Capacitor.Plugins.MediaYExportService.start = async () => { throw new Error('denied'); };
+        const failed = await Background.begin(); await Background.end();
+        return { both, afterFirstEnd, afterSecondEnd, final: calls, failed, active: Background.active };
+      } finally { window.Capacitor = old; }
+    }""")
+    assert service_calls['both'] == [True, True], service_calls
+    assert service_calls['afterFirstEnd'] == ['start'], service_calls          # still held by the second job
+    assert service_calls['afterSecondEnd'] == ['start', 'stop'], service_calls
+    assert service_calls['final'] == ['start', 'stop'], service_calls          # unbalanced end() never stops anything twice
+    assert service_calls['failed'] is False and service_calls['active'] is False, service_calls
+    print('PASS: native background service is started once, stopped once, and survives overlapping jobs and start failures')
+
+    # ---- in-place project refresh (replaces "close and reopen the app and the project") ----
+    refresh_result = page.evaluate("""async () => {
+      const cap = {id:'refresh-check',layer:S.nextLayer,type:'text',caption:true,text:'Refresh me',style:0,start:0.5,dur:1,top:250};
+      await commitCaptionDrafts([cap]);
+      const before = snap();
+      let disposed = 0;
+      asr = async () => ({chunks:[]}); asr.dispose = async () => { disposed++; };
+      const outcome = await reopenProjectInPlace('smoke test');
+      const objects = canvas.getObjects().filter(o => o.text === 'Refresh me').length;
+      return { ok: outcome.ok, same: snap() === before, objects, asrReleased: asr === null, disposed,
+               ffReleased: !ff, overlays: S.overlays.filter(o => o.id === 'refresh-check').length };
+    }""")
+    assert refresh_result['ok'] and refresh_result['same'] and refresh_result['objects'] == 1, refresh_result
+    assert refresh_result['asrReleased'] and refresh_result['disposed'] == 1 and refresh_result['ffReleased'], refresh_result
+    assert refresh_result['overlays'] == 1, refresh_result
+    print('PASS: in-place refresh keeps the project identical, rebuilds the preview, and releases the speech model and video engine')
+
+    guards = page.evaluate("""async () => {
+      const out = {};
+      captionRunning = true; exportInProgress = 0;
+      const before = S.overlays.length;
+      await $('goExport').onclick(null, 0);                      // export must refuse while captions run
+      out.exportBlockedDuringCaptions = !$('busyOverlay') || $('busyOverlay').hidden === true;
+      captionRunning = false;
+      exportInProgress = 1;
+      await $('capGo').onclick();                                // captions must refuse while an export runs
+      out.captionsBlockedDuringExport = !captionRunning;
+      exportInProgress = 0;
+      out.untouched = S.overlays.length === before;
+      return out;
+    }""")
+    assert guards['exportBlockedDuringCaptions'] and guards['captionsBlockedDuringExport'] and guards['untouched'], guards
+    print('PASS: exports and caption generation never run at the same time')
+
+    # ---- speech engine loading: retry, corrupt-cache recovery, honest offline errors, cancellation ----
+    speech = page.evaluate("""async () => {
+      speechRetryDelayMs = 0;
+      const out = {}; const events = [];
+      const realUpdate = updateBusy;
+      const seed = pipelineImpl => speechModules.set('cpu', { env: { backends: { onnx: { wasm: {} } } }, pipeline: pipelineImpl });
+      // (a) two network failures, then success
+      let calls = 0; seed(async () => { calls++; if (calls < 3) throw new Error('Failed to fetch'); return { fake: 'model' }; });
+      captionCancelRequested = false;
+      const model = await createSpeechPipeline(false);
+      out.retry = { calls, ok: model.fake === 'model', backend: asrBackend };
+      // (b) a damaged cached file is deleted once, then the download is retried
+      const deleted = []; const realCaches = window.caches;
+      Object.defineProperty(window, 'caches', { configurable: true, value: { delete: async name => { deleted.push(name); return true; } } });
+      let corruptCalls = 0; seed(async () => { corruptCalls++; if (corruptCalls === 1) throw new Error('protobuf parsing failed'); return { fake: 'model2' }; });
+      const model2 = await createSpeechPipeline(false);
+      out.corrupt = { calls: corruptCalls, deleted, ok: model2.fake === 'model2' };
+      Object.defineProperty(window, 'caches', { configurable: true, value: realCaches });
+      // (c) never reachable: the message must say offline + how big + that it works offline afterwards
+      const onlineDesc = Object.getOwnPropertyDescriptor(Navigator.prototype, 'onLine');
+      Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => false });
+      seed(async () => { throw new Error('Failed to fetch'); });
+      try { await createSpeechPipeline(false); out.offline = 'no error'; } catch (e) { out.offline = e.message; }
+      delete navigator.onLine;
+      // (d) cancellation is honoured before any download is attempted
+      let cancelCalls = 0; seed(async () => { cancelCalls++; return {}; });
+      captionCancelRequested = true;
+      try { await createSpeechPipeline(false); out.cancel = 'no error'; } catch (e) { out.cancel = e.name; }
+      out.cancelCalls = cancelCalls; captionCancelRequested = false;
+      // (e) progress across several files is one overall percentage that never goes backwards
+      const percents = [];
+      updateBusy = (title, detail, pct) => { if (typeof pct === 'number') percents.push(pct); };
+      seed(async (task, id, options) => {
+        const cb = options.progress_callback;
+        cb({ status: 'progress', file: 'a.onnx', loaded: 10, total: 100 }); cb({ status: 'progress', file: 'b.onnx', loaded: 0, total: 100 });
+        cb({ status: 'progress', file: 'a.onnx', loaded: 100, total: 100 }); cb({ status: 'progress', file: 'b.onnx', loaded: 100, total: 100 });
+        return {};
+      });
+      await createSpeechPipeline(false);
+      updateBusy = realUpdate;
+      out.percents = percents.filter(x => x !== 0);
+      speechModules.clear();
+      hideBusy();
+      return out;
+    }""")
+    assert speech['retry'] == {'calls': 3, 'ok': True, 'backend': 'wasm'}, speech
+    assert speech['corrupt']['calls'] == 2 and speech['corrupt']['deleted'] == ['transformers-cache'] and speech['corrupt']['ok'], speech
+    assert 'offline' in speech['offline'] and '40 MB' in speech['offline'], speech
+    assert speech['cancel'] == 'AbortError' and speech['cancelCalls'] == 0, speech
+    assert speech['percents'] == sorted(speech['percents']) and speech['percents'][-1] == 100, speech
+    print('PASS: speech engine loading retries, repairs a damaged cache, reports offline honestly, honours cancel and reports one overall percentage')
+
+    def handle_dialog(d): d.accept('Smoke test project')
+    page.on('dialog',handle_dialog)
+    page.locator('#saveBtn').click(); page.wait_for_timeout(100)
+    page.locator('#homeBtn').click(); page.wait_for_selector('#homeScreen:not([hidden])'); page.wait_for_timeout(100)
+    saved = page.locator('#hmProjectTitle').inner_text()
+    assert 'Smoke test project' in saved, saved
+    print('PASS: Save creates a named project visible as the recent project')
+    page.locator('#hmNew').click(); page.wait_for_selector('#setup:not([hidden])')
+    page.locator('#suStart').click(); page.locator('#homeBtn').click(); page.wait_for_selector('#homeScreen:not([hidden])')
+    library = page.locator('#hmProjectList').inner_text()
+    assert 'Smoke test project' in library, library
+    print('PASS: Starting a new project preserves the previously saved project')
+    print('Page errors:', errors)
+    assert not errors, errors
+    browser.close()
+
+
+
+========================================================================================
+FILE: make_icons.py
+BLOB SHA: 9792d7edbb0769cfb6b23daa6a8e33adcc3a53ed
+========================================================================================
+#!/usr/bin/env python3
+"""Generate MediaY launcher icons from the selected Neon Aperture Y mark."""
+import glob
+import os
+import re
+import sys
+from PIL import Image, ImageDraw
+
+BACKGROUND = (8, 13, 24, 255)
+CYAN = (0, 231, 242, 255)
+BLUE = (22, 139, 255, 255)
+VIOLET = (139, 92, 246, 255)
+WHITE = (243, 247, 255, 255)
+
+
+def render_icon(size: int, maskable: bool = False) -> Image.Image:
+    scale = 4
+    side = size * scale
+    image = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image, "RGBA")
+    pad = 0 if maskable else int(side * .035)
+    radius = 0 if maskable else int(side * .22)
+    draw.rounded_rectangle((pad, pad, side-pad-1, side-pad-1), radius=radius, fill=BACKGROUND)
+    if not maskable:
+        draw.rounded_rectangle((pad+2, pad+2, side-pad-3, side-pad-3),
+                               radius=max(1, radius-2), outline=CYAN, width=max(2, side//180))
+    # Leave safe space for Android's adaptive-icon mask.
+    factor = .78 if maskable else .88
+    def p(x, y):
+        x = 64 + (x-64)*factor
+        y = 64 + (y-64)*factor
+        return (int(x/128*side), int(y/128*side))
+    def poly(points, fill, outline=None):
+        draw.polygon([p(x,y) for x,y in points], fill=fill, outline=outline)
+    # Y arms: cyan left and porcelain-white right.
+    poly([(13,12),(36,12),(58,49),(48,62),(27,38)], CYAN)
+    poly([(115,12),(92,12),(70,49),(80,62),(101,38)], WHITE)
+    # Segmented cuts on the left arm.
+    poly([(20,25),(38,25),(42,32),(24,32)], BACKGROUND)
+    poly([(28,39),(46,39),(50,46),(32,46)], BACKGROUND)
+    # Circular camera aperture with violet ring and cyan inner edge.
+    cx, cy = p(64,52)
+    rad = int(26/128*side*factor)
+    draw.ellipse((cx-rad,cy-rad,cx+rad,cy+rad), fill=(15,18,43,255), outline=VIOLET, width=max(3,side//42))
+    inner = int(20/128*side*factor)
+    draw.ellipse((cx-inner,cy-inner,cx+inner,cy+inner), outline=CYAN, width=max(2,side//100))
+    # Six shutter blades, all meeting around a small dark iris.
+    poly([(64,32),(79,40),(75,54),(62,56),(52,43)], CYAN)
+    poly([(79,40),(85,53),(75,66),(65,55),(75,54)], VIOLET)
+    poly([(85,53),(78,68),(63,72),(64,57),(75,66)], (105,65,210,255))
+    poly([(78,68),(63,72),(50,63),(62,54),(63,72)], BLUE)
+    poly([(50,63),(44,50),(52,37),(62,49),(62,54)], CYAN)
+    poly([(44,50),(52,37),(64,32),(62,49),(52,54)], (47,124,245,255))
+    iris = int(5/128*side*factor)
+    draw.ellipse((cx-iris,cy-iris,cx+iris,cy+iris), fill=BACKGROUND)
+    # Stem and restrained timeline tracks.
+    poly([(49,73),(64,79),(79,73),(75,120),(53,120)], BLUE)
+    draw.line([p(64,80),p(64,119)], fill=WHITE, width=max(2,side//150))
+    poly([(8,92),(42,92),(42,99),(8,99)], CYAN)
+    poly([(8,105),(42,105),(42,109),(8,109)], BLUE)
+    poly([(86,92),(120,92),(120,99),(86,99)], VIOLET)
+    poly([(86,105),(120,105),(120,109),(86,109)], (105,65,210,255))
+    return image.resize((size,size), Image.Resampling.LANCZOS)
+
+
+def create():
+    render_icon(192).save("icon-192.png", "PNG", optimize=True)
+    render_icon(512).save("icon-512.png", "PNG", optimize=True)
+    render_icon(512, maskable=True).save("icon-maskable-512.png", "PNG", optimize=True)
+    print("Generated selected MediaY Neon Aperture icons.")
+
+
+def apply():
+    resources = "android/app/src/main/res"
+    for path in glob.glob(resources + "/mipmap-*/ic_launcher*.png"):
+        foreground = "foreground" in os.path.basename(path)
+        source = "icon-maskable-512.png" if foreground else "icon-512.png"
+        with Image.open(source) as icon:
+            size = Image.open(path).size
+            icon.convert("RGBA").resize(size, Image.Resampling.LANCZOS).save(path)
+    for path in glob.glob(resources + "/drawable*/splash.png"):
+        with Image.open(path) as old:
+            width, height = old.size
+        image = Image.new("RGBA", (width, height), BACKGROUND)
+        side = int(min(width, height) * .4)
+        with Image.open("icon-512.png") as icon:
+            logo = icon.convert("RGBA").resize((side, side), Image.Resampling.LANCZOS)
+        image.paste(logo, ((width-side)//2,(height-side)//2), logo)
+        image.save(path)
+    background_xml = resources + "/values/ic_launcher_background.xml"
+    if os.path.exists(background_xml):
+        with open(background_xml, encoding="utf-8") as f:
+            source = f.read()
+        with open(background_xml, "w", encoding="utf-8") as f:
+            f.write(re.sub(r"#[0-9a-fA-F]{6}", "#080D18", source, count=1))
+
+
+if __name__ == "__main__":
+    mode = sys.argv[1] if len(sys.argv) > 1 else "before"
+    create() if mode == "before" else apply()
+
