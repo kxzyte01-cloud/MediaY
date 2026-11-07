@@ -444,7 +444,7 @@ html, body {
   max-width: 100%;
   overflow-x: hidden;
 }
-body, main, .topbar, .transport, .timeline, .timeline-tools, .sheet {
+body, main, .topbar, .transport, .timeline, .timeline-tools {
   min-width: 0;
 }
 main > *, .transport > *, .timeline-tools > * {
