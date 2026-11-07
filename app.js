@@ -528,8 +528,135 @@ function reopenProjectInPlace(reason = 'generation') {
   return reopenInFlight;
 }
 
-/* ---------- Import ---------- */
-$('importBtn').onclick = () => { $('mediaInput').accept = 'video/*,image/*,audio/*'; $('mediaInput').click(); };
+/* ---------- Import and native Android media library ---------- */
+let mediaLibraryKind = 'all', mediaLibraryOffset = 0, mediaLibraryBusy = false;
+const mediaLibraryPlugin = () => window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.MediaYMediaStore;
+function mediaDurationLabel(item) {
+  const seconds = Math.max(0, Number(item.duration) || 0) / 1000;
+  return item.kind === 'video' ? fmt(seconds) : 'Photo';
+}
+async function loadMediaLibrary(reset = false) {
+  const plugin = mediaLibraryPlugin();
+  if (!plugin || mediaLibraryBusy) return;
+  if (reset) {
+    mediaLibraryOffset = 0;
+    $('mediaLibraryGrid').textContent = '';
+  }
+  mediaLibraryBusy = true;
+  $('mediaLibraryLoadMore').disabled = true;
+  $('mediaLibraryStatus').textContent = 'Loading your media…';
+  try {
+    const result = await plugin.listMedia({ kind: mediaLibraryKind, offset: mediaLibraryOffset, limit: 36 });
+    const items = result.items || [];
+    for (const item of items) {
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'media-library-item';
+      card.setAttribute('aria-label', 'Import ' + (item.name || item.kind));
+      if (item.thumbnail) {
+        const image = document.createElement('img');
+        image.loading = 'lazy';
+        image.alt = '';
+        image.src = 'data:image/jpeg;base64,' + item.thumbnail;
+        card.appendChild(image);
+      } else {
+        const placeholder = document.createElement('span');
+        placeholder.className = 'media-library-placeholder';
+        placeholder.textContent = item.kind === 'video' ? '▶' : '▧';
+        card.appendChild(placeholder);
+      }
+      const name = document.createElement('strong');
+      name.textContent = item.name || 'Media file';
+      const meta = document.createElement('small');
+      const album = item.album ? ' · ' + item.album : '';
+      meta.textContent = mediaDurationLabel(item) + album;
+      card.append(name, meta);
+      card.onclick = () => importNativeMedia(item);
+      $('mediaLibraryGrid').appendChild(card);
+    }
+    mediaLibraryOffset += items.length;
+    $('mediaLibraryLoadMore').hidden = items.length < 36;
+    const access = result.access || {};
+    const partial = access.partial ? ' Showing only the photos/videos you selected.' : '';
+    $('mediaLibraryStatus').textContent = items.length
+      ? `Showing ${mediaLibraryOffset} items.${partial} Tap one to import it.`
+      : (mediaLibraryOffset ? 'No more media found.' : 'No photos or videos are available with the current permission.');
+  } catch (error) {
+    $('mediaLibraryStatus').textContent = 'Could not load media: ' + (error && error.message || error);
+  } finally {
+    mediaLibraryBusy = false;
+    $('mediaLibraryLoadMore').disabled = false;
+  }
+}
+async function importNativeMedia(item) {
+  const plugin = mediaLibraryPlugin();
+  if (!plugin || typeof plugin.stageMedia !== 'function') return;
+  let staged = null;
+  try {
+    $('mediaLibraryStatus').textContent = 'Preparing ' + (item.name || 'media') + ' for editing…';
+    staged = await plugin.stageMedia({ uri: item.uri, name: item.name, mimeType: item.mimeType });
+    const localUrl = window.Capacitor.convertFileSrc(staged.path);
+    const response = await fetch(localUrl);
+    if (!response.ok) throw new Error('Android could not read the staged media file.');
+    const blob = await response.blob();
+    const file = new File([blob], staged.name || item.name || 'mediay-media', {
+      type: staged.mimeType || item.mimeType || blob.type || 'application/octet-stream',
+      lastModified: Date.now()
+    });
+    $('mediaLibraryDialog').close();
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    $('mediaInput').accept = 'video/*,image/*,audio/*';
+    $('mediaInput').files = transfer.files;
+    $('mediaInput').dispatchEvent(new Event('change'));
+  } catch (error) {
+    $('mediaLibraryStatus').textContent = 'Could not import this item: ' + (error && error.message || error);
+  } finally {
+    if (staged && plugin && typeof plugin.deleteStagedMedia === 'function') {
+      await plugin.deleteStagedMedia({ path: staged.path }).catch(() => {});
+    }
+  }
+}
+async function openMediaLibrary(kind = 'all') {
+  const plugin = mediaLibraryPlugin();
+  if (!plugin || typeof plugin.requestMediaAccess !== 'function') {
+    $('mediaInput').accept = 'video/*,image/*,audio/*';
+    $('mediaInput').click();
+    return;
+  }
+  mediaLibraryKind = kind;
+  document.querySelectorAll('[data-media-kind]').forEach(button =>
+    button.classList.toggle('active', button.dataset.mediaKind === kind));
+  $('mediaLibraryDialog').showModal();
+  $('mediaLibraryStatus').textContent = 'Requesting photo and video access…';
+  $('mediaLibraryGrid').textContent = '';
+  try {
+    const access = await plugin.requestMediaAccess();
+    if (!access || !access.allowed) {
+      $('mediaLibraryStatus').textContent = 'Media access was not granted. You can still choose individual files from Android.';
+      return;
+    }
+    await loadMediaLibrary(true);
+  } catch (error) {
+    $('mediaLibraryStatus').textContent = 'Media library unavailable: ' + (error && error.message || error);
+  }
+}
+$('importBtn').onclick = () => openMediaLibrary('all');
+$('emptyImportBtn').onclick = () => $('importBtn').click();
+$('mediaLibraryClose').onclick = () => $('mediaLibraryDialog').close();
+$('mediaLibrarySystemPicker').onclick = () => {
+  $('mediaLibraryDialog').close();
+  $('mediaInput').accept = 'video/*,image/*,audio/*';
+  $('mediaInput').click();
+};
+$('mediaLibraryLoadMore').onclick = () => loadMediaLibrary(false);
+document.querySelectorAll('[data-media-kind]').forEach(button => {
+  button.onclick = () => {
+    mediaLibraryKind = button.dataset.mediaKind;
+    document.querySelectorAll('[data-media-kind]').forEach(tab => tab.classList.toggle('active', tab === button));
+    loadMediaLibrary(true);
+  };
+});
 $('audioBtn').onclick = () => { $('mediaInput').accept = 'audio/*'; $('mediaInput').click(); };
 $('mediaInput').onchange = async e => {
   const selected = [...(e.target.files || [])]; e.target.value = '';
