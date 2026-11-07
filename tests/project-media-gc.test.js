@@ -18,6 +18,10 @@ test('project media GC saves current state and retains every media reference acr
   assert.match(gc, /saved templates could not be read/);
   assert.match(gc, /saved template is damaged/);
   assert.match(gc, /await db\.projects\.toArray\(\)/);
+  assert.match(gc, /typeof undoStack !== 'undefined'/);
+  assert.match(gc, /typeof redoStack !== 'undefined'/);
+  assert.match(gc, /undo\/redo snapshot could not be read/);
+  assert.match(gc, /undo\/redo snapshot has an unsupported state shape/);
   assert.match(gc, /\[state\.main, state\.audio, state\.overlays\]/);
   assert.match(gc, /referenced\.add\(item\.mediaId\)/);
   assert.match(gc, /return 0; \/\/ Unknown references must never cause user media to be deleted/);
@@ -51,6 +55,8 @@ test('clip and template deletion schedule debounced, export-safe media collectio
   const app = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
   assert.match(app, /if \(typeof window\.scheduleMediaGc === 'function'\) window\.scheduleMediaGc\(\)/);
   assert.match(app, /Delete template[\s\S]{0,300}scheduleMediaGc/);
+  assert.match(app, /historyWillReleaseMedia = undoStack\.length >= 50 \|\| redoStack\.length > 0/);
+  assert.match(app, /historyWillReleaseMedia[\s\S]{0,180}window\.scheduleMediaGc\(\)/);
 });
 
 test('malformed template references produce an actionable visible cleanup warning', () => {
