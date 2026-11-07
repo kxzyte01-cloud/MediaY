@@ -1597,6 +1597,14 @@ async function saveFFmpegOutput(engine, outputPath) {
     const legacyDelivery = await saveFFmpegLegacyNative(engine, outputPath, nativeStore);
     if (legacyDelivery) return legacyDelivery;
   }
+  // Never materialize a multi-gigabyte Android render in the WebView heap. A native
+  // build without the chunked MediaStore or legacy cache path must fail safely and
+  // leave the FFmpeg file available for retry/discard instead of risking an OOM.
+  if (isNative() && (!nativeStore || typeof engine.readFileChunk !== 'function' ||
+      (typeof nativeStore.beginStreamingSave !== 'function' &&
+       typeof nativeStore.saveVideo !== 'function'))) {
+    throw new Error('Safe Android saving is unavailable in this build because chunked media delivery is missing. Keep this render open and install a build with the native streaming saver.');
+  }
   if (!nativeStore || typeof nativeStore.beginStreamingSave !== 'function' ||
       typeof engine.readFileChunk !== 'function') {
     // Browser delivery (or a very old FFmpeg wrapper without chunk reads) still needs
