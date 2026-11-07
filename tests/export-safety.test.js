@@ -64,3 +64,10 @@ test('skip_loop_filter is restricted to the explicit Fast Draft preset', () => {
 test('audio mixing disables dropout transition gain ramping', () => {
   assert.match(app, /amix=inputs=\$\{mixCount\}:duration=longest:normalize=0:dropout_transition=0/);
 });
+
+test('the app viewport cannot scroll sideways while the timeline remains independently pannable', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', 'style.css'), 'utf8');
+  assert.match(css, /html, body\s*\{[^}]*overflow-x:\s*hidden/s);
+  assert.match(css, /#tl\s*\{[^}]*overflow-x:\s*auto/s);
+  assert.match(css, /overscroll-behavior-x:\s*contain/);
+});
