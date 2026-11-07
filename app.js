@@ -1610,9 +1610,12 @@ async function saveFFmpegOutput(engine, outputPath) {
     // Browser delivery (or a very old FFmpeg wrapper without chunk reads) still needs
     // a byte buffer. Android builds with chunk reads use the bounded native paths above.
     const data = await engine.readFile(outputPath);
-    try { await engine.deleteFile(outputPath); } catch (_) { /* retain the in-memory render */ }
-    try { return await saveVideo(data); }
-    catch (error) { error.renderedData = data; throw error; }
+    // Keep the authoritative render in FFmpeg storage until delivery succeeds. If
+    // browser saving fails, the retry path can reread it instead of retaining a
+    // second full-size Uint8Array in pendingExportSave for an unbounded time.
+    const delivery = await saveVideo(data);
+    try { await engine.deleteFile(outputPath); } catch (_) { /* delivered file is already safe */ }
+    return delivery;
   }
   const name = `ProjectMedia-Y-${Date.now()}.mp4`;
   const CHUNK_BYTES = 1024 * 1024;
@@ -1690,7 +1693,7 @@ async function retryPendingExportSave() {
     hideBusy();
   } catch (error) {
     console.warn('Could not save the retained MediaY render:', error);
-    showBusyError('Save still unavailable', 'Your completed render is still preserved in MediaY memory. Check free storage or Android save permissions, then tap Retry save again. Keep MediaY open.');
+    showBusyError('Save still unavailable', 'Your completed render is still preserved in temporary export storage. Check free storage or Android save permissions, then tap Retry save again. Keep MediaY open.');
     const retry = $('busyDismiss');
     retry.textContent = 'Retry save';
     retry.disabled = false;
