@@ -1,18 +1,37 @@
 {
   "id": "./",
-  "name": "ProjectMedia Y",
-  "short_name": "Media Y",
-  "description": "A free, mobile-first video editing studio.",
+  "name": "MediaY — Video Studio",
+  "short_name": "MediaY",
+  "description": "A focused, mobile-first video editing studio.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#101012",
-  "theme_color": "#f01925",
-  "categories": ["video", "multimedia", "productivity"],
+  "background_color": "#080D18",
+  "theme_color": "#080D18",
+  "categories": [
+    "video",
+    "multimedia",
+    "productivity"
+  ],
   "icons": [
-    { "src": "./icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "./icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
   ]
 }
