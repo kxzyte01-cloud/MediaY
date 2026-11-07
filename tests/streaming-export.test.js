@@ -6,8 +6,9 @@ const vm = require('node:vm');
 
 const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 const app = read('app.js');
-const wrapper = read('vendor/ffmpeg/ffmpeg.js');
-const worker = read('vendor/ffmpeg/814.ffmpeg.js');
+const wrapperPath = path.join(__dirname, '..', 'vendor/ffmpeg/ffmpeg.js');
+const workerPath = path.join(__dirname, '..', 'vendor/ffmpeg/814.ffmpeg.js');
+const ffmpegVendorMissing = !fs.existsSync(wrapperPath) || !fs.existsSync(workerPath);
 const workflow = read('.github/workflows/built.yml');
 
 test('native export reads FFmpeg output in bounded worker chunks', () => {
@@ -17,6 +18,11 @@ test('native export reads FFmpeg output in bounded worker chunks', () => {
   const nativePath = app.slice(app.indexOf('async function saveFFmpegOutput'), app.indexOf('// Native Android builds register'))
     .split('if (!nativeStore')[0];
   assert.ok(!nativePath.includes('readFile(outputPath)'));
+});
+
+test('FFmpeg wrapper and worker expose the bounded range-read protocol', { skip: ffmpegVendorMissing ? 'Vendor FFmpeg bundle is omitted from this source snapshot' : false }, () => {
+  const wrapper = fs.readFileSync(wrapperPath, 'utf8');
+  const worker = fs.readFileSync(workerPath, 'utf8');
   assert.ok(wrapper.includes('readFileChunk='));
   assert.ok(worker.includes('case t.READ_FILE_CHUNK'));
 });
@@ -41,7 +47,8 @@ test('build workflow uses read-only contents permission and isolates release wri
   assert.ok(workflow.includes('actions/download-artifact@v4'));
 });
 
-test('FFmpeg worker range reads return exact offsets and end-of-file metadata', async () => {
+test('FFmpeg worker range reads return exact offsets and end-of-file metadata', { skip: !fs.existsSync(workerPath) ? 'Vendor FFmpeg worker is omitted from this source snapshot' : false }, async () => {
+  const worker = fs.readFileSync(workerPath, 'utf8');
   const bytes = new TextEncoder().encode('abcdefghij');
   const messages = [];
   const fakeFS = {
