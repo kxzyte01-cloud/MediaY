@@ -191,9 +191,10 @@ def main():
                 out, ivf = render(case_id, dict(W=640, H=360, fps=30,
                                                 clips=[clip(source_name, 0, 1)]))
                 got, _ = ids(ivf, 640, 360)
-                expected = [2000 + math.floor(k * source_fps / 30 + 0.5) if source_fps == 60
-                            else (3000 if source_fps == 24 else 4000) + math.floor(k * source_fps / 30 + 0.5)
-                            for k in range(30)]
+                base = 2000 if source_fps == 60 else (3000 if source_fps == 24 else 4000)
+                # Match FFmpeg fps filter tie behavior: exact half-frame samples keep
+                # the earlier source frame; the next frame starts at the next slot.
+                expected = [base + math.ceil(k * source_fps / 30 - 0.5) for k in range(30)]
                 check(f"{case_id}: nearest source barcode at 30 fps", got == expected,
                       f"expected={expected} got={got}");
 
