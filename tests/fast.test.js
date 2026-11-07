@@ -72,6 +72,7 @@ test('Annex B sink enforces a bounded output buffer before copying oversized chu
   let copied = false;
   const limited = new Fast.AnnexBSink(4);
   assert.throws(() => limited.onChunk({ byteLength: 5, copyTo() { copied = true; } }), Fast.Unsupported);
+  assert.throws(() => limited.onChunk({ byteLength: 5, copyTo() { copied = true; } }), error => error.code === 'PIECE_BUDGET_EXCEEDED');
   assert.equal(copied, false, 'an over-budget chunk must be rejected before allocating its copy');
   assert.equal(limited.bytes, 0);
 
