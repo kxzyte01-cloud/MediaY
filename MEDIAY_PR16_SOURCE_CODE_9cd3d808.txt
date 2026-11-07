@@ -10436,3 +10436,263 @@ test('undo and redo schedule persistence only after the restored state is applie
   assert.match(redo, /if \(!redoStack\.length\) return/);
 });
 
+
+
+================================================================================
+FILE: tests/offline_speech_runtime.py
+BLOB SHA: f3162249b562e2e8a886c6a5fbc20e0bb0609e9b
+================================================================================
+"""Proves the bundled speech engine (JavaScript + WASM runtime) runs with ALL external network blocked.
+
+It loads vendor/transformers/transformers.min.js in headless Chromium, points the library at the bundled WASM
+runtime exactly as app.js does (SPEECH_ENGINE.bundledRuntime), and runs a real ONNX inference on a tiny local model.
+The Whisper model weights are NOT bundled, so this does not claim offline captions: only that the code and runtime
+need no internet. Run: python tests/offline_speech_runtime.py
+"""
+import base64, functools, http.server, json, re, socketserver, subprocess, threading
+from pathlib import Path
+from playwright.sync_api import sync_playwright
+
+ROOT = Path(__file__).resolve().parent.parent
+FETCH = ROOT / "scripts" / "fetch_speech_engine.sh"
+MODEL_B64 = ROOT / "tests" / "fixtures" / "offline" / "tiny_model.onnx.b64"   # a 343-byte ONNX graph, stored as text
+PAGE = """<!doctype html><meta charset=utf-8><script type="module">
+window.run = async () => {
+  const { env, AutoModel, Tensor } = await import('/vendor/transformers/transformers.min.js');
+  env.allowLocalModels = true; env.allowRemoteModels = false; env.useBrowserCache = false;
+  env.localModelPath = '/tests/fixtures/offline/models/';
+  env.backends.onnx.wasm.wasmPaths = new URL('/vendor/transformers/', location.href).href;   // same as app.js
+  env.backends.onnx.wasm.numThreads = 1;
+  const model = await AutoModel.from_pretrained('tiny', { quantized: false });
+  const ids = a => new Tensor('int64', BigInt64Array.from(a.map(BigInt)), [1, a.length]);
+  const out = await model({ input_ids: ids([1, 2, 3]), attention_mask: ids([1, 1, 1]), token_type_ids: ids([0, 0, 0]) });
+  return Array.from(out.last_hidden_state.data);
+};
+window.ready = true;
+</script>"""
+
+class Quiet(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *args): pass
+
+def main():
+    # The third-party speech engine files are not committed; they are downloaded and checksum-verified on demand.
+    subprocess.run(["bash", str(FETCH)], check=True, cwd=ROOT)
+    app_js = (ROOT / "app.js").read_text()
+    assert re.search(r"wasmPaths\s*=\s*absoluteUrl\(SPEECH_ENGINE\.bundledRuntime\)", app_js) and "bundledRuntimeAvailable" in app_js, "app.js must point the library at the bundled WASM runtime"
+    socketserver.TCPServer.allow_reuse_address = True
+    server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), functools.partial(Quiet, directory=str(ROOT)))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    external = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        context = browser.new_context(service_workers="block")
+        def block(route):
+            external.append(route.request.url); route.abort()
+        context.route(lambda url: not url.startswith(base), block)
+        context.route(base + "/__offline_test__.html", lambda route: route.fulfill(body=PAGE, content_type="text/html"))
+        model_bytes = base64.b64decode(MODEL_B64.read_text())
+        context.route(base + "/tests/fixtures/offline/models/tiny/onnx/model.onnx", lambda route: route.fulfill(body=model_bytes, content_type="application/octet-stream"))
+        page = context.new_page()
+        page.goto(base + "/__offline_test__.html")
+        page.wait_for_function("window.ready === true")
+        values = page.evaluate("window.run()")
+        browser.close()
+    server.shutdown()
+    assert values == [2, 3, 4], values
+    assert not external, f"the speech engine tried to use the internet: {external}"
+    print("PASS: bundled speech engine runs a real ONNX inference with all external network blocked", json.dumps(values))
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================================================
+FILE: tests/project-media-gc.test.js
+BLOB SHA: 622de89cd5175e8d0a94e8cf42189fa74dd0e9af
+================================================================================
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const setup = fs.readFileSync(path.join(__dirname, '..', 'setup.js'), 'utf8');
+
+test('project media GC saves current state and retains every media reference across all projects', () => {
+  const start = setup.indexOf('async function collectUnreferencedMedia()');
+  const end = setup.indexOf('async function deleteSavedProject', start);
+  assert.ok(start >= 0 && end > start);
+  const gc = setup.slice(start, end);
+  assert.match(gc, /await saveProject\(\)/);
+  assert.match(gc, /localStorage\.getItem\('pmy-templates'\)/);
+  assert.match(gc, /template\.pre, template\.post, template\.overlays, template\.audio/);
+  assert.match(gc, /template\.slotClip\.mediaId/);
+  assert.match(gc, /saved templates could not be read/);
+  assert.match(gc, /saved template has an unsupported shape/);
+  assert.match(gc, /await db\.projects\.toArray\(\)/);
+  assert.match(gc, /\[state\.main, state\.audio, state\.overlays\]/);
+  assert.match(gc, /referenced\.add\(item\.mediaId\)/);
+  assert.match(gc, /return 0; \/\/ Unknown references must never cause user media to be deleted/);
+  assert.match(gc, /!Array\.isArray\(state\.main\)/);
+  assert.match(gc, /!Array\.isArray\(state\.audio\)/);
+  assert.match(gc, /!Array\.isArray\(state\.overlays\)/);
+  assert.match(gc, /db\.media\.bulkDelete\(orphanIds\)/);
+  assert.match(gc, /URL\.revokeObjectURL\(urls\[id\]\)/);
+  assert.match(gc, /delete files\[id\]/);
+  assert.match(gc, /delete decoded\[id\]/);
+  assert.match(gc, /delete thumbs\[id\]/);
+  assert.match(gc, /delete audioLoads\[id\]/);
+  assert.doesNotMatch(gc, /dropMediaCaches\(\)/);
+});
+
+test('deleting a named project invokes best-effort cleanup without deleting shared media', () => {
+  const start = setup.indexOf('async function deleteSavedProject');
+  const end = setup.indexOf('async function renderProjectLibrary', start);
+  assert.ok(start >= 0 && end > start);
+  const deletion = setup.slice(start, end);
+  assert.match(deletion, /await db\.projects\.delete\(id\)/);
+  assert.match(deletion, /await collectUnreferencedMedia\(\)/);
+  assert.match(deletion, /Media used by other projects will be kept/);
+});
+
+
+
+================================================================================
+FILE: tests/streaming-export.test.js
+BLOB SHA: 055c5c3c75ffd2c6b7956fc2d389a51300efbbb4
+================================================================================
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+const app = read('app.js');
+const wrapperPath = path.join(__dirname, '..', 'vendor/ffmpeg/ffmpeg.js');
+const workerPath = path.join(__dirname, '..', 'vendor/ffmpeg/814.ffmpeg.js');
+const ffmpegVendorMissing = !fs.existsSync(wrapperPath) || !fs.existsSync(workerPath);
+const workflow = read('.github/workflows/built.yml');
+
+test('native export reads FFmpeg output in bounded worker chunks', () => {
+  assert.ok(app.includes('async function saveFFmpegOutput(engine, outputPath)'));
+  assert.ok(app.includes('engine.readFileChunk(outputPath, offset, CHUNK_BYTES)'));
+  assert.ok(app.includes('nativeStore.appendStreamingChunk({ data: btoa(binary) })'));
+  const nativePath = app.slice(app.indexOf('async function saveFFmpegOutput'), app.indexOf('// Native Android builds register'))
+    .split('if (!nativeStore')[0];
+  assert.ok(!nativePath.includes('readFile(outputPath)'));
+});
+
+test('FFmpeg wrapper and worker expose the bounded range-read protocol', { skip: ffmpegVendorMissing ? 'Vendor FFmpeg bundle is omitted from this source snapshot' : false }, () => {
+  const wrapper = fs.readFileSync(wrapperPath, 'utf8');
+  const worker = fs.readFileSync(workerPath, 'utf8');
+  assert.ok(wrapper.includes('readFileChunk='));
+  assert.ok(worker.includes('case t.READ_FILE_CHUNK'));
+});
+
+test('Android MediaStore streaming export publishes only after all chunks are written', () => {
+  const begin = workflow.indexOf('public synchronized void beginStreamingSave');
+  const append = workflow.indexOf('public synchronized void appendStreamingChunk');
+  const finish = workflow.indexOf('public synchronized void finishStreamingSave');
+  assert.ok(begin >= 0 && append > begin && finish > append);
+  const section = workflow.slice(begin, workflow.indexOf('public void saveVideo(PluginCall call)', finish));
+  assert.ok(section.includes('MediaStore.Video.Media.IS_PENDING, 1'));
+  assert.ok(section.includes('MediaStore.Video.Media.IS_PENDING, 0'));
+  assert.ok(section.includes('abortStreamingSaveInternal()'));
+  assert.ok(section.includes('4 * 1024 * 1024'));
+});
+
+test('build workflow uses read-only contents permission and isolates release write permission', () => {
+  assert.ok(workflow.includes('permissions:\n  contents: read'));
+  assert.ok(workflow.includes('  build:\n    permissions:\n      contents: read'));
+  assert.ok(workflow.includes('  publish-release:\n'));
+  assert.ok(workflow.includes('      contents: write'));
+  assert.ok(workflow.includes('actions/download-artifact@v4'));
+});
+
+test('FFmpeg worker range reads return exact offsets and end-of-file metadata', { skip: !fs.existsSync(workerPath) ? 'Vendor FFmpeg worker is omitted from this source snapshot' : false }, async () => {
+  const worker = fs.readFileSync(workerPath, 'utf8');
+  const bytes = new TextEncoder().encode('abcdefghij');
+  const messages = [];
+  const fakeFS = {
+    stat: () => ({ size: bytes.length }),
+    open: filePath => ({ path: filePath }),
+    read: (stream, target, targetOffset, length, position) => {
+      const count = Math.max(0, Math.min(length, bytes.length - position));
+      target.set(bytes.subarray(position, position + count), targetOffset);
+      return count;
+    },
+    close: () => {}
+  };
+  const self = {
+    postMessage: message => messages.push(message),
+    createFFmpegCore: async () => ({
+      FS: fakeFS,
+      setLogger: () => {},
+      setProgress: () => {}
+    })
+  };
+  const context = {
+    self,
+    importScripts: () => {},
+    btoa: value => Buffer.from(value, 'binary').toString('base64'),
+    Uint8Array, Math, Number, Error, Promise, JSON
+  };
+  vm.runInNewContext(worker, context);
+  await self.onmessage({ data: { id: 1, type: 'LOAD', data: { coreURL: 'core.js', wasmURL: 'core.wasm' } } });
+  await self.onmessage({ data: { id: 2, type: 'READ_FILE_CHUNK', data: { path: 'final.mp4', offset: 5, length: 4 } } });
+  await self.onmessage({ data: { id: 3, type: 'READ_FILE_CHUNK', data: { path: 'final.mp4', offset: 8, length: 4 } } });
+  const first = messages.find(message => message.id === 2).data;
+  const last = messages.find(message => message.id === 3).data;
+  assert.equal(new TextDecoder().decode(first.data), 'fghi');
+  assert.equal(first.bytesRead, 4);
+  assert.equal(first.fileSize, 10);
+  assert.equal(first.eof, false);
+  assert.equal(new TextDecoder().decode(last.data), 'ij');
+  assert.equal(last.bytesRead, 2);
+  assert.equal(last.eof, true);
+});
+
+
+
+================================================================================
+FILE: tests/vendor-integrity.test.js
+BLOB SHA: e1c668ee023bfa0ba62abd4978ba2de151ff5fd1
+================================================================================
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+
+const root = path.join(__dirname, '..');
+const expected = {
+  'fabric.min.js': 'uwRC1ppNRnMyD2ibxuFsBaDj8WzPv1UfOU2Qp+fPx3I=',
+  'anime.min.js': 'tc4b48P1MPGS4PJXHRlChGCW1mEZy62jS/3JEsSHPzU=',
+  'dexie.min.js': '2JhqFVK0mn2MsIWpLGaYWuvzuzO2Stb3uu0kYdm2R/8='
+};
+
+const missingVendorFiles = Object.keys(expected).filter(name => !fs.existsSync(path.join(root, 'vendor', 'media-libraries', name)));
+
+test('vendored editor libraries match their pinned SHA-256 SRI digests', { skip: missingVendorFiles.length ? 'Vendor editor libraries are omitted from this source snapshot: ' + missingVendorFiles.join(', ') : false }, () => {
+  for (const [name, digest] of Object.entries(expected)) {
+    const file = path.join(root, 'vendor', 'media-libraries', name);
+    const actual = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('base64');
+    assert.equal(actual, digest, name + ' integrity mismatch');
+  }
+});
+
+
+
+================================================================================
+FILE: tests/fixtures/offline/models/tiny/config.json
+BLOB SHA: 4540d6124f9c82578d4f9b4e1b78a10c118fc711
+================================================================================
+{"model_type": "bert", "architectures": ["BertModel"], "hidden_size": 1}
+
+
+END OF SOURCE BUNDLE.
+Included text files: 53. Excluded: binary PNG icons, ONNX/base64 model fixture, third-party vendor libraries/bundles (FFmpeg, Anime, Dexie, Fabric, Transformers runtime), and old embedded snapshot.
