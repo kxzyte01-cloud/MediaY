@@ -193,11 +193,15 @@ def main():
 
             # An underestimated bitrate must shrink and retry the piece instead of abandoning WebCodecs.
             r = go({"main": [clip("m1", 0, 4)], "overlays": []}, simulateBudgetOverrun=True)
+            progress_values = [value for value in r["log"]["busy"] if isinstance(value, (int, float))]
             check("budget overrun: retries at half-size and keeps the device encoder path",
                   r["budgetInjected"] and r["returned"] == "joined.mp4" and
                   r["log"]["notes"].get("deviceEncoder", "").startswith("used") and
                   r["log"]["notes"].get("deviceEncoderBudgetRetry") == "retrying with 60 frames per piece",
                   f"returned={r['returned']} notes={r['log']['notes']} error={r['error']}")
+            check("budget retry: device export progress never moves backwards",
+                  all(a <= b for a, b in zip(progress_values, progress_values[1:])),
+                  f"progress={progress_values}")
 
             # 2. project without any sound track -> picture only
             r = go({"main": [clip("m2", 0, 1)], "overlays": []})
