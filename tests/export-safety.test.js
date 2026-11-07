@@ -60,3 +60,7 @@ test('skip_loop_filter is restricted to the explicit Fast Draft preset', () => {
   assert.match(app, /EXP\.fastDraft = name === 'draft'/);
   assert.match(app, /hiRate && EXP\.fastDraft \? \[true, false\] : \[false\]/);
 });
+
+test('audio mixing disables dropout transition gain ramping', () => {
+  assert.match(app, /amix=inputs=\$\{mixCount\}:duration=longest:normalize=0:dropout_transition=0/);
+});
