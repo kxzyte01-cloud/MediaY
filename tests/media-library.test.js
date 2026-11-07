@@ -29,7 +29,7 @@ test('Android native media library requests version-appropriate image/video perm
   assert.match(workflow, /Build\.VERSION\.SDK_INT >= 34[\s\S]{0,220}"mediaImages", "mediaVideos", "selectedVisualMedia"/);
   assert.match(workflow, /Build\.VERSION\.SDK_INT >= 33[\s\S]{0,180}"mediaImages", "mediaVideos"/);
   assert.match(workflow, /requestPermissionForAlias\("legacyRead"/);
-  assert.match(workflow, /state\.put\("partial", selected && !\(images && videos\)\)/);
+  assert.match(workflow, /state\.put\("partial", !\(images && videos\)\)/);
 });
 
 test('native media browsing is paginated and stages content URIs through ContentResolver', () => {
@@ -40,7 +40,7 @@ test('native media browsing is paginated and stages content URIs through Content
   assert.match(workflow, /resolver\.loadThumbnail\(uri, new Size\(180, 180\), null\)/);
   assert.match(workflow, /public void stageMedia\(PluginCall call\)/);
   assert.match(workflow, /getContentResolver\(\)\.openInputStream\(Uri\.parse\(uriValue\)\)/);
-  assert.match(workflow, /private (?:static )?void copy\\(InputStream input, OutputStream output\\)/);
+  assert.match(workflow, /private (?:static )?void copy\(InputStream input, OutputStream output\)/);
   assert.match(workflow, /public void deleteStagedMedia\(PluginCall call\)/);
   assert.match(workflow, /cache\.equals\(staged\.getParentFile\(\)\)/,
     'staged-file cleanup must be confined to MediaY cache files');
