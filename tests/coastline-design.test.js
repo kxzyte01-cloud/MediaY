@@ -82,7 +82,7 @@ test('native MediaStore library requests visual-media access on demand and suppo
   assert.match(html,/data-media-kind="videos"/);
   assert.match(html,/data-media-kind="images"/);
   assert.match(app,/async function openMediaLibrary\(kind = 'all'\)/);
-  assert.match(app,/plugin\.requestMediaAccess\(\)/);
+  assert.match(app,/plugin\.requestMediaAccess\(\{ kind \}\)/);\n  assert.match(app,/plugin\.requestMediaAccess\(\{ kind: mediaLibraryKind \}\)/);
   assert.match(app,/plugin\.listMedia\(/);
   assert.match(app,/plugin\.stageMedia\(/);
   assert.match(app,/plugin\.deleteStagedMedia\(/);
