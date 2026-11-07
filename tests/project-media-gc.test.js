@@ -12,6 +12,11 @@ test('project media GC saves current state and retains every media reference acr
   assert.ok(start >= 0 && end > start);
   const gc = setup.slice(start, end);
   assert.match(gc, /await saveProject\(\)/);
+  assert.match(gc, /localStorage\.getItem\('pmy-templates'\)/);
+  assert.match(gc, /template\.pre, template\.post, template\.overlays, template\.audio/);
+  assert.match(gc, /template\.slotClip\.mediaId/);
+  assert.match(gc, /saved templates could not be read/);
+  assert.match(gc, /saved template has an unsupported shape/);
   assert.match(gc, /await db\.projects\.toArray\(\)/);
   assert.match(gc, /\[state\.main, state\.audio, state\.overlays\]/);
   assert.match(gc, /referenced\.add\(item\.mediaId\)/);
