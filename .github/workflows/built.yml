@@ -311,12 +311,17 @@ jobs:
 
           import android.Manifest;
           import android.content.ContentResolver;
+          import android.content.ContentUris;
           import android.content.ContentValues;
+          import android.database.Cursor;
+          import android.graphics.Bitmap;
           import android.media.MediaScannerConnection;
           import android.net.Uri;
           import android.os.Build;
           import android.os.Environment;
           import android.provider.MediaStore;
+          import android.util.Base64;
+          import android.util.Size;
 
           import com.getcapacitor.JSObject;
           import com.getcapacitor.PermissionState;
@@ -329,6 +334,7 @@ jobs:
 
           import java.io.BufferedInputStream;
           import java.io.BufferedOutputStream;
+          import java.io.ByteArrayOutputStream;
           import java.io.File;
           import java.io.FileInputStream;
           import java.io.FileOutputStream;
@@ -339,10 +345,210 @@ jobs:
           @CapacitorPlugin(
               name = "MediaYMediaStore",
               permissions = {
-                  @Permission(alias = "legacyStorage", strings = { Manifest.permission.WRITE_EXTERNAL_STORAGE })
+                  @Permission(alias = "legacyStorage", strings = { Manifest.permission.WRITE_EXTERNAL_STORAGE }),
+                  @Permission(alias = "legacyRead", strings = { Manifest.permission.READ_EXTERNAL_STORAGE }),
+                  @Permission(alias = "mediaImages", strings = { Manifest.permission.READ_MEDIA_IMAGES }),
+                  @Permission(alias = "mediaVideos", strings = { Manifest.permission.READ_MEDIA_VIDEO }),
+                  @Permission(alias = "selectedVisualMedia", strings = { Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED })
               }
           )
           public final class MediaYMediaStorePlugin extends Plugin {
+              @PluginMethod
+              public void requestMediaAccess(PluginCall call) {
+                  if (hasMediaAccess()) {
+                      call.resolve(mediaAccessState());
+                      return;
+                  }
+                  if (Build.VERSION.SDK_INT >= 34) {
+                      requestPermissionForAliases(new String[] { "mediaImages", "mediaVideos", "selectedVisualMedia" },
+                          call, "mediaAccessPermissionCallback");
+                  } else if (Build.VERSION.SDK_INT >= 33) {
+                      requestPermissionForAliases(new String[] { "mediaImages", "mediaVideos" },
+                          call, "mediaAccessPermissionCallback");
+                  } else {
+                      requestPermissionForAlias("legacyRead", call, "mediaAccessPermissionCallback");
+                  }
+              }
+
+              @PermissionCallback
+              private void mediaAccessPermissionCallback(PluginCall call) {
+                  call.resolve(mediaAccessState());
+              }
+
+              private boolean hasMediaAccess() {
+                  if (Build.VERSION.SDK_INT >= 34) {
+                      return getContext().checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+                          getContext().checkSelfPermission(Manifest.permission.READ_MEDIA_VIDEO) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+                          getContext().checkSelfPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+                  }
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      return getContext().checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+                          getContext().checkSelfPermission(Manifest.permission.READ_MEDIA_VIDEO) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+                  }
+                  return getContext().checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+              }
+
+              private JSObject mediaAccessState() {
+                  JSObject state = new JSObject();
+                  boolean images = Build.VERSION.SDK_INT >= 33
+                      ? getContext().checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                      : getContext().checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+                  boolean videos = Build.VERSION.SDK_INT >= 33
+                      ? getContext().checkSelfPermission(Manifest.permission.READ_MEDIA_VIDEO) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                      : getContext().checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+                  boolean selected = Build.VERSION.SDK_INT >= 34 &&
+                      getContext().checkSelfPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+                  state.put("allowed", images || videos || selected);
+                  state.put("images", images);
+                  state.put("videos", videos);
+                  state.put("partial", selected && !(images && videos));
+                  return state;
+              }
+
+              @PluginMethod
+              public void listMedia(PluginCall call) {
+                  if (!hasMediaAccess()) {
+                      call.reject("Media access is not granted. Open Media Library and allow photo/video access first.");
+                      return;
+                  }
+                  String kind = call.getString("kind");
+                  if (kind == null) kind = "all";
+                  Integer requestedLimit = call.getInt("limit");
+                  Integer requestedOffset = call.getInt("offset");
+                  int limit = Math.max(1, Math.min(80, requestedLimit == null ? 40 : requestedLimit));
+                  int offset = Math.max(0, requestedOffset == null ? 0 : requestedOffset);
+                  ContentResolver resolver = getContext().getContentResolver();
+                  String[] projection = {
+                      MediaStore.Files.FileColumns._ID,
+                      MediaStore.Files.FileColumns.DISPLAY_NAME,
+                      MediaStore.Files.FileColumns.MIME_TYPE,
+                      MediaStore.Files.FileColumns.MEDIA_TYPE,
+                      MediaStore.Files.FileColumns.DATE_ADDED,
+                      MediaStore.Files.FileColumns.SIZE,
+                      MediaStore.Video.Media.DURATION,
+                      MediaStore.Images.Media.WIDTH,
+                      MediaStore.Images.Media.HEIGHT,
+                      MediaStore.Images.Media.BUCKET_DISPLAY_NAME
+                  };
+                  String mediaType = MediaStore.Files.FileColumns.MEDIA_TYPE;
+                  String selection = MediaStore.Files.FileColumns.MEDIA_TYPE + " IN (?, ?)";
+                  String[] args = {
+                      String.valueOf(MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE),
+                      String.valueOf(MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO)
+                  };
+                  if ("images".equals(kind)) {
+                      selection = mediaType + " = ?";
+                      args = new String[] { String.valueOf(MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE) };
+                  } else if ("videos".equals(kind)) {
+                      selection = mediaType + " = ?";
+                      args = new String[] { String.valueOf(MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO) };
+                  } else if (!"all".equals(kind)) {
+                      call.reject("Unsupported media library filter.");
+                      return;
+                  }
+                  JSArray items = new JSArray();
+                  int seen = 0;
+                  try (Cursor cursor = resolver.query(MediaStore.Files.getContentUri("external"), projection,
+                      selection, args, MediaStore.Files.FileColumns.DATE_ADDED + " DESC")) {
+                      if (cursor != null) {
+                          int idCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID);
+                          int nameCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DISPLAY_NAME);
+                          int mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MIME_TYPE);
+                          int typeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MEDIA_TYPE);
+                          int dateCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_ADDED);
+                          int sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.SIZE);
+                          int durationCol = cursor.getColumnIndex(MediaStore.Video.Media.DURATION);
+                          int widthCol = cursor.getColumnIndex(MediaStore.Images.Media.WIDTH);
+                          int heightCol = cursor.getColumnIndex(MediaStore.Images.Media.HEIGHT);
+                          int albumCol = cursor.getColumnIndex(MediaStore.Images.Media.BUCKET_DISPLAY_NAME);
+                          while (cursor.moveToNext()) {
+                              if (seen++ < offset) continue;
+                              if (items.length() >= limit) break;
+                              long id = cursor.getLong(idCol);
+                              int type = cursor.getInt(typeCol);
+                              boolean isVideo = type == MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO;
+                              Uri itemUri = ContentUris.withAppendedId(
+                                  isVideo ? MediaStore.Video.Media.EXTERNAL_CONTENT_URI : MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id);
+                              String name = cursor.getString(nameCol);
+                              String mime = cursor.getString(mimeCol);
+                              JSObject item = new JSObject();
+                              item.put("uri", itemUri.toString());
+                              item.put("name", name == null ? "Media file" : name);
+                              item.put("mimeType", mime == null ? (isVideo ? "video/*" : "image/*") : mime);
+                              item.put("kind", isVideo ? "video" : "image");
+                              item.put("dateAdded", cursor.getLong(dateCol));
+                              item.put("size", cursor.getLong(sizeCol));
+                              item.put("duration", durationCol >= 0 && !cursor.isNull(durationCol) ? cursor.getLong(durationCol) : 0);
+                              item.put("width", widthCol >= 0 && !cursor.isNull(widthCol) ? cursor.getInt(widthCol) : 0);
+                              item.put("height", heightCol >= 0 && !cursor.isNull(heightCol) ? cursor.getInt(heightCol) : 0);
+                              item.put("album", albumCol >= 0 ? cursor.getString(albumCol) : "");
+                              item.put("thumbnail", mediaThumbnail(resolver, itemUri));
+                              items.put(item);
+                          }
+                      }
+                      JSObject result = new JSObject();
+                      result.put("items", items);
+                      result.put("offset", offset);
+                      result.put("limit", limit);
+                      result.put("hasMore", items.length() == limit);
+                      result.put("access", mediaAccessState());
+                      call.resolve(result);
+                  } catch (Exception error) {
+                      call.reject("Could not read the device media library: " + error.getMessage(), error);
+                  }
+              }
+
+              private String mediaThumbnail(ContentResolver resolver, Uri uri) {
+                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return "";
+                  try (Bitmap bitmap = resolver.loadThumbnail(uri, new Size(180, 180), null);
+                       ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+                      bitmap.compress(Bitmap.CompressFormat.JPEG, 68, output);
+                      return Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP);
+                  } catch (Exception ignored) {
+                      return "";
+                  }
+              }
+
+              @PluginMethod
+              public void stageMedia(PluginCall call) {
+                  String uriValue = call.getString("uri");
+                  String suppliedName = call.getString("name");
+                  if (uriValue == null || uriValue.isEmpty()) {
+                      call.reject("The selected media item has no URI.");
+                      return;
+                  }
+                  String safeName = suppliedName == null ? "mediay-import.bin" : suppliedName.replaceAll("[^A-Za-z0-9._-]", "_");
+                  File staged = new File(getContext().getCacheDir(),
+                      "mediay-import-" + System.currentTimeMillis() + "-" + safeName);
+                  try (InputStream input = getContext().getContentResolver().openInputStream(Uri.parse(uriValue));
+                       OutputStream output = new BufferedOutputStream(new FileOutputStream(staged))) {
+                      if (input == null) throw new IOException("Android could not open the selected media URI.");
+                      copy(input, output);
+                      JSObject result = new JSObject();
+                      result.put("path", Uri.fromFile(staged).toString());
+                      result.put("name", suppliedName == null ? safeName : suppliedName);
+                      result.put("mimeType", call.getString("mimeType") == null ? "application/octet-stream" : call.getString("mimeType"));
+                      result.put("bytes", staged.length());
+                      call.resolve(result);
+                  } catch (Exception error) {
+                      if (staged.exists()) staged.delete();
+                      call.reject("Could not prepare the selected media for editing: " + error.getMessage(), error);
+                  }
+              }
+
+              @PluginMethod
+              public void deleteStagedMedia(PluginCall call) {
+                  String path = call.getString("path");
+                  if (path != null) {
+                      try {
+                          File staged = new File(Uri.parse(path).getPath()).getCanonicalFile();
+                          File cache = getContext().getCacheDir().getCanonicalFile();
+                          if (cache.equals(staged.getParentFile()) && staged.getName().startsWith("mediay-import-")) staged.delete();
+                      } catch (Exception ignored) {}
+                  }
+                  call.resolve();
+              }
+
               private Uri streamingUri;
               private OutputStream streamingOutput;
               private String streamingFileName;
@@ -595,6 +801,10 @@ jobs:
           grep -q 'android.permission.FOREGROUND_SERVICE"' "$M" || sed -i 's#<application#<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <application#' "$M"
           grep -q 'android.permission.WAKE_LOCK"' "$M" || sed -i 's#<application#<uses-permission android:name="android.permission.WAKE_LOCK" />\n    <application#' "$M"
           grep -q 'android.permission.WRITE_EXTERNAL_STORAGE' "$M" || sed -i 's#<application#<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />\n    <application#' "$M"
+          grep -q 'android.permission.READ_EXTERNAL_STORAGE' "$M" || sed -i 's#<application#<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />\n    <application#' "$M"
+          grep -q 'android.permission.READ_MEDIA_IMAGES' "$M" || sed -i 's#<application#<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />\n    <application#' "$M"
+          grep -q 'android.permission.READ_MEDIA_VIDEO' "$M" || sed -i 's#<application#<uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />\n    <application#' "$M"
+          grep -q 'android.permission.READ_MEDIA_VISUAL_USER_SELECTED' "$M" || sed -i 's#<application#<uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />\n    <application#' "$M"
           grep -q 'MediaYExportService' "$M" || sed -i 's#</application>#        <service android:name=".MediaYExportService" android:exported="false" android:foregroundServiceType="dataSync" />\n    </application>#' "$M"
 
       - run: python3 make_icons.py after
