@@ -52,3 +52,9 @@ test('clip and template deletion schedule debounced, export-safe media collectio
   assert.match(app, /if \(typeof window\.scheduleMediaGc === 'function'\) window\.scheduleMediaGc\(\)/);
   assert.match(app, /Delete template[\s\S]{0,300}scheduleMediaGc/);
 });
+
+test('malformed template references produce an actionable visible cleanup warning', () => {
+  assert.match(setup, /Storage cleanup skipped because saved templates could not be read/);
+  assert.match(setup, /Storage cleanup skipped because a saved template is damaged/);
+  assert.match(setup, /if \(typeof say === 'function'\) say\(warning\)/);
+});
