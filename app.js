@@ -388,9 +388,11 @@ function scheduleProjectSave() {
   }), 800);
 }
 function commit() {
+  const historyWillReleaseMedia = undoStack.length >= 50 || redoStack.length > 0;
   undoStack.push(snap()); if (undoStack.length > 50) undoStack.shift(); redoStack = [];
   drawTimeline();
   scheduleProjectSave();
+  if (historyWillReleaseMedia && typeof window.scheduleMediaGc === 'function') window.scheduleMediaGc();
 }
 function normalizeState(value) {
   const raw = typeof value === 'string' ? JSON.parse(value) : value;
@@ -2347,7 +2349,7 @@ const runExport = async (_event, recoveryAttempt = 0) => {
       exportFailed = true;
       retryAfterCleanup = false;
       exportProgressHandler = null;
-      const message = 'The video finished rendering, but saving failed. Your completed MP4 is still preserved in MediaY memory. Check storage or Android save permissions, then tap Retry save. Keep MediaY open.';
+      const message = 'The video finished rendering, but saving failed. Your completed MP4 is still preserved in temporary export storage. Check storage or Android save permissions, then tap Retry save. Keep MediaY open.';
       say(message);
       showBusyError('Video rendered — save failed', message);
       $('busyDiscard').hidden = false;
