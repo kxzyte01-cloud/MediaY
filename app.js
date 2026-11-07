@@ -2761,8 +2761,12 @@ const CAPTION_STREAM_WINDOW_SECONDS = 10 * 60;
 const CAPTION_STREAM_OVERLAP_SECONDS = 1.5;
 const CAPTION_STREAM_MAX_SECONDS = 4 * 60 * 60;
 function shouldStreamCaptionSource(file, src) {
-  const duration = Math.max(0, Number(src && src.out) - Number(src && src.in));
-  return !!file && (file.size > CAPTION_STREAM_THRESHOLD_BYTES || duration > CAPTION_STREAM_WINDOW_SECONDS);
+  const selectedDuration = Math.max(0, Number(src && src.out) - Number(src && src.in));
+  // A short trim can still point into a very large original source. Keep the
+  // decode path bounded when either the selected range or source media is long.
+  const sourceDuration = Math.max(0, Number(src && src.src) || 0);
+  return !!file && (file.size > CAPTION_STREAM_THRESHOLD_BYTES ||
+    selectedDuration > CAPTION_STREAM_WINDOW_SECONDS || sourceDuration > CAPTION_STREAM_WINDOW_SECONDS);
 }
 function rawCaptionBytesToPcm(raw) {
   if (!raw || raw.byteLength < 4 || raw.byteLength % 4 !== 0) return null;
@@ -2921,8 +2925,8 @@ $('busyCancel').onclick = () => exportInProgress ? requestExportCancel() : reque
 $('capGo').onclick = async () => {
   const audioSelection = sel && sel.lane === 'audio' ? S.audio.find(x => x.id === sel.id) : null;
   const explicitVideo = !audioSelection && sel && sel.lane === 'main' ? S.main.find(x => x.id === sel.id) : null;
-  const audioCandidate = item => ({ kind: 'audio', m: item.mediaId, in: item.in, out: item.out, start: item.start, sp: 1, label: item.name || 'audio track' });
-  const videoCandidate = clip => ({ kind: 'video', m: clip.mediaId, in: clip.in, out: clip.out, start: startOf(clip, 'main'), sp: clip.speed || 1, rev: !!clip.rev, label: clip.name || 'video clip' });
+  const audioCandidate = item => ({ kind: 'audio', m: item.mediaId, in: item.in, out: item.out, src: item.src, start: item.start, sp: 1, label: item.name || 'audio track' });
+  const videoCandidate = clip => ({ kind: 'video', m: clip.mediaId, in: clip.in, out: clip.out, src: clip.src, start: startOf(clip, 'main'), sp: clip.speed || 1, rev: !!clip.rev, label: clip.name || 'video clip' });
   // An explicit selection is authoritative: never silently switch to another lane.
   // With no selection, try the main video first and use separate audio tracks only as fallback.
   const candidates = audioSelection ? [audioCandidate(audioSelection)] :
