@@ -42,3 +42,13 @@ test('deleting a named project invokes best-effort cleanup without deleting shar
   assert.match(deletion, /await collectUnreferencedMedia\(\)/);
   assert.match(deletion, /Media used by other projects will be kept/);
 });
+
+test('clip and template deletion schedule debounced, export-safe media collection', () => {
+  assert.match(setup, /function scheduleMediaGc\(\)/);
+  assert.match(setup, /window\.scheduleMediaGc = scheduleMediaGc/);
+  assert.match(setup, /exportInProgress/);
+  assert.match(setup, /captionRunning/);
+  const app = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+  assert.match(app, /if \(typeof window\.scheduleMediaGc === 'function'\) window\.scheduleMediaGc\(\)/);
+  assert.match(app, /Delete template[\s\S]{0,300}scheduleMediaGc/);
+});
