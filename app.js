@@ -1291,12 +1291,13 @@ const run = async args => {
     if (activeExportMetric) activeExportMetric.command(output, performance.now() - started, success);
   }
 };
-async function overlayPNG(o) { // render one overlay alone, full canvas size, transparent
+async function overlayPNG(o, outputWidth = canvas.getWidth()) { // render one overlay alone, full canvas size, transparent
   const obj = objOf(o.id), keep = canvas.getObjects().map(x => x.visible);
   canvas.discardActiveObject(); canvas.getObjects().forEach(x => (x.visible = x === obj));
   const previousComposite = obj && obj.globalCompositeOperation;
   if (obj) obj.globalCompositeOperation = 'source-over'; // render raw pixels and alpha; FFmpeg composites the chosen blend mode per frame
-  const url = canvas.toDataURL({ format: 'png' });
+  const multiplier = Math.max(1, Number(outputWidth) / Math.max(1, canvas.getWidth()));
+  const url = canvas.toDataURL({ format: 'png', multiplier });
   if (obj) obj.globalCompositeOperation = previousComposite || 'source-over';
   canvas.getObjects().forEach((x, i) => (x.visible = keep[i])); canvas.requestRenderAll();
   return new Uint8Array(await (await fetch(url)).arrayBuffer());
@@ -1679,7 +1680,7 @@ const runExport = async (_event, recoveryAttempt = 0) => {
         clipPngs.set(overlay.id, cached);
         return cached;
       }
-      const png = await overlayPNG(overlay);
+      const png = await overlayPNG(overlay, W);
       const size = png.byteLength;
       let cacheable = size <= EXPORT_OVERLAY_PNG_CACHE_LIMIT;
       while (cacheable && exportOverlayPngCacheBytes + size > EXPORT_OVERLAY_PNG_CACHE_LIMIT) {
@@ -1763,7 +1764,7 @@ const runExport = async (_event, recoveryAttempt = 0) => {
         const overlays = [];
         for (const o of [...S.overlays].sort((x, y) => x.layer - y.layer)) {
           if (!(o.start < totalSeconds && o.start + o.dur > 0)) continue;
-          const part = await Fast.overlayFromPng(await overlayPNG(o), W, H);
+          const part = await Fast.overlayFromPng(await overlayPNG(o, W), W, H);
           if (part) { overlayBitmaps.push(part.bitmap); overlays.push({ ...part, start: o.start, end: o.start + o.dur }); }
         }
 
@@ -1805,6 +1806,9 @@ const runExport = async (_event, recoveryAttempt = 0) => {
                   8 + progress * 50, 'Rendering');
               }
             });
+            if (sink.frameCount !== chunkFrames) {
+              throw new Error(`Device encoder emitted ${sink.frameCount} frames for ${chunkFrames} submitted frames; using the FFmpeg fallback.`);
+            }
             const encodedChunk = sink.finish();
             await ff.writeFile(rawName, encodedChunk);
             // Drop the JS copy before the next chunk is rendered.
