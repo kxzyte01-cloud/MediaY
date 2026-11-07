@@ -173,13 +173,21 @@ with sync_playwright() as p:
     assert_computed_contrast(page, ['.adjust-control > span', '.adjust-control output'], 'adjustment labels and values')
     page.evaluate("""() => {
       document.querySelector('#sheet').hidden = false;
-      document.querySelectorAll('#sheet [data-pane]').forEach(el => { el.hidden = false; });
+      document.querySelectorAll('#sheet [data-pane]').forEach(el => { el.dataset.smokeWasHidden = el.hidden ? '1' : '0'; el.hidden = false; });
       const report = document.querySelector('#perfReport');
-      if (report && report.closest('details')) report.closest('details').open = true;
+      if (report && report.closest('details')) { report.closest('details').dataset.smokeWasOpen = report.closest('details').open ? '1' : '0'; report.closest('details').open = true; }
     }""")
     assert_computed_contrast(page, ['#sheet button', '#sheet label', '#sheet input', '#sheet select',
       '#sheet textarea', '#sheet output', '#sheet p.lbl', '.perf-tools summary', '#perfReport'],
       'all inspector panes, form controls and performance diagnostics')
+    page.evaluate("""() => {
+      document.querySelectorAll('#sheet [data-pane]').forEach(el => {
+        el.hidden = el.dataset.smokeWasHidden === '1';
+        delete el.dataset.smokeWasHidden;
+      });
+      const details = document.querySelector('#perfReport')?.closest('details');
+      if (details) { details.open = details.dataset.smokeWasOpen === '1'; delete details.dataset.smokeWasOpen; }
+    }""")
     page.locator('[data-adjust="brightness"]').evaluate("(e)=>{e.value='24';e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}")
     page.locator('#adjustApplyAll').click()
     adjust_result = page.evaluate("({a:S.main[0].adjust,b:S.main[1].adjust,filter:adjustmentFilter(S.main[0])})")
