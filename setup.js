@@ -180,18 +180,24 @@
       let templates;
       try { templates = JSON.parse(templateRaw); }
       catch (_) {
-        console.warn('Media cleanup skipped because saved templates could not be read.');
+        const warning = 'Storage cleanup skipped because saved templates could not be read. Your media was kept. Reset or export the damaged template before trying again.';
+        console.warn(warning);
+        if (typeof say === 'function') say(warning);
         return 0;
       }
       if (!Array.isArray(templates)) {
-        console.warn('Media cleanup skipped because the saved template list has an unsupported shape.');
+        const warning = 'Storage cleanup skipped because the saved template list is damaged. Your media was kept. Reset or export the templates before trying again.';
+        console.warn(warning);
+        if (typeof say === 'function') say(warning);
         return 0;
       }
       for (const template of templates) {
         if (!template || typeof template !== 'object' ||
             !Array.isArray(template.pre) || !Array.isArray(template.post) ||
             !Array.isArray(template.overlays) || !Array.isArray(template.audio)) {
-          console.warn('Media cleanup skipped because a saved template has an unsupported shape.');
+          const warning = 'Storage cleanup skipped because a saved template is damaged. Your media was kept. Reset or export the damaged template before trying again.';
+          console.warn(warning);
+          if (typeof say === 'function') say(warning);
           return 0;
         }
         for (const lane of [template.pre, template.post, template.overlays, template.audio]) {
