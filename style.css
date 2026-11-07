@@ -365,6 +365,9 @@ button:hover { filter:brightness(1.08); }
 
 
 /* Accessibility hardening: readable foregrounds on deliberately light inspector surfaces. */
+/* Slider fill/thumb must remain distinguishable on the light inspector surfaces. */
+#sheet input[type=range] { accent-color:#00647A; }
+
 .sheet input[type=text],
 .sheet input[type=number],
 .sheet select,
