@@ -113,7 +113,17 @@ jobs:
         run: |
           set -euo pipefail
           APP_SRC="android/app/src/main/java/com/projectmediay/app"
-          mkdir -p "$APP_SRC"
+          RES_DRAWABLE="android/app/src/main/res/drawable"
+          mkdir -p "$APP_SRC" "$RES_DRAWABLE"
+
+          cat > "$RES_DRAWABLE/ic_stat_mediay.xml" <<'XML'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp" android:height="24dp"
+              android:viewportWidth="24" android:viewportHeight="24">
+            <path android:fillColor="#FFFFFFFF"
+                android:pathData="M4,4h4l4,7 4,-7h4l-6,10v6h-4v-6z"/>
+          </vector>
+          XML
 
           cat > "$APP_SRC/MediaYExportService.java" <<'JAVA'
           package com.projectmediay.app;
@@ -138,7 +148,7 @@ jobs:
               private static final int NOTIFICATION_ID = 26024;
               // Safety net: if the web app never reports that the job ended, stop by itself instead of
               // holding the CPU awake and showing a stale notification forever.
-              private static final long MAX_RUN_MS = 3L * 60L * 60L * 1000L;
+              private static final long MAX_IDLE_MS = 15L * 60L * 1000L;
 
               private PowerManager.WakeLock wakeLock;
               private final Handler handler = new Handler(Looper.getMainLooper());
@@ -168,7 +178,7 @@ jobs:
                   Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                       ? new Notification.Builder(this, CHANNEL_ID)
                       : new Notification.Builder(this);
-                  builder.setSmallIcon(getApplicationInfo().icon)
+                  builder.setSmallIcon(R.drawable.ic_stat_mediay)
                       .setContentTitle("MediaY is working")
                       .setContentText("Rendering your video. Tap to return to MediaY.")
                       .setCategory(Notification.CATEGORY_PROGRESS)
@@ -195,16 +205,19 @@ jobs:
 
                   // Without a wake lock Android may suspend the CPU as soon as the screen turns off,
                   // even while a foreground service is running.
-                  if (wakeLock == null) {
-                      PowerManager power = (PowerManager) getSystemService(Context.POWER_SERVICE);
-                      if (power != null) {
+                  if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+                  PowerManager power = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                  if (power != null) {
+                      if (wakeLock == null) {
                           wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MediaY:export");
                           wakeLock.setReferenceCounted(false);
-                          wakeLock.acquire(MAX_RUN_MS);
                       }
+                      wakeLock.acquire(MAX_IDLE_MS);
                   }
+                  // Inactivity watchdog, not a maximum export duration. The web app
+                  // renews it while rendering/saving makes progress.
                   handler.removeCallbacks(stopWhenExpired);
-                  handler.postDelayed(stopWhenExpired, MAX_RUN_MS);
+                  handler.postDelayed(stopWhenExpired, MAX_IDLE_MS);
 
                   // NOT_STICKY: if Android kills the process, do not resurrect an "export in progress"
                   // notification for an export that no longer exists.
@@ -262,6 +275,22 @@ jobs:
                       call.resolve();
                   } catch (Exception error) {
                       call.reject("Could not start the Android export service.", error);
+                  }
+              }
+
+              @PluginMethod
+              public void renew(PluginCall call) {
+                  try {
+                      Intent intent = new Intent(getContext(), MediaYExportService.class);
+                      intent.setAction(MediaYExportService.ACTION_START);
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                          getContext().startForegroundService(intent);
+                      } else {
+                          getContext().startService(intent);
+                      }
+                      call.resolve();
+                  } catch (Exception error) {
+                      call.reject("Could not renew the Android export service.", error);
                   }
               }
 
@@ -456,7 +485,7 @@ jobs:
                   saveVideoInternal(call);
               }
 
-              private void saveVideoInternal(PluginCall call) {
+              private synchronized void saveVideoInternal(PluginCall call) {
                   String fileName = call.getString("fileName");
                   if (fileName == null || !fileName.matches("ProjectMedia-Y-[0-9]+\\.mp4")) {
                       call.reject("Invalid exported video filename.");
