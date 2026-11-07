@@ -594,10 +594,14 @@
           for (let k = 0; k < p.frames; k++) {
           if (isCancelled()) throw new Error('Export cancelled');
           if (encErr) throw encErr;
-          const limit = sourceLimit(c, k, fps);
-          // A frame exactly on the half-slot boundary belongs to the NEXT slot (FFmpeg rounds .5 up). Timestamps are whole
-          // microseconds, so allow for rounding: without this, 60 fps footage exported at 30 fps picks the wrong neighbour.
-          while (nxt && nxt.pts < limit - 2e-6) { if (cur) cur.frame.close(); cur = nxt; nxt = await decoder.next(); }
+          const slotTime = c.in + (k / fps) * (c.speed || 1);
+          // Choose the source frame nearest the output sample time. Advance on ties so
+          // exact half-frame boundaries follow FFmpeg's round-half-up behavior.
+          while (nxt && (!cur || Math.abs(nxt.pts - slotTime) <= Math.abs(cur.pts - slotTime))) {
+            if (cur) cur.frame.close();
+            cur = nxt;
+            nxt = await decoder.next();
+          }
           if (!cur && nxt) { cur = nxt; nxt = await decoder.next(); }
           if (!cur) throw new Error('The video has no decodable frames in the selected range.');
 
