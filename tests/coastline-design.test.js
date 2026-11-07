@@ -92,7 +92,7 @@ test('native MediaStore library requests visual-media access on demand and suppo
   assert.match(workflow,/MEDIA_TYPE_IMAGE/);
   assert.match(workflow,/resolver\.loadThumbnail/);
   assert.match(workflow,/registerPlugin\(MediaYMediaStorePlugin\.class\)/);
-  assert.match(workflow,/state\.put\("partial", !\(images && videos\)\)/);
+  assert.match(workflow,/state\.put\("partial", \(images \|\| videos \|\| selected\) && !\(images && videos\)\)/);
   assert.match(setupStyle,/\.media-library-grid/);
 });
 
