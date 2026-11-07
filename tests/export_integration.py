@@ -273,7 +273,33 @@ def main():
     assert rms_db(path, 1.8, 1.0) > -30.0, "overlong music track (pushed first in reverse S.audio order) was lost"
     print(f"PASS: reversed S.audio order and overlong music track trim cleanly to {duration:.2f} s while preserving both tracks in {time.time() - t0:.0f} s")
 
-    # 7) Short overlapping fades & voiced -> silent -> voiced xfade transitions.
+    # 7) A short voice-over must not cause the continuing music bed to fade down.
+    t0 = time.time()
+    music_bed = make_tone(folder, "music_bed.webm", 440, duration=3.0)
+    short_voice = make_tone(folder, "short_voice.webm", 880, duration=0.8)
+    setup = fast + """(async () => {
+      for (const [url, name, start, outDur] of [
+        ['/music_bed.webm', 'music_bed.webm', 0, 3.0],
+        ['/short_voice.webm', 'short_voice.webm', 0.2, 0.8]
+      ]) {
+        const blob = await (await fetch(url)).blob();
+        const file = new File([blob], name, { type: 'audio/webm' });
+        const mediaId = await storeMedia(file);
+        S.audio.push({ id: uid(), mediaId, name, start, in: 0, out: outDur, src: outDur });
+      }
+    })()"""
+    path, status, total, errors = run_export(base, [silent_main], setup, route_libs,
+        assets={"music_bed.webm": music_bed, "short_voice.webm": short_voice})
+    duration, streams = probe(path)
+    assert "Export complete" in status and not errors, (status, errors)
+    assert abs(duration - 3.0) < 0.15 and any(s[0] == "audio" for s in streams), (duration, streams)
+    music_after_voice = rms_db(path, 1.15, 0.45)
+    music_later = rms_db(path, 2.2, 0.45)
+    assert abs(music_after_voice - music_later) < 1.0, (
+        f"music bed RMS changed after short voice-over ended: {music_after_voice:.2f} dB vs {music_later:.2f} dB")
+    print(f"PASS: music bed RMS remains stable after short voice-over ends ({music_after_voice:.2f} vs {music_later:.2f} dB) in {time.time() - t0:.0f} s")
+
+    # 8) Short overlapping fades & voiced -> silent -> voiced xfade transitions.
     t0 = time.time()
     short_voiced_1 = make_voiced_clip(folder, name="short_voiced_1.webm", duration=0.8, freq=440, size="640x360")
     short_silent_mid = make_silent_clip(folder, name="short_silent_mid.webm", duration=0.6, size="640x360")
