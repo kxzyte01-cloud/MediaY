@@ -314,7 +314,7 @@
     if (c.rev || (c.speed || 1) !== 1) return 'clip is reversed or has a speed change';
     if ((c.vol ?? 1) !== 1 || c.fade) return 'clip audio has volume or fade edits';
     if (c.scale != null && c.scale !== 1 || c.x || c.y || c.rot || c.crop) return 'clip has transform edits';
-    if (!(p.fileSize > 0) || p.fileSize > maxBytes) return 'source exceeds the conservative in-memory output budget';
+    if (!(p.fileSize > 0) || p.fileSize > maxBytes) return 'source exceeds the conservative memory budget for this fast path';
     if (!/^avc[13]/i.test(String(v.codec || ''))) return 'source video is not H.264';
     if (!(v.duration > 0) || !(v.count > 0)) return 'source duration or sample count is invalid';
     const fps = Number(p.fps);
