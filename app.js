@@ -2651,7 +2651,28 @@ $('fitBtn').onclick = () => { // logo or music: stretch across the whole video
 const TPLKEY = 'pmy-templates'; let pendingTpl = null;
 const loadTpls = () => { try { return JSON.parse(localStorage.getItem(TPLKEY)) || []; } catch (e) { return []; } };
 const saveTpls = l => { try { localStorage.setItem(TPLKEY, JSON.stringify(l)); } catch (e) { say('Could not save the template on this device.'); } };
+function templateStorageIsDamaged() {
+  const raw = localStorage.getItem(TPLKEY);
+  if (raw == null) return false;
+  try {
+    const templates = JSON.parse(raw);
+    return !Array.isArray(templates) || templates.some(template =>
+      !template || typeof template !== 'object' ||
+      !Array.isArray(template.pre) || !Array.isArray(template.post) ||
+      !Array.isArray(template.overlays) || !Array.isArray(template.audio));
+  } catch (_) { return true; }
+}
+$('tplReset').onclick = () => {
+  if (!templateStorageIsDamaged()) return say('Your saved template list is healthy; nothing needs resetting.');
+  if (!confirm('Reset the damaged template list? This permanently removes saved templates, but does not delete projects or imported media.')) return;
+  localStorage.removeItem(TPLKEY);
+  $('tplReset').hidden = true;
+  markTpl();
+  if (typeof window.scheduleMediaGc === 'function') window.scheduleMediaGc();
+  say('Damaged templates reset. Your projects and imported media are safe; unused media will be cleaned up.');
+};
 function markTpl() {
+  $('tplReset').hidden = !templateStorageIsDamaged();
   const l = loadTpls(); $('tplList').textContent = '';
   if (!l.length) { const p = document.createElement('p'); p.className = 'lbl'; p.textContent = 'No templates yet. Build your intro, logo and outro, then save it below.'; $('tplList').appendChild(p); }
   l.forEach(p => {
