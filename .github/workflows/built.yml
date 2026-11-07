@@ -388,7 +388,7 @@ jobs:
                   java.util.ArrayList<String> missing = new java.util.ArrayList<>();
                   if (!images && ("all".equals(kind) || "images".equals(kind))) missing.add("mediaImages");
                   if (!videos && ("all".equals(kind) || "videos".equals(kind))) missing.add("mediaVideos");
-                  if (Build.VERSION.SDK_INT >= 34 && !selected && "all".equals(kind)) {
+                  if (Build.VERSION.SDK_INT >= 34 && !selected) {
                       missing.add("selectedVisualMedia");
                   }
                   if (missing.isEmpty()) {
