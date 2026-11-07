@@ -16,7 +16,7 @@ test('MediaY exposes an in-app Recent, Videos and Photos library without request
   assert.match(html, /data-media-kind="images"/);
   assert.match(html, /id="mediaLibrarySystemPicker"/);
   const open = app.slice(app.indexOf('async function openMediaLibrary'), app.indexOf("$('importBtn').onclick", app.indexOf('async function openMediaLibrary')));
-  assert.match(open, /plugin\.requestMediaAccess\(\)/);
+  assert.match(open, /plugin\.requestMediaAccess\(\{ kind \}\)/);
   assert.match(app, /\$\('importBtn'\)\.onclick = \(\) => openMediaLibrary\('all'\)/);
   assert.doesNotMatch(app.slice(0, app.indexOf('async function openMediaLibrary')), /requestMediaAccess\(\)/,
     'broad media permission must be requested only after the user opens the library');
@@ -26,9 +26,9 @@ test('Android native media library requests version-appropriate image/video perm
   assert.match(workflow, /@Permission\(alias = "mediaImages", strings = \{ Manifest\.permission\.READ_MEDIA_IMAGES \}\)/);
   assert.match(workflow, /@Permission\(alias = "mediaVideos", strings = \{ Manifest\.permission\.READ_MEDIA_VIDEO \}\)/);
   assert.match(workflow, /@Permission\(alias = "selectedVisualMedia", strings = \{ Manifest\.permission\.READ_MEDIA_VISUAL_USER_SELECTED \}\)/);
-  assert.match(workflow, /Build\.VERSION\.SDK_INT >= 34[\s\S]{0,220}"mediaImages", "mediaVideos", "selectedVisualMedia"/);
-  assert.match(workflow, /Build\.VERSION\.SDK_INT >= 33[\s\S]{0,180}"mediaImages", "mediaVideos"/);
-  assert.match(workflow, /requestPermissionForAlias\("legacyRead"/);
+  assert.match(workflow, /if \(!images && \("all"\.equals\(kind\) \|\| "images"\.equals\(kind\)\)\) missing\.add\("mediaImages"\)/);
+  assert.match(workflow, /if \(!videos && \("all"\.equals\(kind\) \|\| "videos"\.equals\(kind\)\)\) missing\.add\("mediaVideos"\)/);
+  assert.match(workflow, /requestPermissionForAlias\("legacyRead"/);\n  assert.match(workflow, /call\.getString\("kind"\)/);\n  assert.match(workflow, /missing\.add\("selectedVisualMedia"\)/);
   assert.match(workflow, /state\.put\("partial", \(images \|\| videos \|\| selected\) && !\(images && videos\)\)/);
 });
 
