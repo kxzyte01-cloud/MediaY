@@ -218,6 +218,23 @@
     return orphanIds.length;
   }
 
+  // Debounced cleanup after destructive editor/template actions. Never collect while
+  // an export or caption transaction may still be reading the media store.
+  let mediaGcTimer = null;
+  function scheduleMediaGc() {
+    clearTimeout(mediaGcTimer);
+    mediaGcTimer = setTimeout(async () => {
+      if ((typeof exportInProgress !== 'undefined' && exportInProgress) ||
+          (typeof captionRunning !== 'undefined' && captionRunning)) {
+        scheduleMediaGc();
+        return;
+      }
+      try { await collectUnreferencedMedia(); }
+      catch (error) { console.warn('Unused media cleanup was skipped:', error); }
+    }, 1500);
+  }
+  window.scheduleMediaGc = scheduleMediaGc;
+
   async function deleteSavedProject(id) {
     if (!window.confirm('Delete this saved project? Media used by other projects will be kept; unused imported media may be cleaned up.')) return;
     try {
