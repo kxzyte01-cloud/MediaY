@@ -14,7 +14,7 @@ required. See docs/fast-export.md.
 Needs: ffmpeg + ffprobe on PATH, Playwright with Chromium.
 Run: python tests/fast_pipeline.py
 """
-import base64, functools, http.server, json, shutil, socketserver, subprocess, sys, tempfile, threading
+import base64, functools, http.server, json, math, shutil, socketserver, subprocess, sys, tempfile, threading
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
@@ -27,11 +27,11 @@ def sh(*cmd, binary=False):
     return r.stdout if binary else r.stdout.decode()
 
 
-def make_source(path, offset=0, rot=None, seconds=4):
+def make_source(path, offset=0, rot=None, seconds=4, fps=FPS):
     """640x360 VP9-in-MP4. Top-left: barcode of (frame number + offset). Background: dark gradient (asymmetric, for rotation checks)."""
     expr = ("if(lt(Y,24),if(lt(X,288),if(bitand(floor((N+%d)/pow(2,floor(X/24))),1),235,16),16),16+X/8+Y/8)" % offset)
     tmp = str(path) + ".tmp.mp4" if rot else str(path)
-    sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=black:s=640x360:r={FPS}:d={seconds}",
+    sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=black:s=640x360:r={fps}:d={seconds}",
        "-vf", f"format=gray,geq=lum='{expr}',format=yuv420p", "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "22", "-g", "15",
        "-deadline", "realtime", "-cpu-used", "5", "-an", tmp)
     if rot:
@@ -110,6 +110,9 @@ def main():
         make_source(work / "a.mp4", 0)
         make_source(work / "b.mp4", 1000)
         make_source(work / "rot.mp4", 0, rot=90)
+        make_source(work / "source60.mp4", 2000, fps=60)
+        make_source(work / "source24.mp4", 3000, fps=24)
+        make_source(work / "source25.mp4", 4000, fps=25)
 
         handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(work))
         handler.log_message = lambda *a, **k: None
@@ -178,6 +181,21 @@ def main():
             out, ivf = render("F", dict(W=640, H=360, fps=15, clips=[clip("a.mp4", 0, 2)]))
             got, _ = ids(ivf, 640, 360)
             check("F: 15 fps output from 30 fps source", got == list(range(0, 60, 2)), f"{got}")
+
+            # F2. Nearest-frame selection across common input/output cadence conversions.
+            for case_id, source_name, source_fps in [
+                ("F2-60to30", "source60.mp4", 60),
+                ("F2-24to30", "source24.mp4", 24),
+                ("F2-25to30", "source25.mp4", 25),
+            ]:
+                out, ivf = render(case_id, dict(W=640, H=360, fps=30,
+                                                clips=[clip(source_name, 0, 1)]))
+                got, _ = ids(ivf, 640, 360)
+                expected = [2000 + math.floor(k * source_fps / 30 + 0.5) if source_fps == 60
+                            else (3000 if source_fps == 24 else 4000) + math.floor(k * source_fps / 30 + 0.5)
+                            for k in range(30)]
+                check(f"{case_id}: nearest source barcode at 30 fps", got == expected,
+                      f"expected={expected} got={got}");
 
             # G. overlay window (timeline seconds 0.5 .. 1.0 inclusive -> frames 15..30)
             out, ivf = render("G", dict(W=640, H=360, fps=30, clips=[clip("a.mp4", 0, 2)],
