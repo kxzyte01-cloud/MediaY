@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 
 const setup = fs.readFileSync(path.join(__dirname, '..', 'setup.js'), 'utf8');
 
@@ -75,4 +76,44 @@ test('damaged template storage exposes an explicit reset that preserves projects
   assert.match(app, /localStorage\.removeItem\(TPLKEY\)/);
   assert.match(app, /does not delete projects or imported media/);
   assert.match(app, /window\.scheduleMediaGc\(\)/);
+});
+
+async function runMediaGc({ undoStack = [], redoStack = [], projects = [], mediaIds = [] } = {}) {
+  const deleted = [];
+  const start = setup.indexOf('async function collectUnreferencedMedia()');
+  const end = setup.indexOf('  // Debounced cleanup after destructive editor/template actions.', start);
+  assert.ok(start >= 0 && end > start, 'media GC function must exist');
+  const source = setup.slice(start, end).trim();
+  const context = {
+    saveProject: async () => {},
+    db: {
+      projects: { toArray: async () => projects },
+      media: {
+        toCollection: () => ({ primaryKeys: async () => mediaIds }),
+        bulkDelete: async ids => deleted.push(...ids)
+      }
+    },
+    localStorage: { getItem: () => null },
+    undoStack, redoStack,
+    urls: {}, audios: {}, audioLoads: {}, decoded: {}, thumbs: {}, files: {},
+    URL: { revokeObjectURL: () => {} },
+    console: { warn: () => {} }
+  };
+  const collect = vm.runInNewContext('(' + source + ')', context);
+  return { removed: await collect(), deleted };
+}
+
+test('media GC keeps media referenced only by undo and redo snapshots', async () => {
+  const undo = JSON.stringify({ main: [{ mediaId: 'undo-only' }], audio: [], overlays: [] });
+  const redo = JSON.stringify({ main: [], audio: [{ mediaId: 'redo-only' }], overlays: [] });
+  const result = await runMediaGc({ undoStack: [undo], redoStack: [redo],
+    mediaIds: ['undo-only', 'redo-only', 'orphan'] });
+  assert.deepEqual(result.deleted, ['orphan']);
+  assert.equal(result.removed, 1);
+});
+
+test('media GC conservatively skips deletion when an undo snapshot is malformed', async () => {
+  const result = await runMediaGc({ undoStack: ['{broken'], mediaIds: ['possibly-referenced'] });
+  assert.deepEqual(result.deleted, []);
+  assert.equal(result.removed, 0);
 });
