@@ -21,7 +21,10 @@ def assert_computed_contrast(page, selectors, label):
       const results = [];
       for (const selector of selectors) for (const el of document.querySelectorAll(selector)) {
         const cs = getComputedStyle(el);
-        if (!el.textContent.trim() || el.matches(':disabled') || cs.display === 'none' || cs.visibility === 'hidden' || !el.getClientRects().length) continue;
+        const label = el.textContent.trim() ||
+          (el.labels ? Array.from(el.labels).map(x => x.innerText).join(' ').trim() : '') ||
+          el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.id || '';
+        if (!label || el.matches(':disabled') || cs.display === 'none' || cs.visibility === 'hidden' || !el.getClientRects().length) continue;
         let chain = [], node = el, backgrounds = [[8, 13, 24]], opacity = 1;
         while (node) { chain.unshift(node); node = node.parentElement; }
         const blend = (bg, color) => bg.map((v, i) => color[i] * color[3] + v * (1 - color[3]));
@@ -45,7 +48,7 @@ def assert_computed_contrast(page, selectors, label):
         });
         const ratio = Math.min(...ratios);
         const size = parseFloat(cs.fontSize) || 16, weight = parseInt(cs.fontWeight, 10) || 400;
-        results.push({selector, text:el.textContent.trim().slice(0,32), ratio:Number(ratio.toFixed(2)), threshold:(size >= 24 || (size >= 18.66 && weight >= 700)) ? 3 : 4.5, foreground:cs.color, background:bg.map(v=>Math.round(v))});
+        results.push({selector, text:label.slice(0,32), ratio:Number(ratio.toFixed(2)), threshold:(size >= 24 || (size >= 18.66 && weight >= 700)) ? 3 : 4.5, foreground:cs.color, background:bg.map(v=>Math.round(v))});
       }
       return results;
     }""", selectors)
@@ -168,6 +171,15 @@ with sync_playwright() as p:
     page.locator('#adjustBtn').click()
     page.wait_for_timeout(250)
     assert_computed_contrast(page, ['.adjust-control > span', '.adjust-control output'], 'adjustment labels and values')
+    page.evaluate("""() => {
+      document.querySelector('#sheet').hidden = false;
+      document.querySelectorAll('#sheet [data-pane]').forEach(el => { el.hidden = false; });
+      const report = document.querySelector('#perfReport');
+      if (report && report.closest('details')) report.closest('details').open = true;
+    }""")
+    assert_computed_contrast(page, ['#sheet button', '#sheet label', '#sheet input', '#sheet select',
+      '#sheet textarea', '#sheet output', '#sheet p.lbl', '.perf-tools summary', '#perfReport'],
+      'all inspector panes, form controls and performance diagnostics')
     page.locator('[data-adjust="brightness"]').evaluate("(e)=>{e.value='24';e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}")
     page.locator('#adjustApplyAll').click()
     adjust_result = page.evaluate("({a:S.main[0].adjust,b:S.main[1].adjust,filter:adjustmentFilter(S.main[0])})")
