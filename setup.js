@@ -203,13 +203,13 @@
       let templates;
       try { templates = JSON.parse(templateRaw); }
       catch (_) {
-        const warning = 'Storage cleanup skipped because saved templates could not be read. Your media was kept. Reset or export the damaged template before trying again.';
+        const warning = 'Storage cleanup skipped because saved templates could not be read. Your media was kept. Open Templates and use Reset damaged template list.';
         console.warn(warning);
         if (typeof say === 'function') say(warning);
         return 0;
       }
       if (!Array.isArray(templates)) {
-        const warning = 'Storage cleanup skipped because the saved template list is damaged. Your media was kept. Reset or export the templates before trying again.';
+        const warning = 'Storage cleanup skipped because the saved template list is damaged. Your media was kept. Open Templates and use Reset damaged template list.';
         console.warn(warning);
         if (typeof say === 'function') say(warning);
         return 0;
@@ -218,7 +218,7 @@
         if (!template || typeof template !== 'object' ||
             !Array.isArray(template.pre) || !Array.isArray(template.post) ||
             !Array.isArray(template.overlays) || !Array.isArray(template.audio)) {
-          const warning = 'Storage cleanup skipped because a saved template is damaged. Your media was kept. Reset or export the damaged template before trying again.';
+          const warning = 'Storage cleanup skipped because a saved template is damaged. Your media was kept. Open Templates and use Reset damaged template list.';
           console.warn(warning);
           if (typeof say === 'function') say(warning);
           return 0;
