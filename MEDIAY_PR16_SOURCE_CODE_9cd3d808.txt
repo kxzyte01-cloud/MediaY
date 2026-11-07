@@ -8543,3 +8543,632 @@ with sync_playwright() as p:
     assert not errors, errors
     browser.close()
 
+
+
+================================================================================
+FILE: tests/caption-font.test.js
+BLOB SHA: 0f0d0128d5a6cce73c0e039d4c0abdb247872b8c
+================================================================================
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const app = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+
+test('caption text uses the editor system-font stack without an unbundled web-font dependency', () => {
+  assert.match(app, /fontFamily: 'Avenir Next, Avenir, Segoe UI, system-ui, sans-serif'/);
+  assert.doesNotMatch(app, /DM Sans|fonts\.googleapis\.com/);
+  const start = app.indexOf('function ensureFontsReady()');
+  const end = app.indexOf('// Reference-counted wrapper', start);
+  assert.ok(start >= 0 && end > start);
+  const ready = app.slice(start, end);
+  assert.match(ready, /document\.fonts\.ready/);
+  assert.doesNotMatch(ready, /document\.fonts\.load/);
+  assert.match(ready, /setTimeout\(resolve, 800\)/);
+});
+
+
+
+================================================================================
+FILE: tests/caption-memory-safety.test.js
+BLOB SHA: e8b9ea348e3b3dfd442b3f4fa46da61475eb3c3c
+================================================================================
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const app = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+
+test('large caption sources use bounded 10-minute file-backed windows', () => {
+  assert.match(app, /CAPTION_STREAM_WINDOW_SECONDS = 10 \* 60/);
+  assert.match(app, /CAPTION_STREAM_MAX_SECONDS = 4 \* 60 \* 60/);
+  assert.match(app, /shouldStreamCaptionSource\(sourceFile, source\)/);
+  assert.match(app, /sourceDuration = Math\.max\(0, Number\(src && src\.src\) \|\| 0\)/);
+  assert.match(app, /out: item\.out, src: item\.src/);
+  assert.match(app, /out: clip\.out, src: clip\.src/);
+  assert.match(app, /for await \(const windowData of streamCaptionPcmWindows\(/);
+  assert.match(app, /engine\.mount\(workerFs, \{ blobs: \[\{ name: inputName, data: file \}\] \}, mountDir\)/);
+  assert.match(app, /CAPTION_STREAM_OVERLAP_SECONDS = 1\.5/);
+  assert.match(app, /Core\.planCaptionStreamWindows\(clipLength, CAPTION_STREAM_WINDOW_SECONDS, CAPTION_STREAM_OVERLAP_SECONDS\)/);
+  assert.match(app, /yield \{ pcm: normalizedPcm, \.\.\.planWindow \}/);
+});
+
+test('windowed decode does not use invalid compressed-byte slicing or retain all PCM windows', () => {
+  const start = app.indexOf('async function* streamCaptionPcmWindows');
+  const end = app.indexOf('async function transcribeCaptionPcmWithFallback', start);
+  assert.ok(start >= 0 && end > start, 'windowed decoder must be present');
+  const decoder = app.slice(start, end);
+  assert.doesNotMatch(decoder, /file\.slice\s*\(/);
+  assert.doesNotMatch(decoder, /windowChunks|totalSamples\s*\+?=/);
+  assert.match(decoder, /await engine\.deleteFile\(outputName\)/);
+  assert.match(decoder, /await engine\.unmount\(mountDir\)/);
+  assert.match(decoder, /WORKERFS/);
+});
+
+test('each streamed caption window is transcribed before its PCM buffer is released', () => {
+  assert.match(app, /const windowSource = \{ \.\.\.source, start: \(Number\(source\.start\) \|\| 0\) \+ windowData\.offsetSeconds \/ speed \}/);
+  assert.match(app, /await transcribeCaptionPcmWithFallback\(windowData\.pcm, windowSource/);
+  assert.match(app, /windowData\.pcm = null/);
+  assert.match(app, /decodeComplete = true/);
+});
+
+test('the global fallback helper does not reach into the capGo handler local scope', () => {
+  const start = app.indexOf('async function transcribeCaptionPcmWithFallback');
+  const end = app.indexOf('async function commitCaptionDrafts', start);
+  assert.ok(start >= 0 && end > start);
+  const helper = app.slice(start, end);
+  assert.doesNotMatch(helper, /captionMetric/);
+});
+
+
+
+================================================================================
+FILE: tests/caption-streaming.test.js
+BLOB SHA: 98b977363d7ed59087bd1945dc826d713388cfec
+================================================================================
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const app = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+
+test('windowed caption transcription decodes overlap but commits each caption in one ownership window', () => {
+  assert.match(app, /CAPTION_STREAM_OVERLAP_SECONDS = 1\.5/);
+  assert.match(app, /Core\.planCaptionStreamWindows\(clipLength, CAPTION_STREAM_WINDOW_SECONDS, CAPTION_STREAM_OVERLAP_SECONDS\)/);
+  assert.match(app, /windowData\.ownershipStartSeconds/);
+  assert.match(app, /windowData\.ownershipEndSeconds/);
+  assert.match(app, /const ownedDrafts = windowDrafts\.filter/);
+  assert.match(app, /drafts\.push\(\.\.\.ownedDrafts\)/);
+  assert.match(app, /sourceDiagnostic\.decodedAudioSeconds/);
+});
+
+
+
+================================================================================
+FILE: tests/captions.test.js
+BLOB SHA: 73fb6a9466a6477652e99010c4fbc9e98dc01031
+================================================================================
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const app = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+const start = app.indexOf('async function transcribeChunk');
+const end = app.indexOf('async function captionFrom', start);
+assert.ok(start >= 0 && end > start, 'transcribeChunk implementation must exist');
+const source = app.slice(start, end);
+
+test('Whisper uses its default transcription task unless translation is requested', () => {
+  assert.match(source, /\.\.\.\(\$\('capTr'\)\.checked\s*\s*\?\s*\(lang\s*\?\s*\{\s*task:\s*'translate'\s*\}\s*:\s*\{\s*forced_decoder_ids:\s*\[\[1,\s*null\],\s*\[2,\s*50358\]\]\s*\}\)\s*:\s*\{\s*\}\)/);
+  assert.doesNotMatch(source, /task:\s*\$\('capTr'\)\.checked\s*\?\s*'translate'\s*:\s*'transcribe'/);
+});
+
+test('selected language is still passed to Whisper when explicitly chosen', () => {
+  assert.match(source, /\.\.\.\(lang\s*\?\s*\{\s*language:\s*lang\s*\}\s*:\s*\{\s*\}\)/);
+});
+
+
+test('Whisper word-level DTW is disabled for the bundled tiny model', () => {
+  assert.match(app, /let asrWordTimestamps = false/);
+});
+
+test('WebGPU speech inference selects explicit encoder and decoder precision', () => {
+  assert.match(app, /options\.dtype = \{ encoder_model: 'fp32', decoder_model_merged: 'q4' \}/);
+});
+
+test('quiet selected audio is peak-normalized without amplifying near-silence', () => {
+  assert.match(app, /function normalizeQuietCaptionAudio\(pcm\)/);
+  assert.match(app, /peak > 0\.006 && peak < 0\.5/);
+  assert.match(app, /Math\.min\(12, 0\.8 \/ peak\)/);
+});
+
+
+test('an explicitly selected audio track is the only caption source', () => {
+  assert.match(app, /const candidates = audioSelection \? \[audioCandidate\(audioSelection\)\]/);
+});
+
+test('an explicitly selected video clip does not silently switch to another lane', () => {
+  assert.match(app, /explicitVideo \? \[videoCandidate\(explicitVideo\)\]/);
+});
+
+test('with no selection, separate audio tracks remain fallback sources after main video clips', () => {
+  assert.match(app, /\[\.\.\.S\.main\.map\(videoCandidate\), \.\.\.S\.audio\.map\(audioCandidate\)\]/);
+});
+
+
+test('caption diagnostics record decoded audio format and signal measurements without storing transcript text', () => {
+  assert.match(app, /function captionPcmStats\(pcm\)/);
+  assert.match(app, /sampleRate: inputRate, channels: buf\.numberOfChannels/);
+  assert.match(app, /Object\.assign\(sourceDiagnostic, captionPcmStats\(pcm\)\)/);
+  assert.match(app, /speechVoicedRatio:/);
+  assert.match(app, /chunksSentToWhisper\+\+/);
+  assert.match(app, /rawWhisperSegments \+= \(result\.chunks \|\| \[\]\)\.length/);
+  assert.match(app, /captionMetric\.note\('sourceDiagnostics', sourceDiagnostics\)/);
+  assert.doesNotMatch(app, /sourceDiagnostic\.rawText\s*=|sourceDiagnostic\.transcript\s*=/);
+});
+
+
+
+================================================================================
+FILE: tests/coastline-design.test.js
+BLOB SHA: 36e054e45057ee16a0a6ea8d9e8f6ddc1b4a98bc
+================================================================================
+const test=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');
+const read=name=>fs.readFileSync(path.join(__dirname,'..',name),'utf8');
+const style=read('style.css'),setupStyle=read('setup.css'),html=read('index.html'),setup=read('setup.js'),app=read('app.js'),icons=read('mediay-icons.js'),sw=read('sw.js'),legal=read('legal.html'),workflow=read('.github/workflows/built.yml');
+function lum(hex){const n=parseInt(hex.slice(1),16);const c=[(n>>16)&255,(n>>8)&255,n&255].map(v=>{v/=255;return v<=.04045?v/12.92:((v+.055)/1.055)**2.4;});return .2126*c[0]+.7152*c[1]+.0722*c[2];}
+function ratio(a,b){const [hi,lo]=[lum(a),lum(b)].sort((x,y)=>y-x);return(hi+.05)/(lo+.05);}
+test('Neon Aperture dark palette tokens are present',()=>{for(const v of ['--bg:#080d18','--panel:#10182a','--panel2:#17243a','--accent:#00e7f2','--rose:#8b5cf6','--text:#f3f7ff'])assert.ok(style.toLowerCase().includes(v),'missing '+v);});
+test('primary button text meets WCAG AA',()=>assert.ok(ratio('#f8fbff','#16758f')>=4.5,'light text on primary teal must be >=4.5:1'));
+test('local SVG icons replace remote icon/font dependencies',()=>{assert.ok(!html.includes('lucide.min.js'));assert.ok(!html.includes('fonts.googleapis.com'));assert.ok(html.includes('./mediay-icons.js'));assert.ok(!app.includes('lucide.createIcons'));for(const id of ['image-plus','replace','music','mic','type','captions','layers','check','scissors','skip-back','skip-forward','gauge','volume-2','sliders-horizontal','blend','arrow-left-right','palette','move-horizontal','trash-2','play','arrow-right','plus','film','arrow-up-right'])assert.ok(icons.includes("'"+id+"'"),'missing '+id);});
+test('home retains editor actions, library and legal route',()=>{for(const id of ['hmRecent','hmContinue','hmNoProject','hmNew','hmTemplates','hmExport','hmProjectList','hmProjectCount'])assert.ok(setup.includes(id));assert.ok(setup.includes('VIDEO STUDIO'));assert.ok(setup.includes('./favicon.svg'),'setup and home must use the shared SVG logo');assert.ok(setup.includes('Terms, privacy &amp; licenses'));assert.ok(legal.includes('Terms, Privacy and Licenses'));assert.ok(legal.includes('Your media is your responsibility'));});
+test('inspector is a single vertical scroller, not nested adjustment panes',()=>{const sheets=[...style.matchAll(/\.sheet\s*\{[^}]*\}/g)];assert.equal(sheets.length,1,'expected one .sheet rule');const a=[...style.matchAll(/\.adjust-grid\s*\{([^}]*)\}/g)].at(-1)?.[1]||'';assert.ok(!/max-height\s*:/.test(a));assert.ok(!/overflow-y\s*:\s*auto/.test(a));assert.ok(setupStyle.includes('#homeScreen { background:var(--bg)'));});
+test('service worker precaches local icons with a fresh cache key',()=>{assert.match(sw,/pmy-v26/);assert.ok(sw.includes("'./mediay-icons.js'"));assert.ok(workflow.includes('mediay-icons.js'));});
+
+
+test('Neon Aperture transition and format selections use dark accent surfaces',()=>{
+  const duration=setupStyle.slice(setupStyle.lastIndexOf('.tr-duration {')).split('}')[0];
+  const active=setupStyle.slice(setupStyle.lastIndexOf('#trList button.on {')).split('}')[0];
+  const ratio=setupStyle.slice(setupStyle.lastIndexOf('.ratios .on {')).split('}')[0];
+  assert.ok(duration.includes('background:var(--panel2)'),'transition duration panel must use a light surface');
+  assert.ok(duration.includes('border-color:var(--border)'),'transition duration panel must use the studio border');
+  assert.ok(active.includes('background:rgba(0,231,242,.13)'),'selected transition must use the subtle cyan state');
+  assert.ok(active.includes('color:var(--text)'),'selected transition text must use the studio foreground');
+  assert.ok(ratio.includes('background:rgba(0,231,242,.13)'),'selected ratio must use the subtle cyan state');
+});
+
+test('Neon Aperture project-library actions keep the studio accent treatment',()=>{
+  const newIcon=setupStyle.slice(setupStyle.lastIndexOf('.hm-new .hm-action-icon {')).split('}')[0];
+  const openProject=setupStyle.slice(setupStyle.lastIndexOf('.hm-open-project {')).split('}')[0];
+  assert.ok(newIcon.includes('background:rgba(0,231,242,.12)'));
+  assert.ok(newIcon.includes('color:var(--accent)'));
+  assert.ok(openProject.includes('background:linear-gradient(120deg,#00DDEB,#168BFF 55%,#946CF7)'));
+  assert.ok(openProject.includes('color:#071321'));
+});
+
+test('light editor controls and diagnostics retain WCAG AA foreground contrast',()=>{
+  assert.ok(ratio('#17283c','#ffffff')>=4.5,'dark text on white fields must meet WCAG AA');
+  assert.ok(ratio('#17283c','#e8f0f5')>=4.5,'dark text on adjustment and diagnostics surfaces must meet WCAG AA');
+  assert.ok(ratio('#65304f','#e8f0f5')>=4.5,'adjustment values must meet WCAG AA');
+  const finalFix=style.slice(style.lastIndexOf('/* Accessibility hardening:'));
+  assert.ok(finalFix.includes('color:#17283C'),'light fields need a dark foreground');
+  assert.ok(finalFix.includes('background:#E8F0F5'),'adjustment and diagnostics panels need the tested light surface');
+  assert.ok(finalFix.includes('color:#65304F'),'adjustment outputs need the tested readable accent');
+});
+
+
+test('core editor libraries are local, version-pinned and protected by Subresource Integrity',()=>{
+  const files=[
+    ['./vendor/media-libraries/fabric.min.js','sha256-uwRC1ppNRnMyD2ibxuFsBaDj8WzPv1UfOU2Qp+fPx3I='],
+    ['./vendor/media-libraries/anime.min.js','sha256-tc4b48P1MPGS4PJXHRlChGCW1mEZy62jS/3JEsSHPzU='],
+    ['./vendor/media-libraries/dexie.min.js','sha256-2JhqFVK0mn2MsIWpLGaYWuvzuzO2Stb3uu0kYdm2R/8=']
+  ];
+  for(const [src,integrity] of files){
+    assert.ok(html.includes('src="'+src+'"'),'missing local library '+src);
+    assert.ok(html.includes('integrity="'+integrity+'"'),'missing pinned SRI for '+src);
+    assert.ok(sw.includes("'"+src+"'"),'offline shell does not precache '+src);
+  }
+  assert.doesNotMatch(html,/https:\/\/(?:cdnjs\.cloudflare\.com|unpkg\.com)\/(?:ajax\/libs\/(?:fabric\.js|animejs)|dexie)/);
+  assert.match(sw,/pmy-v26/);
+  assert.ok(workflow.includes('vendor/media-libraries/fabric.min.js'));
+  assert.ok(workflow.includes('vendor/media-libraries/anime.min.js'));
+  assert.ok(workflow.includes('vendor/media-libraries/dexie.min.js'));
+  assert.ok(workflow.includes('vendor/media-libraries/LICENSES.md'));
+});
+
+test('dark text on every neon gradient stop meets WCAG AA',()=>{
+  for(const color of ['#00DDEB','#168BFF','#946CF7']) assert.ok(ratio('#071321',color)>=4.5,'dark button text must meet AA on '+color);
+  assert.ok(style.includes('linear-gradient(120deg,#00DDEB,#168BFF 58%,#946CF7)'));
+  assert.ok(setupStyle.includes('linear-gradient(120deg,#00DDEB,#168BFF 55%,#946CF7)'));
+});
+
+test('busy, transition-preview and dark timeline surfaces use readable text colours',()=>{
+  assert.ok(style.includes('.busy-cancel { background:var(--rose-soft); border-color:#d7a2b6; color:#ffb9bc; }'));
+  assert.ok(style.includes('.tr-preview-empty { color:#17283C; background:rgba(237,246,250,.94); }'));
+  assert.ok(style.includes('.clip.video-clip,.clip.audio-clip,.clip.ov-clip,.clip.overlay-clip { color:#F3F7FF; }'));
+  assert.ok(ratio('#ffb9bc','#10182a')>=4.5);
+  assert.ok(ratio('#17283C','#EDF6FA')>=4.5);
+  for(const bg of ['#075B78','#123C75','#402B78','#6636A0','#572A76','#34305B']) assert.ok(ratio('#F3F7FF',bg)>=4.5);
+});
+
+
+
+================================================================================
+FILE: tests/core.test.js
+BLOB SHA: 657e5d1bc6216f6fd8e02006655b9f3e6b20a646
+================================================================================
+// Run with: node --test tests/
+// Verifies the caption timing logic against synthetic speech whose true timing is known exactly.
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const Core = require('../mediay-core.js');
+
+const SR = 16000;
+// Deterministic "speech": noise bursts (words) with known start/end, separated by pauses, over a faint noise floor.
+function makeSpeech(words, seconds, seed = 7) {
+  let state = seed;
+  const rand = () => (state = (state * 1664525 + 1013904223) % 4294967296) / 4294967296 - 0.5;
+  const pcm = new Float32Array(Math.round(seconds * SR));
+  for (let i = 0; i < pcm.length; i++) pcm[i] = rand() * 0.004;
+  for (const w of words) {
+    const a = Math.round(w.start * SR), b = Math.min(pcm.length, Math.round(w.end * SR));
+    for (let i = a; i < b; i++) {
+      const env = Math.sin(Math.PI * (i - a) / (b - a)) ** 0.5;
+      pcm[i] += rand() * 1.2 * env * Math.sin(2 * Math.PI * 180 * i / SR + 1);
+    }
+  }
+  return pcm;
+}
+// Three sentences, 4 words each, 0.9 s of silence between sentences.
+function buildScript() {
+  const words = []; let t = 0.7;
+  const sentences = [['The', 'city', 'council', 'approved'], ['new', 'roads', 'and', 'schools'], ['Residents', 'say', 'thanks', 'today']];
+  const segs = [];
+  for (const s of sentences) {
+    const start = t;
+    for (const text of s) { const len = 0.2 + text.length * 0.05; words.push({ text, start: t, end: t + len }); t += len + 0.06; }
+    segs.push({ text: s.join(' '), start, end: t - 0.06 });
+    t += 0.9;
+  }
+  return { words, segs, seconds: t + 0.5 };
+}
+const median = list => [...list].sort((a, b) => a - b)[Math.floor(list.length / 2)];
+
+test('speech activity finds each sentence', () => {
+  const { words, seconds } = buildScript();
+  const activity = Core.analyzeSpeechActivity(makeSpeech(words, seconds), SR);
+  assert.equal(activity.reliable, true);
+  assert.equal(activity.intervals.length, 3);
+  assert.ok(Math.abs(activity.intervals[0][0] - words[0].start) < 0.08);
+});
+
+test('noise-only or constant audio is reported unreliable so the model timestamps are kept', () => {
+  let s = 3; const pcm = new Float32Array(SR * 10);
+  for (let i = 0; i < pcm.length; i++) pcm[i] = ((s = (s * 1664525 + 1013904223) % 4294967296) / 4294967296 - 0.5) * 0.5;
+  assert.equal(Core.analyzeSpeechActivity(pcm, SR).reliable, false);
+  assert.equal(Core.analyzeSpeechActivity(new Float32Array(SR * 5), SR).reliable, false);
+  assert.equal(Core.analyzeSpeechActivity(new Float32Array(10), SR).reliable, false);
+});
+
+test('captions start where speech starts even when the model timestamps are 0.4 s early and 0.6 s late', () => {
+  const { words, segs, seconds } = buildScript();
+  const duration = seconds;
+  const activity = Core.analyzeSpeechActivity(makeSpeech(words, seconds), SR);
+  const wrong = segs.map(s => ({ text: s.text, start: Math.max(0, s.start - 0.4), end: s.end + 0.6 }));
+  const lines = Core.buildCaptionLines(wrong, activity, duration);
+  assert.equal(lines.length, 3);
+  const errors = lines.map((line, i) => Math.abs(line.start - words[i * 4].start));
+  assert.ok(median(errors) < 0.12, `median start error ${median(errors)}`);
+  assert.ok(Math.max(...errors) < 0.3, `max start error ${Math.max(...errors)}`);
+  // The old behaviour (trust the model) would have been off by the full 0.4 s:
+  assert.ok(Math.abs(wrong[0].start - words[0].start) >= 0.39);
+});
+
+test('lines never overlap, stay inside the audio, and keep a minimum duration', () => {
+  const { words, segs, seconds } = buildScript();
+  const activity = Core.analyzeSpeechActivity(makeSpeech(words, seconds), SR);
+  const lines = Core.buildCaptionLines(segs, activity, seconds);
+  lines.forEach((line, i) => {
+    assert.ok(line.start >= 0 && line.end <= seconds + 1e-9);
+    assert.ok(line.end - line.start >= 0.03);
+    if (lines[i + 1]) assert.ok(line.end <= lines[i + 1].start + 1e-9);
+  });
+});
+
+test('model word times are blended with speech timing and still land on the right word', () => {
+  const { words, seconds } = buildScript();
+  const activity = Core.analyzeSpeechActivity(makeSpeech(words, seconds), SR);
+  const biased = words.map(w => ({ text: w.text, start: w.start + 0.25, end: w.end + 0.25 }));
+  const lines = Core.buildCaptionLines(Core.groupWordsIntoPhrases(biased), activity, seconds);
+  const errors = lines.map((line, i) => Math.abs(line.start - words[i * 4].start));
+  assert.ok(median(errors) < 0.12, `median ${median(errors)}`);
+});
+
+test('unreliable audio falls back to the model times and never crashes', () => {
+  const lines = Core.buildCaptionLines([{ text: 'alpha beta gamma delta', start: 0, end: 1 }], { reliable: false, intervals: [] }, 5);
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].text, 'alpha beta gamma delta');
+  assert.ok(lines[0].start >= 0 && lines[0].end > lines[0].start);
+  assert.deepEqual(Core.buildCaptionLines([], null, 5), []);
+  assert.deepEqual(Core.buildCaptionLines([{ text: '[MUSIC]', start: 0, end: 2 }], null, 5), []);
+  assert.equal(Core.buildCaptionLines([{ text: 'late', start: 1, end: NaN }], null, 5).length, 1); // missing end time
+});
+
+test('chunk planning cuts in a pause, never mid-speech, and never exceeds 30 s', () => {
+  // 70 s: speech everywhere except a pause at 26–27.5 s and 54–55.5 s.
+  const words = [];
+  for (let t = 0.5; t < 69; t += 0.8) if (!((t > 26 && t < 27.5) || (t > 54 && t < 55.5))) words.push({ start: t, end: t + 0.5 });
+  const activity = Core.analyzeSpeechActivity(makeSpeech(words, 70), SR);
+  const plan = Core.planCaptionChunks(70, activity);
+  assert.ok(plan.every(([a, b]) => b - a <= 30.0001));
+  assert.equal(plan[0][0], 0); assert.equal(plan[plan.length - 1][1], 70);
+  for (let i = 1; i < plan.length; i++) assert.equal(plan[i][0], plan[i - 1][1]); // contiguous, nothing dropped
+  assert.ok(plan[0][1] > 26 && plan[0][1] < 27.5, `first cut ${plan[0][1]} should be inside the pause`);
+  // Without usable speech information the old fixed 30-second windows are kept.
+  assert.deepEqual(Core.planCaptionChunks(61, { reliable: false }), [[0, 30], [30, 60], [60, 61]]);
+});
+
+test('silent windows are not sent to the speech model', () => {
+  const { words, seconds } = buildScript();
+  const activity = Core.analyzeSpeechActivity(makeSpeech(words, seconds), SR);
+  assert.equal(Core.hasSpeech(activity, words[0].start, words[3].end), true);
+  assert.equal(Core.hasSpeech(activity, words[3].end + 0.1, words[3].end + 0.7), false);
+  assert.equal(Core.hasSpeech({ reliable: false }, 0, 1), true); // unknown: let the model decide
+});
+
+test('source time maps onto the timeline using clip start and speed', () => {
+  assert.equal(Core.sourceToTimeline(2, 10, 1), 12);
+  assert.equal(Core.sourceToTimeline(2, 10, 2), 11);
+  assert.equal(Core.sourceToTimeline(2, 10, 0.5), 14);
+  assert.equal(Core.sourceToTimeline(2, 10, 0), 12); // invalid speed behaves as 1x
+});
+
+test('word grouping joins stray punctuation and breaks on pauses and sentence ends', () => {
+  const phrases = Core.groupWordsIntoPhrases([
+    { text: 'Hello', start: 1, end: 1.1 }, { text: 'there', start: 1.15, end: 1.4 }, { text: ',', start: 1.4, end: 1.45 },
+    { text: 'friend.', start: 1.5, end: 1.9 }, { text: 'Again', start: 2.0, end: 2.3 }, { text: 'later', start: 5, end: 5.3 }
+  ]);
+  assert.deepEqual(phrases.map(p => p.text), ['Hello there, friend.', 'Again', 'later']);
+});
+
+
+test('mixed word and phrase output keeps phrase segments between adjacent word runs', () => {
+  const merged = Core.mergeCaptionSegments([
+    { text: 'one', start: 1, end: 1.2, word: true },
+    { text: 'two', start: 1.25, end: 1.45, word: true },
+    { text: 'middle phrase here', start: 1.5, end: 2.2, word: false },
+    { text: 'three', start: 2.25, end: 2.5, word: true },
+    { text: 'four', start: 2.55, end: 2.8, word: true }
+  ]);
+  assert.deepEqual(merged.map(segment => segment.text), ['one two', 'middle phrase here', 'three four']);
+  assert.ok(merged[0].end <= merged[1].start);
+  assert.ok(merged[1].end <= merged[2].start);
+});
+
+test('caption lines break at real speech-interval boundaries and never bridge a long silence', () => {
+  const activity = { reliable: true, intervals: [[1, 1.8], [5, 5.8]] };
+  const lines = Core.buildCaptionLines([
+    { text: 'first sentence', start: 1, end: 5.8 }
+  ], activity, 7, { startSlackBefore: 0, endSlackAfter: 0, lead: 0, hold: 0, minDuration: 0.05, bridgeGap: 0 });
+  assert.equal(lines.length, 2);
+  assert.match(lines[0].text, /first/);
+  assert.match(lines[1].text, /sentence/);
+  assert.ok(lines[0].end <= 1.8 + 1e-9);
+  assert.ok(lines[1].start >= 5 - 1e-9);
+  assert.ok(lines[1].start - lines[0].end >= 3);
+});
+
+
+test('short continuous speech remains usable when voiced frames exceed 92 percent', () => {
+  const words = [];
+  for (let start = 0; start < 13; start += 4) {
+    words.push({ text: 'continuous speech sample', start: start + 0.1, end: Math.min(13, start + 3.85) });
+  }
+  const activity = Core.analyzeSpeechActivity(makeSpeech(words, 13, 29), SR);
+  assert.ok(activity.voicedRatio > 0.92, `expected mostly voiced audio, got ${activity.voicedRatio}`);
+  assert.equal(activity.reliable, true, `dynamic range ${activity.dynamicRangeDb} dB, voiced ratio ${activity.voicedRatio}`);
+});
+
+
+test('speech resampling suppresses frequencies above the new Nyquist limit', () => {
+  const inputRate = 48000, outputRate = 16000, seconds = 1;
+  const input = new Float32Array(inputRate * seconds);
+  for (let i = 0; i < input.length; i++) input[i] = Math.sin(2 * Math.PI * 12000 * i / inputRate);
+  const output = Core.resamplePcm(input, inputRate, outputRate);
+  const rms = Math.sqrt(output.reduce((sum, value) => sum + value * value, 0) / output.length);
+  assert.ok(output.length === outputRate * seconds);
+  assert.ok(rms < 0.08, `aliased 12 kHz tone RMS was ${rms}`);
+});
+
+test('speech resampling preserves a voice-band tone', () => {
+  const inputRate = 48000, outputRate = 16000, seconds = 1;
+  const input = new Float32Array(inputRate * seconds);
+  for (let i = 0; i < input.length; i++) input[i] = 0.5 * Math.sin(2 * Math.PI * 1000 * i / inputRate);
+  const output = Core.resamplePcm(input, inputRate, outputRate);
+  const rms = Math.sqrt(output.reduce((sum, value) => sum + value * value, 0) / output.length);
+  assert.ok(rms > 0.3 && rms < 0.4, `1 kHz tone RMS was ${rms}`);
+});
+
+test('repeating Whisper token loops are collapsed without deleting normal repetition', () => {
+  assert.equal(Core.stripRepeatingLoops('hello hello hello hello hello hello hello hello'), 'hello');
+  assert.equal(Core.stripRepeatingLoops('we go home we go home we go home we go home we go home'), 'we go home');
+  assert.equal(Core.stripRepeatingLoops('we really really need this'), 'we really really need this');
+});
+
+test('caption builder safely ignores null segments and music-only output', () => {
+  const lines = Core.buildCaptionLines([
+    null,
+    { text: '♪ ♫ ♪', start: 0, end: 1 },
+    { text: 'Real words here', start: 1, end: 2 }
+  ], null, 3);
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].text, 'Real words here');
+});
+
+test('caption lines break at Whisper segment boundaries even across short pauses', () => {
+  const activity = { reliable: true, intervals: [[0.8, 1.8], [2.1, 3.1]] };
+  const lines = Core.buildCaptionLines([
+    { text: 'first sentence', start: 1, end: 1.8 },
+    { text: 'second sentence', start: 2.1, end: 3.0 }
+  ], activity, 4);
+  assert.equal(lines.length, 2, JSON.stringify(lines));
+  assert.match(lines[0].text, /first sentence/);
+  assert.match(lines[1].text, /second sentence/);
+});
+
+test('widely spaced identical speech is preserved instead of being collapsed as a Whisper loop', () => {
+  const realRepeatedSpeech = [
+    { text: 'Thank you.', start: 0, end: 1 },
+    { text: 'Thank you.', start: 10, end: 11 },
+    { text: 'Thank you.', start: 20, end: 21 },
+    { text: 'Thank you.', start: 30, end: 31 }
+  ];
+  const realLines = Core.buildCaptionLines(realRepeatedSpeech, { reliable: false, intervals: [] }, 40);
+  assert.equal(realLines.length, 4);
+
+  const loopThenNewSpeech = [
+    ...Array.from({ length: 8 }, (_, i) => ({ text: 'Thank you.', start: i * 2, end: i * 2 + 1.8 })),
+    { text: 'Welcome back.', start: 17, end: 18.5 }
+  ];
+  const afterLoop = Core.buildCaptionLines(loopThenNewSpeech, { reliable: false, intervals: [] }, 20);
+  assert.equal(afterLoop.length, 2);
+  assert.equal(afterLoop[1].text, 'Welcome back.');
+  assert.ok(afterLoop[1].start >= 16.9); // The caption renderer intentionally applies a 40 ms visual lead-in.
+});
+
+test('large caption windows overlap for boundary context but own contiguous non-overlapping source ranges', () => {
+  const windows = Core.planCaptionStreamWindows(1200, 600, 1.5);
+  assert.equal(windows.length, 2);
+  assert.equal(windows[0].offsetSeconds, 0);
+  assert.equal(windows[0].durationSeconds, 600.75);
+  assert.equal(windows[1].offsetSeconds, 599.25);
+  assert.equal(windows[1].durationSeconds, 600.75);
+  assert.equal(windows[0].ownershipStartSeconds, 0);
+  assert.equal(windows[0].ownershipEndSeconds, 599.25);
+  assert.equal(windows[1].ownershipStartSeconds, 599.25);
+  assert.equal(windows[1].ownershipEndSeconds, 1200);
+  for (let i = 0; i < windows.length; i++) {
+    assert.ok(windows[i].ownershipEndSeconds > windows[i].ownershipStartSeconds);
+    if (windows[i + 1]) {
+      assert.equal(windows[i].ownershipEndSeconds, windows[i + 1].ownershipStartSeconds);
+      assert.ok(windows[i].offsetSeconds + windows[i].durationSeconds > windows[i + 1].offsetSeconds);
+    }
+  }
+  assert.deepEqual(Core.planCaptionStreamWindows(0, 600, 1.5), []);
+  assert.equal(Core.planCaptionStreamWindows(601, 600, 1.5).length, 2);
+});
+
+
+
+================================================================================
+FILE: tests/export-cancel.test.js
+BLOB SHA: 1a68f06723ae3dc22072ce3e3026e3c3d7e91834
+================================================================================
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const app = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+
+test('export cancel button dispatches to export or caption cancellation without mixing states', () => {
+  assert.ok(app.includes("$('busyCancel').onclick = () => exportInProgress ? requestExportCancel() : requestCaptionCancel();"));
+  assert.ok(app.includes('function requestExportCancel()'));
+  assert.ok(app.includes("button.textContent = 'Cancelling export…'"));
+});
+
+test('export cancellation terminates FFmpeg and reaches the WebCodecs frame loop', () => {
+  assert.ok(app.includes('if (ff) disposeFFmpeg();'));
+  assert.ok(app.includes('isCancelled: () => exportCancelRequested'));
+  assert.ok(app.includes("if (exportCancelRequested) throw new Error('Export cancelled')"));
+});
+
+test('cancelled export is not retried or reported as an export failure', () => {
+  assert.ok(app.includes("exportOutcome = 'cancelled'"));
+  assert.ok(app.includes('retryAfterCleanup = false'));
+  assert.ok(app.includes('exportFailed = false'));
+  assert.ok(app.includes('Temporary files were cleaned up; your project was not changed.'));
+});
+
+test('FFmpeg commands have a progress/log inactivity watchdog, not a fixed export deadline', () => {
+  assert.ok(app.includes('ffLastActivityAt = Date.now()'));
+  assert.ok(app.includes("ff.on('progress', event => { ffLastActivityAt = Date.now();"));
+  assert.ok(app.includes('const idleLimitMs = 15 * 60 * 1000'));
+  assert.ok(app.includes('Promise.race([engine.exec(args), watchdog])'));
+  assert.ok(app.includes('if (ff === engine) disposeFFmpeg()'));
+  assert.ok(app.includes('window.clearTimeout(watchdogTimer)'));
+  assert.ok(app.includes('FFmpeg stopped reporting activity for 15 minutes'));
+});
+
+
+
+================================================================================
+FILE: tests/export-delivery.test.js
+BLOB SHA: 4c780a00de2f413610320a468faf98eab7839fbc
+================================================================================
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const app = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+const workflow = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'built.yml'), 'utf8');
+
+test('Android export saves to Movies/MediaY before offering a share fallback', () => {
+  const start = app.indexOf('async function saveVideo');
+  const end = app.indexOf('// Native Android builds register this plugin', start);
+  assert.ok(start >= 0 && end > start, 'saveVideo implementation must exist');
+  const save = app.slice(start, end);
+  const deviceSave = save.indexOf('MediaYMediaStore.saveVideo');
+  const deviceResult = save.indexOf("method: 'device'");
+  const fallbackShare = save.indexOf('Share.share');
+  assert.ok(deviceSave >= 0, 'Android direct-save plugin call must exist');
+  assert.ok(deviceResult > deviceSave, 'successful device save must be reported');
+  assert.ok(fallbackShare > deviceResult, 'sharing may only be a fallback after direct saving');
+  assert.match(save, /location:.*Movies\/MediaY/);
+  assert.doesNotMatch(app, /pendingExportShare/, 'successful background exports must not queue an automatic share sheet');
+});
+
+test('failed Android cache appends remove the partially written MP4', () => {
+  const start = app.indexOf('async function saveVideo');
+  const end = app.indexOf('// Native Android builds register this plugin', start);
+  const save = app.slice(start, end);
+  const firstWrite = save.indexOf('await Filesystem.writeFile(options)');
+  const markCreated = save.indexOf('cacheFileCreated = true', firstWrite);
+  const append = save.indexOf('await Filesystem.appendFile(options)');
+  const cleanup = save.lastIndexOf('if (cacheFileCreated) await Filesystem.deleteFile');
+  assert.ok(firstWrite >= 0 && markCreated > firstWrite, 'cache creation must be recorded after the first successful write');
+  assert.ok(append > markCreated, 'the partial cache must be marked before a later append can fail');
+  assert.ok(cleanup > append, 'the catch path must delete a partial cache file');
+});
+
+test('Android build registers a MediaStore plugin that publishes MP4s to public Movies/MediaY', () => {
+  assert.match(workflow, /registerPlugin\(MediaYMediaStorePlugin\.class\)/);
+  assert.match(workflow, /MediaStore\.Video\.Media\.RELATIVE_PATH/);
+  assert.match(workflow, /Environment\.DIRECTORY_MOVIES \+ "\/MediaY"/);
+  assert.match(workflow, /MediaStore\.Video\.Media\.IS_PENDING/);
+});
+
+
+test('a completed render remains in FFmpeg storage after a delivery failure and can be retried', () => {
+  assert.match(app, /let pendingExportSave = null/);
+  assert.match(app, /pendingExportSave = \{ engine: ff, path: out \}/);
+  assert.match(app, /if \(preserveOutputPath && name === preserveOutputPath\) continue/);
+  assert.match(app, /async function retryPendingExportSave\(\)/);
+  assert.match(app, /retry\.onclick = retryPendingExportSave/);
+  assert.match(app, /pendingExportSave && pendingExportSave\.engine === ff/);
+  assert.match(app, /error\.renderedData = data/);
+  assert.match(app, /pendingExportSave = \{ engine: null, path: null, data: saveError\.renderedData \}/);
+  assert.match(app, /pending\.data \? await saveVideo\(pending\.data\)/);
+  assert.match(app, /if \(pending\.engine\) \{ try \{ await pending\.engine\.deleteFile\(pending\.path\)/);
+  assert.match(app, /A completed render is waiting to be saved/);
+});
+
