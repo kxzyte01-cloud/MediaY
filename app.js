@@ -1396,7 +1396,13 @@ async function saveFFmpegOutput(engine, outputPath) {
   const nativeStore = isNative() && plugins.MediaYMediaStore;
   if (!nativeStore || typeof nativeStore.beginStreamingSave !== 'function' ||
       typeof engine.readFileChunk !== 'function') {
-    return saveVideo(await engine.readFile(outputPath));
+    // The legacy path must not keep a second full MP4 in FFmpeg MEMFS while
+    // saveVideo builds its native/browser delivery copy. Keep the JS buffer
+    // attached to a thrown error so Retry save still works after MEMFS cleanup.
+    const data = await engine.readFile(outputPath);
+    try { await engine.deleteFile(outputPath); } catch (_) { /* retain the in-memory render */ }
+    try { return await saveVideo(data); }
+    catch (error) { error.renderedData = data; throw error; }
   }
   const name = `ProjectMedia-Y-${Date.now()}.mp4`;
   const CHUNK_BYTES = 1024 * 1024;
@@ -1452,14 +1458,15 @@ async function saveFFmpegOutput(engine, outputPath) {
 // service helps keep the app process alive during export when the user switches apps.
 async function retryPendingExportSave() {
   const pending = pendingExportSave;
-  if (!pending || !pending.engine) return hideBusy();
+  if (!pending || (!pending.engine && !pending.data)) return hideBusy();
   const button = $('busyDismiss');
   button.disabled = true;
   updateBusy('Saving completed video…', 'The render is preserved in MediaY. Retrying the device save.', 97, 'Saving video');
   try {
-    const delivery = await saveFFmpegOutput(pending.engine, pending.path);
+    const delivery = pending.data ? await saveVideo(pending.data) : await saveFFmpegOutput(pending.engine, pending.path);
     pendingExportSave = null;
-    try { await pending.engine.deleteFile(pending.path); } catch (_) {}
+    if (pending.engine) { try { await pending.engine.deleteFile(pending.path); } catch (_) {} }
+    pending.data = null;
     if (delivery.method === 'device') {
       say(`Export complete — saved to ${delivery.location}/${delivery.filename}. Open Gallery or Files to find it.`);
     } else if (delivery.method === 'browser-download') {
@@ -2076,7 +2083,11 @@ const runExport = async (_event, recoveryAttempt = 0) => {
     try {
       delivery = await saveFFmpegOutput(ff, out);
     } catch (saveError) {
-      if (ff && ff.loaded) {
+      if (saveError && saveError.renderedData instanceof Uint8Array) {
+        pendingExportSave = { engine: null, path: null, data: saveError.renderedData };
+        preserveOutputPath = null;
+        saveFailurePending = true;
+      } else if (ff && ff.loaded) {
         pendingExportSave = { engine: ff, path: out };
         preserveOutputPath = out;
         saveFailurePending = true;
