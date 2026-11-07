@@ -51,7 +51,7 @@ test('a completed render remains in FFmpeg storage after a delivery failure and 
   assert.match(app, /pendingExportSave && pendingExportSave\.engine === ff/);
   assert.doesNotMatch(app, /error\.renderedData = data/);
   assert.doesNotMatch(app, /pendingExportSave = \{ engine: null, path: null, data:/);
-  assert.match(app, /const data = await engine\.readFile\(outputPath\);[\\s\\S]*?const delivery = await saveVideo\(data\);[\\s\\S]*?await engine\.deleteFile\(outputPath\)/);
+  assert.match(app, /const data = await engine\.readFile\(outputPath\);[\s\S]*?const delivery = await saveVideo\(data\);[\s\S]*?await engine\.deleteFile\(outputPath\)/);
   assert.match(app, /const delivery = await saveFFmpegOutput\(pending\.engine, pending\.path\)/);
   assert.match(app, /if \(pending\.engine\) \{ try \{ await pending\.engine\.deleteFile\(pending\.path\)/);
   assert.match(app, /A completed render is waiting to be saved/);
