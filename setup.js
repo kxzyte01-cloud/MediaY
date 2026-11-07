@@ -172,6 +172,29 @@
         for (const item of lane) if (item && item.mediaId) referenced.add(item.mediaId);
       }
     }
+    // Undo/redo snapshots can still restore clips that the user just deleted.
+    // Keep their media alive until those history entries are evicted or discarded.
+    for (const history of [
+      typeof undoStack !== 'undefined' && Array.isArray(undoStack) ? undoStack : [],
+      typeof redoStack !== 'undefined' && Array.isArray(redoStack) ? redoStack : []
+    ]) {
+      for (const snapshot of history) {
+        let state;
+        try { state = typeof snapshot === 'string' ? JSON.parse(snapshot) : snapshot; }
+        catch (_) {
+          console.warn('Media cleanup skipped because an undo/redo snapshot could not be read.');
+          return 0;
+        }
+        if (!state || typeof state !== 'object' ||
+            !Array.isArray(state.main) || !Array.isArray(state.audio) || !Array.isArray(state.overlays)) {
+          console.warn('Media cleanup skipped because an undo/redo snapshot has an unsupported state shape.');
+          return 0;
+        }
+        for (const lane of [state.main, state.audio, state.overlays]) {
+          for (const item of lane) if (item && item.mediaId) referenced.add(item.mediaId);
+        }
+      }
+    }
     // Saved templates live in localStorage rather than the projects table. Treat an
     // unreadable or unknown template schema as a reason to skip collection: deleting
     // media while references are uncertain would permanently break a user's template.
