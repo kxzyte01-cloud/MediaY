@@ -10514,3 +10514,196 @@ test('deleting a named project invokes best-effort cleanup without deleting shar
   assert.match(deletion, /Media used by other projects will be kept/);
 });
 
+
+
+==========================================================================================
+FILE: tests/streaming-export.test.js
+BLOB SHA: 055c5c3c75ffd2c6b7956fc2d389a51300efbbb4
+==========================================================================================
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+const app = read('app.js');
+const wrapperPath = path.join(__dirname, '..', 'vendor/ffmpeg/ffmpeg.js');
+const workerPath = path.join(__dirname, '..', 'vendor/ffmpeg/814.ffmpeg.js');
+const ffmpegVendorMissing = !fs.existsSync(wrapperPath) || !fs.existsSync(workerPath);
+const workflow = read('.github/workflows/built.yml');
+
+test('native export reads FFmpeg output in bounded worker chunks', () => {
+  assert.ok(app.includes('async function saveFFmpegOutput(engine, outputPath)'));
+  assert.ok(app.includes('engine.readFileChunk(outputPath, offset, CHUNK_BYTES)'));
+  assert.ok(app.includes('nativeStore.appendStreamingChunk({ data: btoa(binary) })'));
+  const nativePath = app.slice(app.indexOf('async function saveFFmpegOutput'), app.indexOf('// Native Android builds register'))
+    .split('if (!nativeStore')[0];
+  assert.ok(!nativePath.includes('readFile(outputPath)'));
+});
+
+test('FFmpeg wrapper and worker expose the bounded range-read protocol', { skip: ffmpegVendorMissing ? 'Vendor FFmpeg bundle is omitted from this source snapshot' : false }, () => {
+  const wrapper = fs.readFileSync(wrapperPath, 'utf8');
+  const worker = fs.readFileSync(workerPath, 'utf8');
+  assert.ok(wrapper.includes('readFileChunk='));
+  assert.ok(worker.includes('case t.READ_FILE_CHUNK'));
+});
+
+test('Android MediaStore streaming export publishes only after all chunks are written', () => {
+  const begin = workflow.indexOf('public synchronized void beginStreamingSave');
+  const append = workflow.indexOf('public synchronized void appendStreamingChunk');
+  const finish = workflow.indexOf('public synchronized void finishStreamingSave');
+  assert.ok(begin >= 0 && append > begin && finish > append);
+  const section = workflow.slice(begin, workflow.indexOf('public void saveVideo(PluginCall call)', finish));
+  assert.ok(section.includes('MediaStore.Video.Media.IS_PENDING, 1'));
+  assert.ok(section.includes('MediaStore.Video.Media.IS_PENDING, 0'));
+  assert.ok(section.includes('abortStreamingSaveInternal()'));
+  assert.ok(section.includes('4 * 1024 * 1024'));
+});
+
+test('build workflow uses read-only contents permission and isolates release write permission', () => {
+  assert.ok(workflow.includes('permissions:\n  contents: read'));
+  assert.ok(workflow.includes('  build:\n    permissions:\n      contents: read'));
+  assert.ok(workflow.includes('  publish-release:\n'));
+  assert.ok(workflow.includes('      contents: write'));
+  assert.ok(workflow.includes('actions/download-artifact@v4'));
+});
+
+test('FFmpeg worker range reads return exact offsets and end-of-file metadata', { skip: !fs.existsSync(workerPath) ? 'Vendor FFmpeg worker is omitted from this source snapshot' : false }, async () => {
+  const worker = fs.readFileSync(workerPath, 'utf8');
+  const bytes = new TextEncoder().encode('abcdefghij');
+  const messages = [];
+  const fakeFS = {
+    stat: () => ({ size: bytes.length }),
+    open: filePath => ({ path: filePath }),
+    read: (stream, target, targetOffset, length, position) => {
+      const count = Math.max(0, Math.min(length, bytes.length - position));
+      target.set(bytes.subarray(position, position + count), targetOffset);
+      return count;
+    },
+    close: () => {}
+  };
+  const self = {
+    postMessage: message => messages.push(message),
+    createFFmpegCore: async () => ({
+      FS: fakeFS,
+      setLogger: () => {},
+      setProgress: () => {}
+    })
+  };
+  const context = {
+    self,
+    importScripts: () => {},
+    btoa: value => Buffer.from(value, 'binary').toString('base64'),
+    Uint8Array, Math, Number, Error, Promise, JSON
+  };
+  vm.runInNewContext(worker, context);
+  await self.onmessage({ data: { id: 1, type: 'LOAD', data: { coreURL: 'core.js', wasmURL: 'core.wasm' } } });
+  await self.onmessage({ data: { id: 2, type: 'READ_FILE_CHUNK', data: { path: 'final.mp4', offset: 5, length: 4 } } });
+  await self.onmessage({ data: { id: 3, type: 'READ_FILE_CHUNK', data: { path: 'final.mp4', offset: 8, length: 4 } } });
+  const first = messages.find(message => message.id === 2).data;
+  const last = messages.find(message => message.id === 3).data;
+  assert.equal(new TextDecoder().decode(first.data), 'fghi');
+  assert.equal(first.bytesRead, 4);
+  assert.equal(first.fileSize, 10);
+  assert.equal(first.eof, false);
+  assert.equal(new TextDecoder().decode(last.data), 'ij');
+  assert.equal(last.bytesRead, 2);
+  assert.equal(last.eof, true);
+});
+
+
+
+==========================================================================================
+FILE: tests/vendor-integrity.test.js
+BLOB SHA: e1c668ee023bfa0ba62abd4978ba2de151ff5fd1
+==========================================================================================
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+
+const root = path.join(__dirname, '..');
+const expected = {
+  'fabric.min.js': 'uwRC1ppNRnMyD2ibxuFsBaDj8WzPv1UfOU2Qp+fPx3I=',
+  'anime.min.js': 'tc4b48P1MPGS4PJXHRlChGCW1mEZy62jS/3JEsSHPzU=',
+  'dexie.min.js': '2JhqFVK0mn2MsIWpLGaYWuvzuzO2Stb3uu0kYdm2R/8='
+};
+
+const missingVendorFiles = Object.keys(expected).filter(name => !fs.existsSync(path.join(root, 'vendor', 'media-libraries', name)));
+
+test('vendored editor libraries match their pinned SHA-256 SRI digests', { skip: missingVendorFiles.length ? 'Vendor editor libraries are omitted from this source snapshot: ' + missingVendorFiles.join(', ') : false }, () => {
+  for (const [name, digest] of Object.entries(expected)) {
+    const file = path.join(root, 'vendor', 'media-libraries', name);
+    const actual = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('base64');
+    assert.equal(actual, digest, name + ' integrity mismatch');
+  }
+});
+
+
+
+==========================================================================================
+FILE: vendor/ffmpeg/814.ffmpeg.js
+BLOB SHA: 467c793d886a9816a73ba8fa92bd1445f462974f
+==========================================================================================
+!function(e,t){"object"==typeof exports&&"object"==typeof module?module.exports=t():"function"==typeof define&&define.amd?define([],t):"object"==typeof exports?exports.FFmpegWASM=t():e.FFmpegWASM=t()}(self,(()=>(()=>{var e={454:e=>{function t(e){return Promise.resolve().then((()=>{var t=new Error("Cannot find module '"+e+"'");throw t.code="MODULE_NOT_FOUND",t}))}t.keys=()=>[],t.resolve=t,t.id=454,e.exports=t}},t={};function r(o){var s=t[o];if(void 0!==s)return s.exports;var a=t[o]={exports:{}};return e[o](a,a.exports,r),a.exports}return r.o=(e,t)=>Object.prototype.hasOwnProperty.call(e,t),(()=>{"use strict";const e="https://unpkg.com/@ffmpeg/core@0.12.9/dist/umd/ffmpeg-core.js";var t;!function(e){e.LOAD="LOAD",e.EXEC="EXEC",e.FFPROBE="FFPROBE",e.WRITE_FILE="WRITE_FILE",e.READ_FILE="READ_FILE",e.READ_FILE_CHUNK="READ_FILE_CHUNK",e.DELETE_FILE="DELETE_FILE",e.RENAME="RENAME",e.CREATE_DIR="CREATE_DIR",e.LIST_DIR="LIST_DIR",e.DELETE_DIR="DELETE_DIR",e.ERROR="ERROR",e.DOWNLOAD="DOWNLOAD",e.PROGRESS="PROGRESS",e.LOG="LOG",e.MOUNT="MOUNT",e.UNMOUNT="UNMOUNT"}(t||(t={}));const o=new Error("unknown message type"),s=new Error("ffmpeg is not loaded, call `await ffmpeg.load()` first"),a=(new Error("called FFmpeg.terminate()"),new Error("failed to import ffmpeg-core.js"));let n;self.onmessage=async({data:{id:E,type:c,data:i}})=>{const p=[];let f;try{if(c!==t.LOAD&&!n)throw s;switch(c){case t.LOAD:f=await(async({coreURL:o,wasmURL:s,workerURL:E})=>{const c=!n;try{o||(o=e),importScripts(o)}catch{if(o&&o!==e||(o=e.replace("/umd/","/esm/")),self.createFFmpegCore=(await r(454)(o)).default,!self.createFFmpegCore)throw a}const i=o,p=s||o.replace(/.js$/g,".wasm"),f=E||o.replace(/.js$/g,".worker.js");return n=await self.createFFmpegCore({mainScriptUrlOrBlob:`${i}#${btoa(JSON.stringify({wasmURL:p,workerURL:f}))}`}),n.setLogger((e=>self.postMessage({type:t.LOG,data:e}))),n.setProgress((e=>self.postMessage({type:t.PROGRESS,data:e}))),c})(i);break;case t.EXEC:f=(({args:e,timeout:t=-1})=>{n.setTimeout(t),n.exec(...e);const r=n.ret;return n.reset(),r})(i);break;case t.FFPROBE:f=(({args:e,timeout:t=-1})=>{n.setTimeout(t),n.ffprobe(...e);const r=n.ret;return n.reset(),r})(i);break;case t.WRITE_FILE:f=(({path:e,data:t})=>(n.FS.writeFile(e,t),!0))(i);break;case t.READ_FILE:f=(({path:e,encoding:t})=>n.FS.readFile(e,{encoding:t}))(i);break;case t.READ_FILE_CHUNK:f=(({path:e,offset:t=0,length:r=1048576})=>{const o=n.FS.stat(e).size,s=Math.max(0,Math.min(o,Number(t)||0)),a=Math.max(1,Math.min(4*1024*1024,Number(r)||1048576)),c=n.FS.open(e,"r"),p=new Uint8Array(Math.min(a,o-s));let u=0;try{u=n.FS.read(c,p,0,p.length,s)}finally{n.FS.close(c)}return{data:p.slice(0,u),bytesRead:u,fileSize:o,eof:s+u>=o}})(i);break;case t.DELETE_FILE:f=(({path:e})=>(n.FS.unlink(e),!0))(i);break;case t.RENAME:f=(({oldPath:e,newPath:t})=>(n.FS.rename(e,t),!0))(i);break;case t.CREATE_DIR:f=(({path:e})=>(n.FS.mkdir(e),!0))(i);break;case t.LIST_DIR:f=(({path:e})=>{const t=n.FS.readdir(e),r=[];for(const o of t){const t=n.FS.stat(`${e}/${o}`),s=n.FS.isDir(t.mode);r.push({name:o,isDir:s})}return r})(i);break;case t.DELETE_DIR:f=(({path:e})=>(n.FS.rmdir(e),!0))(i);break;case t.MOUNT:f=(({fsType:e,options:t,mountPoint:r})=>{const o=e,s=n.FS.filesystems[o];return!!s&&(n.FS.mount(s,t,r),!0)})(i);break;case t.UNMOUNT:f=(({mountPoint:e})=>(n.FS.unmount(e),!0))(i);break;default:throw o}}catch(e){return void self.postMessage({id:E,type:t.ERROR,data:e.toString()})}f instanceof Uint8Array?p.push(f.buffer):f&&f.data instanceof Uint8Array&&p.push(f.data.buffer),self.postMessage({id:E,type:c,data:f},p)}})(),{}})()));
+//# sourceMappingURL=814.ffmpeg.js.map
+
+
+==========================================================================================
+FILE: vendor/ffmpeg/LICENSE
+BLOB SHA: 3032c67441859d69c3b02d150c5abdfbdef2a919
+==========================================================================================
+MIT License
+
+Copyright (c) 2019 Jerome Wu
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+
+==========================================================================================
+FILE: vendor/ffmpeg/README.md
+BLOB SHA: 2d761dfb7d7a7bef5e1049bf90605933eff797b7
+==========================================================================================
+# MediaY FFmpeg worker assets
+
+These files are the small UMD wrapper and worker chunk from `@ffmpeg/ffmpeg` 0.12.15.
+
+- `ffmpeg.js`: exposes `FFmpegWASM.FFmpeg`.
+- `814.ffmpeg.js`: class worker chunk loaded by the wrapper.
+- `LICENSE`: upstream MIT license.
+
+The wrapper and worker are served from the same origin as MediaY. The upstream wrapper derives the worker URL from the script's own location, so it must be loaded from this local path using a normal script tag; loading it dynamically from a CDN may point the browser at a cross-origin worker URL and fail with an unloaded FFmpeg engine.
+
+The much larger `@ffmpeg/core` JS and WASM files are fetched at runtime from jsDelivr and converted to blob URLs before loading. MediaY's current code pins the core to `@ffmpeg/core@0.12.6`.
+
+Upstream project: https://github.com/ffmpegwasm/ffmpeg.wasm
+Vendored source copy: https://github.com/simonw/tools/tree/befbcec31fc3990b87957a7322da61a6c59708bc/ffmpeg-wasm
+
+
+
+==========================================================================================
+FILE: vendor/ffmpeg/ffmpeg.js
+BLOB SHA: 69d1cddf8527124c6c5d09e3fa6062cd1f255c86
+==========================================================================================
+!function(e,t){"object"==typeof exports&&"object"==typeof module?module.exports=t():"function"==typeof define&&define.amd?define([],t):"object"==typeof exports?exports.FFmpegWASM=t():e.FFmpegWASM=t()}(self,(()=>(()=>{"use strict";var e={m:{},d:(t,s)=>{for(var r in s)e.o(s,r)&&!e.o(t,r)&&Object.defineProperty(t,r,{enumerable:!0,get:s[r]})},u:e=>e+".ffmpeg.js"};e.g=function(){if("object"==typeof globalThis)return globalThis;try{return this||new Function("return this")()}catch(e){if("object"==typeof window)return window}}(),e.o=(e,t)=>Object.prototype.hasOwnProperty.call(e,t),e.r=e=>{"undefined"!=typeof Symbol&&Symbol.toStringTag&&Object.defineProperty(e,Symbol.toStringTag,{value:"Module"}),Object.defineProperty(e,"__esModule",{value:!0})},(()=>{var t;e.g.importScripts&&(t=e.g.location+"");var s=e.g.document;if(!t&&s&&(s.currentScript&&(t=s.currentScript.src),!t)){var r=s.getElementsByTagName("script");if(r.length)for(var a=r.length-1;a>-1&&!t;)t=r[a--].src}if(!t)throw new Error("Automatic publicPath is not supported in this browser");t=t.replace(/#.*$/,"").replace(/\?.*$/,"").replace(/\/[^\/]+$/,"/"),e.p=t})(),e.b=document.baseURI||self.location.href;var t,s={};e.r(s),e.d(s,{FFFSType:()=>n,FFmpeg:()=>i}),function(e){e.LOAD="LOAD",e.EXEC="EXEC",e.FFPROBE="FFPROBE",e.WRITE_FILE="WRITE_FILE",e.READ_FILE="READ_FILE",e.READ_FILE_CHUNK="READ_FILE_CHUNK",e.DELETE_FILE="DELETE_FILE",e.RENAME="RENAME",e.CREATE_DIR="CREATE_DIR",e.LIST_DIR="LIST_DIR",e.DELETE_DIR="DELETE_DIR",e.ERROR="ERROR",e.DOWNLOAD="DOWNLOAD",e.PROGRESS="PROGRESS",e.LOG="LOG",e.MOUNT="MOUNT",e.UNMOUNT="UNMOUNT"}(t||(t={}));const r=(()=>{let e=0;return()=>e++})(),a=(new Error("unknown message type"),new Error("ffmpeg is not loaded, call `await ffmpeg.load()` first")),o=new Error("called FFmpeg.terminate()");new Error("failed to import ffmpeg-core.js");class i{#e=null;#t={};#s={};#r=[];#a=[];loaded=!1;#o=()=>{this.#e&&(this.#e.onmessage=({data:{id:e,type:s,data:r}})=>{switch(s){case t.LOAD:this.loaded=!0,this.#t[e](r);break;case t.MOUNT:case t.UNMOUNT:case t.EXEC:case t.FFPROBE:case t.WRITE_FILE:case t.READ_FILE:case t.READ_FILE_CHUNK:case t.DELETE_FILE:case t.RENAME:case t.CREATE_DIR:case t.LIST_DIR:case t.DELETE_DIR:this.#t[e](r);break;case t.LOG:this.#r.forEach((e=>e(r)));break;case t.PROGRESS:this.#a.forEach((e=>e(r)));break;case t.ERROR:this.#s[e](r)}delete this.#t[e],delete this.#s[e]})};#i=({type:e,data:t},s=[],o)=>this.#e?new Promise(((a,i)=>{const n=r();this.#e&&this.#e.postMessage({id:n,type:e,data:t},s),this.#t[n]=a,this.#s[n]=i,o?.addEventListener("abort",(()=>{i(new DOMException(`Message # ${n} was aborted`,"AbortError"))}),{once:!0})})):Promise.reject(a);on(e,t){"log"===e?this.#r.push(t):"progress"===e&&this.#a.push(t)}off(e,t){"log"===e?this.#r=this.#r.filter((e=>e!==t)):"progress"===e&&(this.#a=this.#a.filter((e=>e!==t)))}load=({classWorkerURL:s,...r}={},{signal:a}={})=>(this.#e||(this.#e=s?new Worker(new URL(s,"file:///Users/focus/Projects/ffmpeg.wasm/packages/ffmpeg/dist/esm/classes.js"),{type:"module"}):new Worker(new URL(e.p+e.u(814),e.b),{type:void 0}),this.#o()),this.#i({type:t.LOAD,data:r},void 0,a));exec=(e,s=-1,{signal:r}={})=>this.#i({type:t.EXEC,data:{args:e,timeout:s}},void 0,r);ffprobe=(e,s=-1,{signal:r}={})=>this.#i({type:t.FFPROBE,data:{args:e,timeout:s}},void 0,r);terminate=()=>{const e=Object.keys(this.#s);for(const t of e)this.#s[t](o),delete this.#s[t],delete this.#t[t];this.#e&&(this.#e.terminate(),this.#e=null,this.loaded=!1)};writeFile=(e,s,{signal:r}={})=>{const a=[];return s instanceof Uint8Array&&a.push(s.buffer),this.#i({type:t.WRITE_FILE,data:{path:e,data:s}},a,r)};mount=(e,s,r)=>this.#i({type:t.MOUNT,data:{fsType:e,options:s,mountPoint:r}},[]);unmount=e=>this.#i({type:t.UNMOUNT,data:{mountPoint:e}},[]);readFile=(e,s="binary",{signal:r}={})=>this.#i({type:t.READ_FILE,data:{path:e,encoding:s}},void 0,r);readFileChunk=(e,s,r,{signal:a}={})=>this.#i({type:t.READ_FILE_CHUNK,data:{path:e,offset:s,length:r}},void 0,a);deleteFile=(e,{signal:s}={})=>this.#i({type:t.DELETE_FILE,data:{path:e}},void 0,s);rename=(e,s,{signal:r}={})=>this.#i({type:t.RENAME,data:{oldPath:e,newPath:s}},void 0,r);createDir=(e,{signal:s}={})=>this.#i({type:t.CREATE_DIR,data:{path:e}},void 0,s);listDir=(e,{signal:s}={})=>this.#i({type:t.LIST_DIR,data:{path:e}},void 0,s);deleteDir=(e,{signal:s}={})=>this.#i({type:t.DELETE_DIR,data:{path:e}},void 0,s)}var n;return function(e){e.MEMFS="MEMFS",e.NODEFS="NODEFS",e.NODERAWFS="NODERAWFS",e.IDBFS="IDBFS",e.WORKERFS="WORKERFS",e.PROXYFS="PROXYFS"}(n||(n={})),s})()));
+//# sourceMappingURL=ffmpeg.js.map
