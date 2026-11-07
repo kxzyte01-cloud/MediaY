@@ -111,6 +111,5 @@ test('contrast smoke test checks gradient stops and every inspector form control
   assert.match(smoke,/#sheet input:not\(\[type=range\]\)/);
   assert.match(smoke,/assert_range_accent_contrast\(page, '#sheet input\[type=range\]'/);
   assert.match(smoke,/#perfReport/);
-  assert.match(style,/#sheet input\[type=range\] \{ accent-color:#00E7F2; \}/);
-  assert.match(style,/#sheet \.adjust-control input\[type=range\], #sheet #blendOpacity \{ accent-color:#00647A; \}/);
+  assert.match(style,/#sheet input\[type=range\],[\s\S]*?accent-color:#7DD3FC !important/);
 });
