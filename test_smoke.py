@@ -62,6 +62,29 @@ def assert_computed_contrast(page, selectors, label):
     assert not failures, f"Computed WCAG contrast failed for {label}: {failures}"
     print(f"PASS: computed WCAG contrast for {label} ({len(report)} rendered text controls)")
 
+
+
+def assert_range_accent_contrast(page, selector, label):
+    report = page.evaluate("""selector => {
+      const parse = value => {
+        const m = String(value).match(/rgba?\\(\\s*([\\d.]+)[,\\s]+([\\d.]+)[,\\s]+([\\d.]+)(?:\\s*[,/]\\s*([\\d.]+))?\\s*\\)/i);
+        return m ? [Number(m[1]), Number(m[2]), Number(m[3]), m[4] === undefined ? 1 : Number(m[4])] : null;
+      };
+      const lum = rgb => { const c = rgb.map(v => { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; }); return .2126*c[0]+.7152*c[1]+.0722*c[2]; };
+      return [...document.querySelectorAll(selector)].filter(el => el.getClientRects().length).map(el => {
+        const accent = parse(getComputedStyle(el).accentColor);
+        let node = el.parentElement, background = null;
+        while (node && !background) { const color = parse(getComputedStyle(node).backgroundColor); if (color && color[3] > 0) background = color; node = node.parentElement; }
+        if (!accent || !background) return { id:el.id, ratio:0 };
+        const a = lum(accent.slice(0,3)), b = lum(background.slice(0,3));
+        return { id:el.id, ratio:Number(((Math.max(a,b)+.05)/(Math.min(a,b)+.05)).toFixed(2)), accent:accent.slice(0,3), background:background.slice(0,3) };
+      });
+    }""", selector)
+    assert report, f"No visible range controls found for {label}"
+    failures = [item for item in report if item["ratio"] < 3.0]
+    assert not failures, f"Range-control accent contrast failed for {label}: {failures}"
+    print(f"PASS: range-control accent contrast for {label} ({len(report)} sliders)")
+
 root=Path(__file__).resolve().parent
 html=(root/'index.html').read_text()
 # FFmpeg is covered by a real-origin integration test; stub the vendored script in this DOM-only smoke test.
@@ -182,9 +205,10 @@ with sync_playwright() as p:
       const report = document.querySelector('#perfReport');
       if (report && report.closest('details')) { report.closest('details').dataset.smokeWasOpen = report.closest('details').open ? '1' : '0'; report.closest('details').open = true; }
     }""")
-    assert_computed_contrast(page, ['#sheet button', '#sheet label', '#sheet input', '#sheet select',
+    assert_computed_contrast(page, ['#sheet button', '#sheet label', '#sheet input:not([type=range]):not([type=color]):not([type=checkbox])', '#sheet select',
       '#sheet textarea', '#sheet output', '#sheet p.lbl', '.perf-tools summary', '#perfReport'],
-      'all inspector panes, form controls and performance diagnostics')
+      'all inspector panes, text form controls and performance diagnostics')
+    assert_range_accent_contrast(page, '#sheet input[type=range]', 'inspector sliders')
     page.evaluate("""() => {
       document.querySelectorAll('#sheet [data-pane]').forEach(el => {
         el.hidden = el.dataset.smokeWasHidden === '1';
