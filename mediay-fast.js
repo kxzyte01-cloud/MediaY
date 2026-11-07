@@ -498,7 +498,7 @@
       // contiguous Uint8Array, and then copied into FFmpeg.wasm. Refuse to grow
       // beyond the caller's memory budget rather than risking a WebView OOM.
       if (this.bytes + chunk.byteLength > this.maxBytes) {
-        throw new Unsupported('device video output exceeded its safe in-memory buffer budget');
+        const error = new Unsupported('device video output exceeded its safe in-memory buffer budget'); error.code = 'PIECE_BUDGET_EXCEEDED'; throw error;
       }
       if (meta && meta.decoderConfig && meta.decoderConfig.description) {
         const parsed = parseAvcC(meta.decoderConfig.description);
@@ -510,7 +510,7 @@
       if (this.params) out = avccToAnnexB(raw, this.nalLength, chunk.type === 'key' ? this.params : null);
       else out = raw; // encoder already produced Annex B
       if (this.bytes + out.length > this.maxBytes) {
-        throw new Unsupported('device video output exceeded its safe in-memory buffer budget');
+        const error = new Unsupported('device video output exceeded its safe in-memory buffer budget'); error.code = 'PIECE_BUDGET_EXCEEDED'; throw error;
       }
       this.parts.push(out); this.bytes += out.length; this.frameCount++;
     }
