@@ -2142,7 +2142,50 @@ const runExport = async (_event, recoveryAttempt = 0) => {
     };
     // PiP audio is intentionally excluded: preview is muted and there is no overlay-volume control.
 
-    let out = await tryDeviceEncoderExport();
+    // Conservative fast lane: remux one untouched H.264 clip. Any uncertainty falls back.
+    const tryStreamCopyExport = async () => {
+      const Fast = window.MediaYFast;
+      const note = (key, value) => { if (exportMetric.note) exportMetric.note(key, value); };
+      const decline = reason => { note('streamCopy', 'not used: ' + reason); return null; };
+      try {
+        if (exportCancelRequested) throw new Error('Export cancelled');
+        if (!Fast || typeof Fast.demux !== 'function' || typeof Fast.streamCopyIneligibleReason !== 'function') {
+          return decline('stream-copy checks are unavailable');
+        }
+        if (S.main.length !== 1) return decline('requires exactly one main clip');
+        const clip = S.main[0], sourceFile = files[clip && clip.mediaId];
+        if (!sourceFile || !sourceFile.size) return decline('source media is missing');
+        if (S.overlays.length) return decline('visual overlays are present');
+        const info = await Fast.demux(sourceFile);
+        if (exportCancelRequested) throw new Error('Export cancelled');
+        const reason = Fast.streamCopyIneligibleReason({
+          clip, video: info && info.video, width: W, height: H, fps: EXP.fps,
+          fileSize: sourceFile.size, hasOverlays: S.overlays.length > 0,
+          hasTransition: Boolean(TD[0]), hasFilter: Boolean(FX[clip.fx || 0] && FX[clip.fx || 0].f),
+          hasAdjustment: Boolean(adjustmentFilter(clip)), maxFileBytes: 128 * 1024 * 1024
+        });
+        if (reason) return decline(reason);
+        const mounted = await ensureExportSource(clip.mediaId, new Set([clip.mediaId]), new Map());
+        if (exportCancelRequested) throw new Error('Export cancelled');
+        exportWorkspaceFiles.add('joined.mp4');
+        const args = ['-i', mounted.name, '-map', '0:v:0', '-map', '0:a:0?', '-c', 'copy'];
+        // If extra music/voice tracks follow, avoid an unnecessary faststart rewrite
+        // on this intermediate file. The final audio-mix output is the delivered MP4.
+        if (!S.audio.length) args.push('-movflags', '+faststart');
+        args.push('joined.mp4');
+        await run(args);
+        if (exportCancelRequested) throw new Error('Export cancelled');
+        note('streamCopy', 'used (single untouched H.264 clip; video packets copied)');
+        return 'joined.mp4';
+      } catch (error) {
+        if (exportCancelRequested || /Export cancelled/i.test(String(error && error.message || error))) throw error;
+        await removeExportFile('joined.mp4');
+        return decline('failed safely; standard encoder will be used: ' + String(error && error.message || error).slice(0, 120));
+      }
+    };
+
+    let out = await tryStreamCopyExport();
+    if (!out) out = await tryDeviceEncoderExport();
     if (!out) { // ---- FFmpeg-only path: every clip, transition and join runs in WebAssembly ----
     const mainAudioFlags = new Map();
     for (const c of S.main) {
