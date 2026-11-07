@@ -323,6 +323,7 @@ jobs:
           import android.util.Base64;
           import android.util.Size;
 
+          import com.getcapacitor.JSArray;
           import com.getcapacitor.JSObject;
           import com.getcapacitor.PermissionState;
           import com.getcapacitor.Plugin;
@@ -500,12 +501,17 @@ jobs:
 
               private String mediaThumbnail(ContentResolver resolver, Uri uri) {
                   if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return "";
-                  try (Bitmap bitmap = resolver.loadThumbnail(uri, new Size(180, 180), null);
-                       ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+                  Bitmap bitmap = null;
+                  ByteArrayOutputStream output = new ByteArrayOutputStream();
+                  try {
+                      bitmap = resolver.loadThumbnail(uri, new Size(180, 180), null);
                       bitmap.compress(Bitmap.CompressFormat.JPEG, 68, output);
                       return Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP);
                   } catch (Exception ignored) {
                       return "";
+                  } finally {
+                      if (bitmap != null) bitmap.recycle();
+                      try { output.close(); } catch (Exception ignored) {}
                   }
               }
 
