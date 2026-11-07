@@ -402,7 +402,7 @@ jobs:
                   state.put("allowed", images || videos || selected);
                   state.put("images", images);
                   state.put("videos", videos);
-                  state.put("partial", selected && !(images && videos));
+                  state.put("partial", !(images && videos));
                   return state;
               }
 
