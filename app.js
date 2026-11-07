@@ -1043,6 +1043,7 @@ $('deleteBtn').onclick = () => {
   if (sel.lane === 'overlay') { const overlay = S.overlays.find(x => x.id === sel.id); disposeOverlayObject(objOf(sel.id), overlay); }
   S[sel.lane === 'main' ? 'main' : sel.lane === 'audio' ? 'audio' : 'overlays'] = S[sel.lane === 'main' ? 'main' : sel.lane === 'audio' ? 'audio' : 'overlays'].filter(x => x.id !== sel.id);
   sel = null; commit(); refresh(Math.min(t, total()));
+  if (typeof window.scheduleMediaGc === 'function') window.scheduleMediaGc();
 };
 $('aspectRatio').onchange = async e => {
   const [ow, oh] = RATIOS[S.ratio]; S.ratio = e.target.value; const [nw, nh] = RATIOS[S.ratio];
@@ -2441,7 +2442,7 @@ function markTpl() {
     const row = document.createElement('div'), info = document.createElement('span'), use = document.createElement('button'), del = document.createElement('button'); row.className = 'tpl';
     info.textContent = `${p.name} · ${p.pre.length} intro, ${p.post.length} outro, ${p.overlays.length} layers`;
     use.className = 'primary'; use.textContent = 'Use'; use.onclick = () => { pendingTpl = p.id; $('tplInput').click(); };
-    del.textContent = '✕'; del.setAttribute('aria-label', 'Delete template'); del.onclick = () => { saveTpls(loadTpls().filter(x => x.id !== p.id)); markTpl(); };
+    del.textContent = '✕'; del.setAttribute('aria-label', 'Delete template'); del.onclick = () => { saveTpls(loadTpls().filter(x => x.id !== p.id)); markTpl(); if (typeof window.scheduleMediaGc === 'function') window.scheduleMediaGc(); };
     const open = document.createElement('button'); open.textContent = 'Open'; open.onclick = () => openTpl(p);
     row.append(info, open, use, del); $('tplList').appendChild(row);
   });
