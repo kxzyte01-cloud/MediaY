@@ -367,7 +367,7 @@ button:hover { filter:brightness(1.08); }
 /* Accessibility hardening: readable foregrounds on deliberately light inspector surfaces. */
 /* Slider fill/thumb contrast follows the surface: dark accent on light cards, cyan on dark panes. */
 #sheet input[type=range] { accent-color:#00E7F2; }
-.adjust-control input[type=range], #blendOpacity { accent-color:#00647A; }
+#sheet .adjust-control input[type=range], #sheet #blendOpacity { accent-color:#00647A; }
 
 .sheet input[type=text],
 .sheet input[type=number],
