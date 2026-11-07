@@ -55,3 +55,29 @@ test('a completed render remains in FFmpeg storage after a delivery failure and 
   assert.match(app, /if \(pending\.engine\) \{ try \{ await pending\.engine\.deleteFile\(pending\.path\)/);
   assert.match(app, /A completed render is waiting to be saved/);
 });
+
+test('Android notification uses a dedicated monochrome small icon and bounded idle heartbeat', () => {
+  assert.match(workflow, /ic_stat_mediay\.xml/);
+  assert.match(workflow, /builder\.setSmallIcon\(R\.drawable\.ic_stat_mediay\)/);
+  assert.doesNotMatch(workflow, /builder\.setSmallIcon\(getApplicationInfo\(\)\.icon\)/);
+  assert.match(workflow, /MAX_IDLE_MS = 15L \* 60L \* 1000L/);
+  assert.match(workflow, /public void renew\(PluginCall call\)/);
+  assert.match(app, /nativeExportServiceActive/);
+  assert.match(app, /plugin\.renew\(\)/);
+});
+
+test('legacy Android export delivery writes FFmpeg output in bounded chunks', () => {
+  const start = app.indexOf('async function saveFFmpegLegacyNative');
+  const end = app.indexOf('async function saveFFmpegOutput', start);
+  assert.ok(start >= 0 && end > start);
+  const legacy = app.slice(start, end);
+  assert.match(legacy, /engine\.readFileChunk\(outputPath, offset, CHUNK_BYTES\)/);
+  assert.match(legacy, /Filesystem\.writeFile\(options\)/);
+  assert.match(legacy, /Filesystem\.appendFile\(options\)/);
+  assert.match(legacy, /nativeStore\.saveVideo\(\{ fileName: name \}\)/);
+  assert.doesNotMatch(legacy, /engine\.readFile\(/);
+});
+
+test('legacy MediaStore save is serialized against streaming save operations', () => {
+  assert.match(workflow, /private synchronized void saveVideoInternal\(PluginCall call\)/);
+});
