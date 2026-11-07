@@ -490,7 +490,7 @@
   /** Collects H.264 as an Annex B elementary stream (what `ffmpeg -f h264` reads). */
   class AnnexBSink {
     constructor(maxBytes = Infinity) {
-      this.parts = []; this.bytes = 0; this.params = null; this.nalLength = 4;
+      this.parts = []; this.bytes = 0; this.frameCount = 0; this.params = null; this.nalLength = 4;
       this.maxBytes = Number.isFinite(maxBytes) && maxBytes > 0 ? maxBytes : Infinity;
     }
     onChunk(chunk, meta) {
@@ -512,7 +512,7 @@
       if (this.bytes + out.length > this.maxBytes) {
         throw new Unsupported('device video output exceeded its safe in-memory buffer budget');
       }
-      this.parts.push(out); this.bytes += out.length;
+      this.parts.push(out); this.bytes += out.length; this.frameCount++;
     }
     finish() {
       const all = new Uint8Array(this.bytes);
@@ -643,6 +643,9 @@
       }
       await withTimeout(encoder.flush(), timeoutMs * 2, 'video encoder flush');
       if (encErr) throw encErr;
+      if (Number.isFinite(sink.frameCount) && sink.frameCount !== globalFrame) {
+        throw new Unsupported(`device encoder emitted ${sink.frameCount} output frames for ${globalFrame} submitted frames`);
+      }
     } finally {
       for (const fn of cleanup) { try { fn(); } catch (_) { /* ignore */ } }
       try { if (encoder && encoder.state !== 'closed') encoder.close(); } catch (_) { /* ignore */ }
