@@ -595,9 +595,11 @@
           if (isCancelled()) throw new Error('Export cancelled');
           if (encErr) throw encErr;
           const slotTime = c.in + (k / fps) * (c.speed || 1);
-          // Choose the source frame nearest the output sample time. Advance on ties so
-          // exact half-frame boundaries follow FFmpeg's round-half-up behavior.
-          while (nxt && (!cur || Math.abs(nxt.pts - slotTime) <= Math.abs(cur.pts - slotTime))) {
+          // Select the frame nearest this output sample. Keep the earlier frame on
+          // exact/near ties: FFmpeg's fps filter assigns a half-frame boundary to
+          // the next output slot. The epsilon absorbs microsecond PTS quantization.
+          while (nxt) {
+            if (cur && Math.abs(nxt.pts - slotTime) >= Math.abs(cur.pts - slotTime) - 1e-6) break;
             if (cur) cur.frame.close();
             cur = nxt;
             nxt = await decoder.next();
