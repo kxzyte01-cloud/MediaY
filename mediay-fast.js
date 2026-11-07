@@ -301,6 +301,37 @@
     return { start, end };
   }
 
+
+  /** Eligibility for the conservative, single-clip MP4 stream-copy lane. */
+  function streamCopyIneligibleReason(input) {
+    const p = input || {}, c = p.clip, v = p.video;
+    const maxBytes = Number.isFinite(p.maxFileBytes) ? p.maxFileBytes : 128 * 1024 * 1024;
+    if (!c || !v) return 'missing clip or video metadata';
+    if (p.hasOverlays) return 'visual overlays are present';
+    if (p.hasTransition || c.transition || c.tr) return 'clip has a transition';
+    if (p.hasFilter) return 'clip has a filter';
+    if (p.hasAdjustment) return 'clip has color adjustments';
+    if (c.rev || (c.speed || 1) !== 1) return 'clip is reversed or has a speed change';
+    if ((c.vol ?? 1) !== 1 || c.fade) return 'clip audio has volume or fade edits';
+    if (c.scale != null && c.scale !== 1 || c.x || c.y || c.rot || c.crop) return 'clip has transform edits';
+    if (!(p.fileSize > 0) || p.fileSize > maxBytes) return 'source exceeds the conservative in-memory output budget';
+    if (!/^avc[13]/i.test(String(v.codec || ''))) return 'source video is not H.264';
+    if (!(v.duration > 0) || !(v.count > 0)) return 'source duration or sample count is invalid';
+    const fps = Number(p.fps);
+    const sourceFps = v.count / v.duration;
+    if (!(fps > 0) || !Number.isFinite(sourceFps) || Math.abs(sourceFps - fps) > 1.5) return 'source frame rate does not match the export setting';
+    const frameTolerance = Math.min(0.05, Math.max(0.005, 0.5 / sourceFps));
+    const clipIn = Number(c.in), clipOut = Number(c.out);
+    if (!Number.isFinite(clipIn) || !Number.isFinite(clipOut) ||
+        clipIn > frameTolerance || clipOut < v.duration - frameTolerance) return 'clip is trimmed';
+    const rotation = ((Number(v.rotation) || 0) % 360 + 360) % 360;
+    const swap = rotation === 90 || rotation === 270;
+    const displayWidth = swap ? v.height : v.width;
+    const displayHeight = swap ? v.width : v.height;
+    if (displayWidth !== p.width || displayHeight !== p.height) return 'source dimensions do not match the export setting';
+    return null;
+  }
+
   /** Why the fast path cannot be used for this project, or null when it can. `project` carries plain booleans. */
   function ineligibleReason(project) {
     if (!project || !project.clips || !project.clips.length) return 'no clips';
@@ -686,7 +717,7 @@
 
   return {
     Unsupported, demux, parseAvcC, avccToAnnexB, codecFromConfig,
-    frameCount, planFrameCounts, sourceLimit, avcLevelIdc, targetBitrate, fitRect, clipSampleRange, ineligibleReason,
+    frameCount, planFrameCounts, sourceLimit, avcLevelIdc, targetBitrate, fitRect, clipSampleRange, ineligibleReason, streamCopyIneligibleReason,
     chooseEncoderConfig, benchmarkEncoder, checkDecoder, renderTimeline, overlayFromPng,
     AnnexBSink, IvfSink, RangeReader, ClipDecoder
   };
