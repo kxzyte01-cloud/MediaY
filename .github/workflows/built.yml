@@ -356,19 +356,63 @@ jobs:
           public final class MediaYMediaStorePlugin extends Plugin {
               @PluginMethod
               public void requestMediaAccess(PluginCall call) {
-                  if (hasMediaAccess()) {
+                  String kind = call.getString("kind");
+                  if (kind == null) kind = "all";
+                  if (!"all".equals(kind) && !"images".equals(kind) && !"videos".equals(kind)) {
+                      call.reject("Unsupported media library filter.");
+                      return;
+                  }
+
+                  boolean images = hasImagePermission();
+                  boolean videos = hasVideoPermission();
+                  boolean selected = hasSelectedVisualPermission();
+                  if ("images".equals(kind) && (images || selected)) {
                       call.resolve(mediaAccessState());
                       return;
                   }
-                  if (Build.VERSION.SDK_INT >= 34) {
-                      requestPermissionForAliases(new String[] { "mediaImages", "mediaVideos", "selectedVisualMedia" },
-                          call, "mediaAccessPermissionCallback");
-                  } else if (Build.VERSION.SDK_INT >= 33) {
-                      requestPermissionForAliases(new String[] { "mediaImages", "mediaVideos" },
-                          call, "mediaAccessPermissionCallback");
-                  } else {
-                      requestPermissionForAlias("legacyRead", call, "mediaAccessPermissionCallback");
+                  if ("videos".equals(kind) && (videos || selected)) {
+                      call.resolve(mediaAccessState());
+                      return;
                   }
+                  if ("all".equals(kind) && ((images && videos) || selected)) {
+                      call.resolve(mediaAccessState());
+                      return;
+                  }
+
+                  if (Build.VERSION.SDK_INT < 33) {
+                      if (hasMediaAccess()) call.resolve(mediaAccessState());
+                      else requestPermissionForAlias("legacyRead", call, "mediaAccessPermissionCallback");
+                      return;
+                  }
+
+                  java.util.ArrayList<String> missing = new java.util.ArrayList<>();
+                  if (!images && ("all".equals(kind) || "images".equals(kind))) missing.add("mediaImages");
+                  if (!videos && ("all".equals(kind) || "videos".equals(kind))) missing.add("mediaVideos");
+                  if (Build.VERSION.SDK_INT >= 34 && !selected && "all".equals(kind)) {
+                      missing.add("selectedVisualMedia");
+                  }
+                  if (missing.isEmpty()) {
+                      call.resolve(mediaAccessState());
+                      return;
+                  }
+                  requestPermissionForAliases(missing.toArray(new String[0]), call, "mediaAccessPermissionCallback");
+              }
+
+              private boolean hasImagePermission() {
+                  return Build.VERSION.SDK_INT >= 33
+                      ? getContext().checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                      : getContext().checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+              }
+
+              private boolean hasVideoPermission() {
+                  return Build.VERSION.SDK_INT >= 33
+                      ? getContext().checkSelfPermission(Manifest.permission.READ_MEDIA_VIDEO) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                      : getContext().checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+              }
+
+              private boolean hasSelectedVisualPermission() {
+                  return Build.VERSION.SDK_INT >= 34 &&
+                      getContext().checkSelfPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) == android.content.pm.PackageManager.PERMISSION_GRANTED;
               }
 
               @PermissionCallback
