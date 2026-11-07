@@ -7717,3 +7717,456 @@ Important limitations
 - Transition effects and their chosen duration are rendered during export; this source does not implement real-time transition preview playback in the editor.
 - Export uses FFmpeg.wasm and may be slow or memory-limited on phones, especially at 2K/4K.
 
+
+
+========================================================================================
+FILE: docs/PR13_ENGINEERING_FIX_HANDOFF.md
+BLOB SHA: f461a1795a792bddb28b2a67b8d98519ec68d60b
+========================================================================================
+# MediaY PR #13 — Engineering Fix Handoff
+
+## Correct source baseline
+
+- Repository: `kxzyte01-cloud/MediaY`
+- PR #13: `design/coastline-premium-pr11`
+- Exact baseline inspected: `4b084013da0103f6d2f3b48b1b96b2fe156ec7ba`
+- Fix branch: `fix/pr13-caption-memory-safety`
+- Fix branch currently contains the work described below. It is separate from PR #13's branch and from `main`.
+
+The uploaded Gemini ZIP, uploaded Claude handoff, and uploaded PR patch were not the same repository snapshot. This work was therefore based on the exact GitHub PR #13 head, not on applying the patch to the ZIP.
+
+## Changes made on the fix branch
+
+### 1. Bounded large-audio caption decoding
+
+`app.js` now routes a caption source to file-backed windowed decoding when either:
+
+- the source file is larger than 96 MiB, or
+- the selected audio range is longer than 10 minutes.
+
+The decoder:
+
+- uses 10-minute windows at 16 kHz mono float32;
+- mounts the original File/Blob through FFmpeg WORKERFS instead of copying the whole compressed source into MEMFS;
+- extracts one PCM window, deletes its temporary FFmpeg output, transcribes that window, and releases its PCM buffer before continuing;
+- adjusts each window's timeline start so caption timing remains continuous across windows;
+- checks cancellation between windows;
+- limits one captioning pass to 4 hours and reports an actionable message above that limit.
+
+The unsafe fallback that sliced arbitrary byte ranges from MP4/WebM was not added. Such byte slices are not reliable standalone media files. If WORKERFS is unavailable, large-file captioning now fails with an explicit compatibility message rather than silently trying an unsafe or memory-heavy path.
+
+### 2. Regression tests
+
+Added `tests/caption-memory-safety.test.js` to check that the large-file path uses bounded WORKERFS windows, does not retain an array of all PCM windows, does not use compressed-byte slicing, releases each window, and preserves the window's timeline offset.
+
+Expanded `tests/export_integration.py`:
+
+- Test 4 checks both delayed voice-over tracks independently and checks for silence in the gap.
+- Test 6 checks reversed external audio-track insertion order and an overlong music track.
+- Test 7 checks sub-second voiced → silent → voiced clips with overlapping fades and xfade transitions.
+
+### 3. Logo consistency
+
+- Updated the top-bar mark to use `favicon.svg`.
+- Replaced `favicon.svg` with the neon cyan–violet–magenta aperture logo supplied in the Gemini package.
+- Updated the icon generator so APK builds regenerate the PNG launcher icons from the same design instead of preserving stale legacy red icons.
+
+## Verification status — do not overstate
+
+The code changes have been committed to the separate fix branch, but the full GitHub Actions suite has **not** yet been run against this branch. The following are still required:
+
+1. JavaScript syntax check and all Node tests, including the new caption-memory tests.
+2. Browser smoke tests.
+3. Real FFmpeg.wasm export integration tests 1–7.
+4. A real large MP4/WebM caption test above 96 MiB and above 10 minutes, including cancellation and a multi-window timing check.
+5. APK build and physical Android testing, especially memory use on a lower-RAM phone.
+
+The implementation is intended to bound PCM memory to one 10-minute window at a time; that is not yet a claim of verified multi-hour Android performance.
+
+## Scope and safety
+
+- No changes to `main`.
+- No merge performed.
+- The existing PR #13 branch was not overwritten by this fix branch.
+- No production signing or release publishing was performed.
+
+
+
+========================================================================================
+FILE: docs/fast-export.md
+BLOB SHA: bebb7eb71d6ad926be5026a09c5086e0777b8b1f
+========================================================================================
+# Device-encoder export (WebCodecs fast path)
+
+## Why
+
+The FFmpeg.wasm export decodes and encodes every frame in WebAssembly. On a phone that is the dominant cost: a 3 min 28 s
+project took about two hours. The fast path decodes with the device's own video decoder, composites on a canvas and encodes
+with the device's own H.264 encoder (hardware where the phone has it). FFmpeg is still used for sound and for the final MP4,
+which is cheap work.
+
+**No speed-up has been measured on a phone yet.** Do not quote one until it has been (see "Measuring on a device").
+
+## How it works (`mediay-fast.js`, wired in at `tryDeviceEncoderExport` in `app.js`)
+
+1. `demux()` reads the MP4/MOV `moov` box and builds the sample table. Sample bytes are read later in ranges, so a large file
+   is never loaded whole.
+2. For each clip a `VideoDecoder` is started at the key frame at or before the trim point. Decoded frames are picked per output
+   slot with the same rule as FFmpeg's `fps` filter (rounding to nearest, ties to the later slot), which also handles speed
+   changes and 60 -> 30 fps.
+3. Each frame is drawn on a canvas (letterbox like `scale+pad`, rotation metadata applied, fade), then caption/sticker overlays
+   are drawn for their timeline window. Overlay PNGs come from the existing `overlayPNG()` and are cropped to their visible
+   pixels first, so many captions cost little memory.
+4. The timeline is divided on output-frame boundaries into short pieces. The maximum piece duration is derived from the
+   existing 32 MiB in-memory sink budget and the estimated output bitrate (capped at 30 seconds). Each piece gets a fresh
+   encoder session and begins with a keyframe; its Annex B stream is immediately muxed into a small MP4 segment and the raw
+   temporary stream is deleted before the next piece is rendered. Clip fades are applied only at the original clip edges.
+5. FFmpeg extracts each original clip's sound once (trim, speed, volume, fade, padded to the accumulated frame duration) as WAV.
+   A concat-demuxer stream-copy pass joins the video segments and audio pieces into `joined.mp4`; the normal audio-mix and
+   save steps follow unchanged. This avoids a single multi-minute JS output buffer and avoids re-encoding during final assembly.
+
+## When it is used
+
+Used only when all of these hold; otherwise the FFmpeg-only path runs exactly as before:
+
+- the export-sheet checkbox "Use this phone's video encoder" is on (default on);
+- no clip is reversed, has a filter, colour adjustments or a transition; no overlay is a video or uses a blend mode;
+  playback speed is between 0.5x and 2x;
+- every source is a plain (non-fragmented), 8-bit MP4/MOV with H.264/HEVC/VP9 video that this device can decode;
+- either all clips have a sound track or none do;
+- the device accepts an H.264 encoder configuration at the export size and its 12-frame self-test runs at 2 fps or better.
+
+If anything fails after it has started (decoder stall, encoder error, FFmpeg error, out of memory) it removes its files, restores
+the progress handler and returns to the FFmpeg-only path. Each await in the render loop has a 30 s watchdog. The Export pane's
+performance report records `deviceEncoder: used (...)` or `not used: <reason>` plus the encoder self-test result.
+
+## Known limits
+
+- The browser pipeline runs its deterministic frame-accuracy matrix with VP9 and also exercises the actual H.264 WebCodecs
+  encoder/Annex B output when the installed Chromium build exposes it (`tests/fast_pipeline.py`). This is desktop CI coverage,
+  not proof that a particular Android WebView exposes a working or fast hardware H.264 encoder; that must still be checked on a phone.
+- Each individual encoded piece is bounded by the existing 32 MiB sink budget. FFmpeg.wasm's virtual filesystem still retains the muxed segments until final assembly, so total project size is not a hard 32 MiB limit but total output bytes still consume browser memory.
+- Filters, colour adjustments, transitions, reverse, video overlays and blend modes still use the FFmpeg-only path (slow).
+  Porting the filters to canvas, or a native Android encoder, are the next steps if those matter.
+- Sound from a clip is extracted by FFmpeg from a copy of the source in its virtual filesystem (same cost as before). Extracting
+  AAC straight from the file would avoid that copy.
+- 10-bit/HDR and fragmented MP4 sources are declined.
+
+## Tests
+
+- `node --test tests/fast.test.js` - parser vs ffprobe (B-frames, moov at end/start), rotation, Annex B conversion decoded
+  by ffmpeg, planning maths, unsupported inputs. Needs ffmpeg for the media cases.
+- `python tests/fast_pipeline.py` - real browser: frame-accurate trim, speed, fps change, two-clip join, overlay timing,
+  letterbox, rotation vs ffmpeg autorotate, fade, cancel.
+- `python tests/fast_integration.py` - runs the real `tryDeviceEncoderExport` text from `app.js` against stand-ins and runs the
+  FFmpeg commands it produces with a real ffmpeg; checks every decline reason and clean-up on failure.
+
+## Measuring on a device
+
+Export the same project twice, once with the checkbox on and once off, at the same resolution and fps, and copy the performance
+report (Export pane -> Performance diagnostics) for each. Record device model, chipset, RAM, source resolution/codec and the
+`deviceEncoder` line. Only then state a speed-up.
+
+
+## Encoder self-test safety
+
+The device encoder capability check has a shared 15-second deadline covering queue drain and encoder flush. If either stalls, the probe rejects, closes the encoder in a `finally` block, and lets the normal FFmpeg export path continue. This is a safety timeout, not a performance guarantee: actual speed and hardware support must still be verified on the target Android device.
+
+
+
+========================================================================================
+FILE: docs/performance-triage.md
+BLOB SHA: b7537dc25729533882f7d242632edbc54de46ce8
+========================================================================================
+# MediaY Performance Triage and Next-Agent Handoff
+
+## Current branch changes
+
+This branch adds:
+- **Fast draft export**: one click selects 480p / 24 fps. The regular resolution and frame-rate controls remain available for final output.
+- **Bounded FFmpeg source cache**: source media assets are reused across repeated clip edits within an export, with a 96 MiB cache budget. Assets too large to cache are transient; the intent is to reduce repeated reads/writes without unbounded WebAssembly memory retention.
+- **Bounded overlay PNG cache**: reusable image/text overlay renders are cached within an export, with a 12 MiB budget. Active assets are pinned while an encode pass is using them.
+- **FFmpeg workspace cleanup ledger**: known generated input/output files are cleaned on normal completion and recoverable failures.
+- **Chunked automatic captions**: transcription inference is issued in 30-second chunks and reports progress at each completed chunk.
+- **Caption cancellation and transactional apply**: cancellation is honored between inference/object-build steps; draft captions are only committed after inference finishes. A cancelled inference should not leave a partial caption set.
+- **Bounded audio decode reuse**: one decoded audio buffer is reused at most per caption operation, with channel downmixing and 16 kHz resampling when needed.
+- **Silent-source skip**: very-low-energy audio tracks are skipped before inference.
+- **Batched canvas work**: caption text objects are built without restacking after each item; the layer stack is recalculated once per batch.
+
+## What is verified
+
+On the current feature branch:
+- JavaScript syntax check passed.
+- Browser smoke tests passed, including trim/undo/redo regressions, fast preset settings, 30-second ASR chunk boundaries, caption source-time offsets, cancel-without-partial-drafts, and silent-audio skip.
+- The FFmpeg worker integration smoke test passed.
+- Android debug APK build passed.
+
+These are correctness gates, not performance benchmarks. Do not claim a quantified speedup yet; measure representative media on a real device.
+
+## Performance reports available in the app
+
+The Export pane now contains **Performance diagnostics** and **Copy performance report**. The report captures the latest export and caption operation in the current app session. It contains timestamps, settings/counts, stage wall times, and FFmpeg command categories; it intentionally excludes media filenames and media content.
+
+For export, compare preflight/media validation, FFmpeg initialization, asset staging + clip encoding, transition rendering, segment joining, audio mixing, output saving, and cleanup. FFmpeg command time categories are a subset of the stage totals, not additive extra time. For captions, compare model/runtime load, audio decode/resampling, inference, caption overlay creation/commit, and resource cleanup.
+
+On captions, the busy progress dialog now exposes **Request cancellation** too; the previous button lived behind the blocking dialog and could not be clicked during generation. Cancellation is cooperative: it is honored when the current model/audio operation or inference chunk returns. It cannot instantly interrupt an in-flight WASM/GPU inference or the model download.
+
+## Why export can still be slow
+
+MediaY's export path uses FFmpeg WebAssembly in a worker. It encodes main clips individually, applies filters/overlays during each encode, assembles clips, then may mix separate audio tracks. This is substantially more work than a single simple transcode, and repeated clips, many overlays, transitions, high frame rates, and high output resolutions all add cost.
+
+The cache avoids redundant work for repeated source IDs and reusable overlays, but unique large files still need to be copied into FFmpeg's virtual filesystem. The regular export remains a quality-oriented preset; use Fast draft (480p / 24 fps) to validate timing and structure quickly.
+
+Official FFmpeg.wasm performance notes: https://ffmpegwasm.netlify.app/docs/performance/
+Official FFmpeg.wasm threading requirements: https://ffmpegwasm.netlify.app/docs/getting-started/usage/#multi-thread
+Threaded WebAssembly requires `SharedArrayBuffer` and cross-origin isolation. It is not safe to switch to the multi-thread core until the website host and Android WebView paths can satisfy the required headers and pass memory tests.
+
+## Why automatic captions can still be slow
+
+Captions currently rely on a Transformers.js Whisper-tiny pipeline. The first run downloads a speech model; WebGPU is attempted when the browser advertises it, with a compatibility fallback. Each source still passes through browser `decodeAudioData` for its full encoded media buffer before PCM slicing. That full-file decode and the first model download may dominate time for long source videos.
+
+Chunked inference improves progress reporting, cancellation points, and inference task size; it does **not** guarantee lower total inference time and does not solve whole-file decode latency. Do not hide that distinction in the UI.
+
+Transformers.js model/runtime documentation: https://huggingface.co/docs/transformers.js/guides/webgpu
+ASR chunking parameters: https://huggingface.co/docs/transformers.js/api/pipelines#automaticspeechrecognitionspecificparams
+
+## Prioritized work list for the next AI agent
+
+### P0 — measure before changing more knobs
+1. Add stage timings around source validation, FFmpeg initialization, input-file staging, each clip encode, transition assembly, audio mixing, and output writing. Show the totals in a diagnostics panel or copyable report.
+2. Benchmark the same 30-second and 3-minute test assets at 480p/24, 720p/30, and 1080p/30 on desktop Chromium and a physical Android device. Capture wall-clock time, peak memory if available, output size, output duration, and frame/audio sync.
+3. Add a genuine app-level export integration fixture with generated short video + audio, overlays, and one transition. Verify exported frames, audible audio, duration, and repeat export after Undo/Redo. The existing worker smoke test is not full export-path coverage.
+
+### P1 — tackle actual wall-clock bottlenecks
+4. Replace full-file caption decode with source-range/streaming audio decode. Evaluate a maintained MP4 demuxer + WebCodecs path and compare it against FFmpeg extraction; preserve container support and Android fallback behavior.
+5. Use the in-app stage report to profile Whisper model download, model initialization, decode, and inference separately. Benchmark WebGPU and WASM on supported devices and languages. Keep the compatibility path and do not make a model/version upgrade without comparing WER/quality, load time, steady-state time, cancellation behavior, and peak memory.
+6. Profile cache hit rate and source staging. Tune the bounded FFmpeg FS budgets from device measurements; test many unique sources and alternating repeated clips to ensure the cache neither increases OOMs nor leaves stale virtual files.
+7. Evaluate `@ffmpeg/core-mt` only after configuring cross-origin isolation for every web deployment and verifying Capacitor/WebView support. Multi-threading can improve throughput but increases CPU/memory pressure and is not a free upgrade.
+
+### P1 — fault tolerance and UX
+8. Add an export-cancel action with explicit semantics. FFmpeg WASM currently runs a long task in its worker; design termination/recovery so cancellation cleans workspace files and the next export reloads the engine safely.
+9. Improve caption failures by classifying no audio, no speech, offline model download, GPU initialization/inference, and decode failure separately. Preserve the project unchanged on cancellation/failure.
+10. Ensure export output and saved project are not reported complete until the output file has actually been saved/shared, and validate the second export after an engine recovery.
+
+### P2 — editing foundation
+11. Centralize edits as validated commands over candidate state; one edit equals one Undo step or no mutation.
+12. Implement selected-lane ripple, all-unlocked-tracks ripple, slip, and roll as distinct commands. When a time cut crosses audio or video overlays, split source ranges correctly and preserve transforms/effects/source offsets. Never implement global ripple by indiscriminately shifting all `start` fields.
+13. Add fractional frame-rate/VFR tests and separate project-frame positions from source timestamps.
+14. Add keyboard shortcuts only after each shortcut routes through the same edit-command implementation.
+
+## Merge and release policy
+
+The trim/performance branch may merge after syntax, browser tests, FFmpeg worker integration, and Android APK build all pass on the same branch head. A merge to `main` should build and upload the APK artifact but must not automatically publish a GitHub Release. Release publication is opt-in through **Actions → Build APK → Run workflow → Publish a GitHub Release for this APK build**.
+
+Before calling the latency work complete, run the representative on-device benchmarks above and record the actual timings. Do not publish a release based on a successful build alone.
+
+
+
+========================================================================================
+FILE: docs/speech-engine-and-offline.md
+BLOB SHA: d237eb8696dd341e9e108192f7af434049c361d5
+========================================================================================
+# Speech captions: what needs the internet, what is stored where
+
+Automatic captions use three separate pieces. They fail, cache and recover independently.
+
+| Piece | Size | Where it comes from | Stored where | Needs internet? |
+|---|---|---|---|---|
+| Speech library (JavaScript) | 0.9 MB | **Bundled in the app** by the build (fetched from npm and SHA-256 verified by `scripts/fetch_speech_engine.sh`): `vendor/transformers/transformers.min.js` (@xenova/transformers 2.17.2) | Inside the APK | No |
+| Speech runtime (WebAssembly) | 10 MB (+9 MB fallback) | **Bundled in the app**: `vendor/transformers/ort-wasm-simd.wasm`, `ort-wasm.wasm` | Inside the APK | No |
+| Speech model (Whisper tiny) | ~40 MB | huggingface.co, first use only | Browser Cache Storage `transformers-cache` inside the app's private storage | **Yes, once.** Then no, while Android keeps the app's storage |
+
+Optional GPU engine (transformers 3.x, `useWebGPU`): its library is loaded from cdn.jsdelivr.net each time it is used
+(not bundled). If it cannot be loaded, MediaY uses the bundled CPU engine automatically.
+
+## Behaviour
+- **First captions run, online:** library + runtime load from the app, then the 40 MB model downloads with one overall percentage.
+  Files that finished downloading are kept if the download is interrupted; the next attempt continues with the rest.
+- **Later runs, offline:** work, provided the model files are still in the cache. Android can clear them if the user clears app
+  storage or the phone is critically low on space. Then the next run needs the internet once more.
+- **First run, offline:** MediaY says so plainly ("not downloaded yet… connect once, about 40 MB") instead of a technical error.
+- **Damaged cache:** a model file that fails to parse is deleted once and downloaded again automatically.
+- **Retries:** up to 3 model attempts (1.5 s, 3 s back-off). The online fallback copy of the library gets 3 attempts with a fresh URL
+  each time (browsers remember a failed `import()` of the same URL).
+- **Cancel:** checked between attempts and between 30-second audio windows. A download that is already in progress cannot be
+  aborted mid-file (the library offers no way to), so the cancel takes effect when that step ends.
+
+## Other downloads the app makes (not captions)
+- FFmpeg core (31 MB, jsdelivr): downloaded on first export, cached in Cache Storage. **The first export needs the internet.**
+- Fabric, Dexie, anime.js, Lucide and the DM Sans font load from CDNs on every start (the Android shell does not bundle them yet).
+
+## Making captions fully offline later
+Place the Whisper model files under `models/Xenova/whisper-tiny/` in the web bundle and set `env.allowLocalModels = true`,
+`env.localModelPath = './models/'` in `createSpeechPipeline`. This is NOT done: the model could not be downloaded in the
+build environment and it would add ~40 MB to the APK.
+
+## Verification
+`python tests/offline_speech_runtime.py` runs a real ONNX inference through the bundled library and runtime with every
+external request blocked (it also fails if the bundled WASM is removed, which is the failure mode of a library-only bundle).
+
+
+
+========================================================================================
+FILE: docs/timeline-trim-architecture.md
+BLOB SHA: c2ad42c5f8d962dc2f30ddd582fd3d33502c396c
+========================================================================================
+# MediaY Timeline Trimming: Architecture and Release Gates
+
+## Current model and user-facing behavior
+
+MediaY currently models the main video lane as a serial list. A clip's timeline duration is derived from `(out - in) / speed`; changing that duration shifts every later main-lane clip because the lane has no explicit gap items. Audio clips and overlays are separate timed items with absolute `start` values. Those independent lanes do not move automatically when the main lane shrinks.
+
+The playhead trim controls intentionally operate on the selected item:
+
+- **From here** keeps the selected item's content from the playhead onward.
+- **To here** keeps its content up to the playhead.
+- Main video maps timeline time to source time using clip speed.
+- Audio trims source `in/out` and adjusts `start` when its lead-in is removed.
+- Image/text overlays adjust timeline `start/dur`.
+- Video overlays also carry `sourceIn` and `srcDur`; preview seeking, FFmpeg input seeking, and overlay-audio mixing must use the same source-time mapping.
+- Trims require at least one project frame (currently 1/30 second) on both sides, pause playback before mutation, and remain undoable/redoable.
+
+This is not yet global ripple editing. Shortening a main clip moves later main clips earlier, while audio and overlays retain their absolute times. The UI and documentation must not imply otherwise.
+
+## Non-negotiable invariants
+
+1. **No invalid ranges.** Each trim must leave a valid, positive source range and at least one project frame on either side. Do not mutate state when validation fails.
+2. **One time mapping per media type.** Keep timeline time and source-media time separate. Playback, thumbnails, preview, audio, and export must agree on the same mapping.
+3. **One edit, one history entry.** A user action either commits completely as one Undo step or leaves the project unchanged.
+4. **Stop playback before structural edits.** Do not let the playback loop and an edit concurrently change the playhead or selected source frame.
+5. **Never confuse viewport state with edit state.** Programmatic timeline scrolling must not trigger a user scrub. The expected scroll change is ignored once; genuine user scrolling continues to seek.
+6. **Preserve source offsets.** When an overlay's timeline start changes, do not silently reset the source frame to zero. Reset `sourceIn` only when the underlying media is replaced.
+7. **Keep the existing project shape readable.** Missing `sourceIn` in older saved projects means zero; normalization must not invalidate older projects.
+
+## Next architecture: transactional edit commands
+
+Before adding ripple, slip, or roll edits, centralize timeline changes behind one edit-command boundary. UI handlers should describe the intent; a shared edit layer should do the work.
+
+Each command should:
+
+1. Capture a stable target ID, lane, playhead frame, and edit mode. Resolve the ID again immediately before applying the edit.
+2. Preflight finite times, media bounds, lane membership, clip duration, and all affected linked items.
+3. Apply changes to a candidate project state, not the live state.
+4. Validate the candidate state across every affected lane.
+5. Commit the full state once, create one Undo entry, then refresh the timeline and preview from the committed state.
+6. If media is missing, a range is invalid, or applying the command throws, discard the candidate state and keep the original edit untouched.
+
+The existing snapshot-based Undo/Redo can remain as the first implementation, but it must only receive a fully validated committed state. The UI must never duplicate edit math across buttons, pointer drags, and keyboard shortcuts.
+
+## Timebase and precision
+
+The current timeline stores seconds as floating-point values and exports at 30 fps. One-frame trim boundaries are the correct immediate minimum, but the durable model should use integer project-frame positions for timeline edits and convert to source seconds at media boundaries. Centralize the project frame rate instead of scattering the number `30` across the application.
+
+For variable-frame-rate media or source media at a different frame rate, timeline frame positions and source-media timestamps must remain distinct. Rounding should happen at well-defined boundaries, not after each edit. Tests should cover speeds below and above 1x, short clips, fractional source times, and clips near source EOF.
+
+## Ripple scope must be explicit
+
+Adopt separate commands rather than one ambiguous “trim” operation:
+
+- **Trim item:** change only the selected item's source in/out or visible duration.
+- **Ripple trim on the selected lane:** remove the selected-lane time and shift later items on that lane.
+- **Ripple all tracks:** remove a project time range and shift other lanes according to an explicit policy.
+- **Slip:** change source in/out together while preserving timeline position and duration.
+- **Roll:** move a cut point between neighboring clips while preserving the combined duration.
+
+Global ripple is not safe to implement by simply subtracting a duration from every later `start`. If the removed interval crosses an audio clip, split it into source ranges before and after the cut. If it crosses a video overlay, split it and preserve `sourceIn` on the right-hand fragment. Image/text overlays can be clipped by visible duration; audio/video items need source-range-aware splitting. Overlay transform, opacity, blend mode, keying, volume, and fade settings must survive both fragments. Provide separate controls for selected-lane ripple and all-track ripple so users can predict whether music and titles move.
+
+## Regression and release gates
+
+Every edit operation needs tests for:
+
+- start/middle/end positions, one-frame fragments, zero/negative/non-finite times, and source EOF;
+- normal speed, slow motion, fast motion, and a previously trimmed clip;
+- video, audio, image, text, and video-overlay items;
+- preview frame, exported video frame, and mixed audio agreeing on the same source time;
+- Undo, Redo, autosave, project restore, and a failed edit leaving no partial mutation;
+- programmatic auto-scroll, zoom, touch scrubbing, and playback not fighting over the playhead;
+- existing export-fade and Adjust/Blending smoke tests remaining green.
+
+Do not merge a trim/ripple change until JavaScript syntax, browser smoke tests, real FFmpeg worker integration, and Android build checks pass. Then verify on a real Android device with a saved project, at least one speed-adjusted clip, one video overlay with audio, and a second export after Undo/Redo. A green browser test alone does not prove the device export path.
+
+## Open-source behavior references
+
+Use these as behavior references, not as code to paste into MediaY:
+
+- Kdenlive documents distinct normal/overwrite/insert modes, plus ripple trim to playhead: https://docs.kdenlive.org/en/user_interface/menu/tool_menu.html and https://docs.kdenlive.org/en/user_interface/editing.html
+- Shotcut distinguishes normal trim from ripple trim and includes explicit “Ripple All Tracks” and “Ripple Markers” settings: https://www.shotcut.org/howtos/keyboard-shortcuts/ and https://www.shotcut.org/notes/configuration/
+
+The product advantage should be predictability: frame-accurate, reversible edits with identical preview/export timing and an explicit answer to “which tracks will move?” before destructive timeline operations.
+
+
+
+========================================================================================
+FILE: legal.html
+BLOB SHA: 06802130f5293f571e79b574fdba8860762e4a9e
+========================================================================================
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#EDF6FA">
+  <title>Terms, Privacy and Licenses — ProjectMedia Y</title>
+  <style>
+    :root { color-scheme:light; --bg:#edf6fa; --panel:#f9fcfd; --text:#193448; --muted:#536d7d; --border:#cfdee6; --accent:#1e668c; }
+    body { margin:0; background:var(--bg); color:var(--text); font:16px/1.6 "Avenir Next",Avenir,"Segoe UI",system-ui,sans-serif; }
+    main { max-width:680px; margin:auto; padding:20px 18px 48px; }
+    h1 { font-size:24px; margin:8px 0 4px; } h2 { font-size:19px; margin:32px 0 8px; padding-top:8px; border-top:1px solid var(--border); }
+    h3 { font-size:16px; margin:18px 0 4px; } p,li { color:var(--muted); } a { color:var(--accent); }
+    .meta { color:var(--muted); font-size:14px; } table { width:100%; border-collapse:collapse; font-size:14px; display:block; overflow-x:auto; background:var(--panel); }
+    th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
+  </style>
+</head>
+<body>
+<main>
+  <p><a href="./index.html">← Back to the app</a></p>
+  <h1>Terms, Privacy and Licenses</h1>
+  <p class="meta">ProjectMedia Y · Last updated October 19, 2026</p>
+
+  <h2>1. Terms of use</h2>
+  <p>By using ProjectMedia Y (“the app”) you agree to these terms. If you don’t agree, please don’t use the app.</p>
+  <h3>Your media is your responsibility</h3>
+  <p>Only import, edit and export photos, videos, music, fonts and other material that you own or have permission to use. You are responsible for what you create and share, including respecting copyright, trademark, privacy and publicity rights of others. Do not use the app to make content that is illegal, harassing, hateful, sexually exploits minors, or that impersonates a real person in a misleading or harmful way.</p>
+  <h3>No warranty</h3>
+  <p>The app is provided “as is” and “as available”, without warranties of any kind, express or implied, including fitness for a particular purpose and non-infringement. Video editing is demanding on phones, and the app may crash, run slowly or produce unexpected results.</p>
+  <h3>Limit of liability</h3>
+  <p>To the fullest extent permitted by law, the developer is not liable for any indirect, incidental or consequential damages, or for lost data, lost projects or lost profits arising from your use of the app. Projects are stored only in your browser or app storage and can be lost if you clear site data or uninstall the app, so keep a copy of anything important.</p>
+  <h3>Changes</h3>
+  <p>These terms may be updated. The date above shows the latest version. Nothing in these terms limits rights you have under consumer law that cannot be excluded.</p>
+
+  <h2>2. Privacy policy</h2>
+  <p><b>Short version:</b> the app has no accounts, no ads, no analytics and no servers that receive your media. Your videos stay on your device.</p>
+  <h3>What stays on your device</h3>
+  <p>Media you choose and your project data are saved in your browser’s local storage (IndexedDB) on your device. They are never uploaded to the developer. Exporting happens on your device. The app only reads files you pick yourself.</p>
+  <h3>What the app does not collect</h3>
+  <p>The developer does not collect your name, email, location, contacts, advertising ID or usage statistics. The microphone is used only while you record a voice-over; the recording is saved on your device and is not uploaded. Templates you save also stay on your device.</p>
+  <h3>Third-party services that see your IP address</h3>
+  <p>To start, the app downloads code and fonts from public content delivery networks: cdnjs.cloudflare.com, unpkg.com, cdn.jsdelivr.net, fonts.googleapis.com and fonts.gstatic.com. If you use Auto captions, the app also downloads a speech model once from huggingface.co and its content network; your audio is processed on your device and is not uploaded. The web version is also hosted on GitHub Pages. These providers can see your IP address and basic device information when your device requests files, under their own privacy policies.</p>
+  <h3>Deleting your data</h3>
+  <p>Clear the site data for this app in your browser, or uninstall the Android app, to remove saved projects and media.</p>
+  <h3>Children</h3>
+  <p>The app is not directed at children. A parent or guardian should supervise use by minors.</p>
+
+  <h2>3. Copyright complaints</h2>
+  <p>The app does not host, publish or share user content, so it has no content to remove. If you believe the app itself copies your work, open an issue at <a href="https://github.com/kxzyte01-cloud/Media-Y/issues">github.com/kxzyte01-cloud/Media-Y/issues</a> and describe what you found.</p>
+
+  <h2>4. Open-source licenses</h2>
+  <p>The source code of ProjectMedia Y is available at <a href="https://github.com/kxzyte01-cloud/Media-Y">github.com/kxzyte01-cloud/Media-Y</a> under the license shown in that repository. The app uses these third-party components, each under its own license:</p>
+  <table>
+    <tr><th>Component</th><th>License</th></tr>
+    <tr><td>Fabric.js</td><td>MIT</td></tr>
+    <tr><td>Anime.js</td><td>MIT</td></tr>
+    <tr><td>Dexie.js</td><td>Apache License 2.0</td></tr>
+    <tr><td>MediaY original SVG icons</td><td>Original in-project artwork</td></tr>
+    <tr><td>FFmpeg.wasm wrapper (@ffmpeg/ffmpeg, @ffmpeg/util)</td><td>MIT</td></tr>
+    <tr><td>FFmpeg.wasm core (@ffmpeg/core), loaded when you export</td><td>FFmpeg and its libraries, including x264, under GPL version 2 or later. Source: <a href="https://ffmpeg.org/download.html">ffmpeg.org</a> and <a href="https://github.com/ffmpegwasm/ffmpeg.wasm-core">ffmpeg.wasm-core</a></td></tr>
+    <tr><td>Transformers.js (@xenova/transformers) and ONNX Runtime Web, used for Auto captions</td><td>Apache License 2.0 and MIT</td></tr>
+    <tr><td>Whisper speech model (OpenAI), ONNX conversion by Xenova</td><td>MIT</td></tr>
+    
+    <tr><td>Capacitor (Android app wrapper)</td><td>MIT</td></tr>
+  </table>
+  <p>“FFmpeg” is a trademark of Fabrice Bellard. All other names and trademarks belong to their owners. ProjectMedia Y is not affiliated with or endorsed by them.</p>
+</main>
+</body>
+</html>
+
