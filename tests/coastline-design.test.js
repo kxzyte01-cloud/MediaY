@@ -75,3 +75,39 @@ test('busy, transition-preview and dark timeline surfaces use readable text colo
   assert.ok(ratio('#17283C','#EDF6FA')>=4.5);
   for(const bg of ['#075B78','#123C75','#402B78','#6636A0','#572A76','#34305B']) assert.ok(ratio('#F3F7FF',bg)>=4.5);
 });
+
+
+test('native MediaStore library requests visual-media access on demand and supports Android 14 partial access',()=>{
+  assert.match(html,/id="mediaLibraryDialog"/);
+  assert.match(html,/data-media-kind="videos"/);
+  assert.match(html,/data-media-kind="images"/);
+  assert.match(app,/async function openMediaLibrary\(kind = 'all'\)/);
+  assert.match(app,/plugin\.requestMediaAccess\(\)/);
+  assert.match(app,/plugin\.listMedia\(/);
+  assert.match(app,/plugin\.stageMedia\(/);
+  assert.match(app,/plugin\.deleteStagedMedia\(/);
+  assert.match(workflow,/READ_MEDIA_IMAGES/);
+  assert.match(workflow,/READ_MEDIA_VIDEO/);
+  assert.match(workflow,/READ_MEDIA_VISUAL_USER_SELECTED/);
+  assert.match(workflow,/MEDIA_TYPE_IMAGE/);
+  assert.match(workflow,/resolver\.loadThumbnail/);
+  assert.match(workflow,/registerPlugin\(MediaYMediaStorePlugin\.class\)/);
+  assert.match(workflow,/state\.put\("partial", selected && !\(images && videos\)\)/);
+  assert.match(setupStyle,/\.media-library-grid/);
+});
+
+test('debug APK signing update limitations are documented before testers install updates',()=>{
+  const readme=read('README.md');
+  assert.match(readme,/runner's generated debug keystore/);
+  assert.match(readme,/uninstall the older debug build/);
+  assert.match(readme,/removes app-private local projects and imported media/);
+});
+
+test('contrast smoke test checks gradient stops and every inspector form control',()=>{
+  const smoke=read('test_smoke.py');
+  assert.doesNotMatch(smoke,/if \(gradient\) continue/);
+  assert.match(smoke,/st\.backgroundImage\.match/);
+  assert.match(smoke,/all inspector panes, form controls and performance diagnostics/);
+  assert.match(smoke,/#sheet input/);
+  assert.match(smoke,/#perfReport/);
+});
