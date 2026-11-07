@@ -43,6 +43,7 @@ HARNESS = r"""
 async (a) => {
   const real = window.MediaYFast;
   const useVp9 = !a.realCodecs;
+  let budgetInjected = false;
   const originalIsConfigSupported = window.VideoEncoder.isConfigSupported;
   if (a.noH264) {
     // Make this test deterministic: newer Chromium builds may include H.264 even when older CI images did not.
@@ -51,6 +52,13 @@ async (a) => {
   const Fast = useVp9 ? Object.assign({}, real, {
     chooseEncoderConfig: o => real.chooseEncoderConfig(Object.assign({}, o, { codecs: ['vp09.00.10.08'], acceleration: ['no-preference'] })),
     AnnexBSink: function () { const sink = new real.IvfSink('VP90', 640, 360, 30); Object.defineProperty(sink, 'frameCount', { get: () => sink.frames.length }); return sink; },
+    renderTimeline: async opts => {
+      if (a.simulateBudgetOverrun && !budgetInjected) {
+        budgetInjected = true;
+        const error = new Error('simulated bounded-piece overrun'); error.code = 'PIECE_BUDGET_EXCEEDED'; throw error;
+      }
+      return real.renderTimeline(opts);
+    },
     targetBitrate: (...args) => a.smallChunks ? 1.07e9 : real.targetBitrate(...args)
   }) : real;
   window.MediaYFast = Fast;
@@ -86,7 +94,7 @@ async (a) => {
   try { returned = await fn(); } catch (e) { error = String(e && e.message || e); }
   window.MediaYFast = real;
   window.VideoEncoder.isConfigSupported = originalIsConfigSupported;
-  return { returned, error, log, handlerAfter: ctx.exportProgressHandler, workspace: [...ctx.exportWorkspaceFiles] };
+  return { returned, error, log, budgetInjected, handlerAfter: ctx.exportProgressHandler, workspace: [...ctx.exportWorkspaceFiles] };
 }
 """
 
@@ -182,6 +190,14 @@ def main():
                   and all(f"fastvideo_{i}.h264" in r["log"]["written"] for i in range(6))
                   and all(f"fastsegment_{i}.mp4" in r["log"]["removed"] for i in range(6)),
                   f"returned={r['returned']} chunks={len(chunk_muxes)} workspace={r['workspace']}")
+
+            # An underestimated bitrate must shrink and retry the piece instead of abandoning WebCodecs.
+            r = go({"main": [clip("m1", 0, 4)], "overlays": []}, simulateBudgetOverrun=True)
+            check("budget overrun: retries at half-size and keeps the device encoder path",
+                  r["budgetInjected"] and r["returned"] == "joined.mp4" and
+                  r["log"]["notes"].get("deviceEncoder", "").startswith("used") and
+                  r["log"]["notes"].get("deviceEncoderBudgetRetry") == "retrying with 60 frames per piece",
+                  f"returned={r['returned']} notes={r['log']['notes']} error={r['error']}")
 
             # 2. project without any sound track -> picture only
             r = go({"main": [clip("m2", 0, 1)], "overlays": []})
