@@ -1776,6 +1776,8 @@ const runExport = async (_event, recoveryAttempt = 0) => {
         }
 
         const videoSegments = [], clipFrames = [];
+        const minPieceFrames = Math.max(1, Math.round(EXP.fps));
+        let adaptiveChunkLimit = maxChunkFrames;
         let renderedFrames = 0, segmentIndex = 0, timelineOffset = 0;
         const rate = String(EXP.fps);
         exportProgressHandler = null;
@@ -1784,39 +1786,56 @@ const runExport = async (_event, recoveryAttempt = 0) => {
           const framesInClip = Fast.frameCount(dur(c), EXP.fps);
           clipFrames[i] = framesInClip;
           for (let frameOffset = 0; frameOffset < framesInClip;) {
-            const chunkFrames = Math.min(maxChunkFrames, framesInClip - frameOffset);
-            const chunkDuration = chunkFrames / EXP.fps;
-            const chunkStart = timelineOffset + frameOffset / EXP.fps;
-            const chunkEnd = chunkStart + chunkDuration;
-            const sourceIn = c.in + frameOffset / EXP.fps * speed;
-            const sourceOut = sourceIn + chunkDuration * speed;
-            const localOverlays = overlays
-              .filter(o => o.start < chunkEnd && o.end > chunkStart)
-              .map(o => ({ ...o, start: Math.max(0, o.start - chunkStart), end: Math.min(chunkDuration, o.end - chunkStart) }));
+            let chunkFrames = Math.min(adaptiveChunkLimit, framesInClip - frameOffset);
             const rawName = `fastvideo_${segmentIndex}.h264`;
             const segmentName = `fastsegment_${segmentIndex}.mp4`;
             exportWorkspaceFiles.add(rawName); exportWorkspaceFiles.add(segmentName);
             mine.add(rawName); mine.add(segmentName);
-            const sink = new Fast.AnnexBSink(maxBufferedVideoBytes);
-            const result = await Fast.renderTimeline({
-              clips: [{
-                file: files[c.mediaId], track: sources.get(c.mediaId).video,
-                in: sourceIn, out: sourceOut, speed,
-                fadeIn: !!c.fade && frameOffset === 0,
-                fadeOut: !!c.fade && frameOffset + chunkFrames === framesInClip
-              }],
-              overlays: localOverlays, W, H, fps: EXP.fps, choice, sink,
-              isCancelled: () => exportCancelRequested,
-              onProgress: f => {
-                const progress = (renderedFrames + f * chunkFrames) / Math.max(1, totalFrames);
-                updateBusy('Rendering video…', `Encoding with this phone’s video encoder: ${Math.round(progress * 100)}%.`,
-                  8 + progress * 50, 'Rendering');
+            let result, sink, encodedChunk;
+            for (;;) {
+              const chunkDuration = chunkFrames / EXP.fps;
+              const chunkStart = timelineOffset + frameOffset / EXP.fps;
+              const chunkEnd = chunkStart + chunkDuration;
+              const sourceIn = c.in + frameOffset / EXP.fps * speed;
+              const sourceOut = sourceIn + chunkDuration * speed;
+              const localOverlays = overlays
+                .filter(o => o.start < chunkEnd && o.end > chunkStart)
+                .map(o => ({ ...o, start: Math.max(0, o.start - chunkStart), end: Math.min(chunkDuration, o.end - chunkStart) }));
+              sink = new Fast.AnnexBSink(maxBufferedVideoBytes);
+              try {
+                result = await Fast.renderTimeline({
+                  clips: [{
+                    file: files[c.mediaId], track: sources.get(c.mediaId).video,
+                    in: sourceIn, out: sourceOut, speed,
+                    fadeIn: !!c.fade && frameOffset === 0,
+                    fadeOut: !!c.fade && frameOffset + chunkFrames === framesInClip
+                  }],
+                  overlays: localOverlays, W, H, fps: EXP.fps, choice, sink,
+                  isCancelled: () => exportCancelRequested,
+                  onProgress: f => {
+                    const progress = (renderedFrames + f * chunkFrames) / Math.max(1, totalFrames);
+                    updateBusy('Rendering video…', `Encoding with this phone’s video encoder: ${Math.round(progress * 100)}%.`,
+                      8 + progress * 50, 'Rendering');
+                  }
+                });
+              } catch (error) {
+                if (error && error.code === 'PIECE_BUDGET_EXCEEDED' && chunkFrames > minPieceFrames) {
+                  // Discard the failed partial chunk and retry at half the frame count.
+                  // Never shrink below one second; if that still exceeds the cap, fall back.
+                  sink.parts = []; sink.bytes = 0; sink.frameCount = 0;
+                  chunkFrames = Math.max(minPieceFrames, Math.floor(chunkFrames / 2));
+                  adaptiveChunkLimit = Math.min(adaptiveChunkLimit, chunkFrames);
+                  note('deviceEncoderBudgetRetry', `retrying with ${chunkFrames} frames per piece`);
+                  continue;
+                }
+                throw error;
               }
-            });
-            if (sink.frameCount !== chunkFrames) {
-              throw new Error(`Device encoder emitted ${sink.frameCount} frames for ${chunkFrames} submitted frames; using the FFmpeg fallback.`);
+              if (sink.frameCount !== chunkFrames) {
+                throw new Error(`Device encoder emitted ${sink.frameCount} frames for ${chunkFrames} submitted frames; using the FFmpeg fallback.`);
+              }
+              encodedChunk = sink.finish();
+              break;
             }
-            const encodedChunk = sink.finish();
             await ff.writeFile(rawName, encodedChunk);
             // Drop the JS copy before the next chunk is rendered.
             await run(['-f', 'h264', '-framerate', rate, '-i', rawName, '-c:v', 'copy', '-an', segmentName]);
