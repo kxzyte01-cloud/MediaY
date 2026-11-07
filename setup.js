@@ -172,6 +172,34 @@
         for (const item of lane) if (item && item.mediaId) referenced.add(item.mediaId);
       }
     }
+    // Saved templates live in localStorage rather than the projects table. Treat an
+    // unreadable or unknown template schema as a reason to skip collection: deleting
+    // media while references are uncertain would permanently break a user's template.
+    const templateRaw = localStorage.getItem('pmy-templates');
+    if (templateRaw !== null) {
+      let templates;
+      try { templates = JSON.parse(templateRaw); }
+      catch (_) {
+        console.warn('Media cleanup skipped because saved templates could not be read.');
+        return 0;
+      }
+      if (!Array.isArray(templates)) {
+        console.warn('Media cleanup skipped because the saved template list has an unsupported shape.');
+        return 0;
+      }
+      for (const template of templates) {
+        if (!template || typeof template !== 'object' ||
+            !Array.isArray(template.pre) || !Array.isArray(template.post) ||
+            !Array.isArray(template.overlays) || !Array.isArray(template.audio)) {
+          console.warn('Media cleanup skipped because a saved template has an unsupported shape.');
+          return 0;
+        }
+        for (const lane of [template.pre, template.post, template.overlays, template.audio]) {
+          for (const item of lane) if (item && item.mediaId) referenced.add(item.mediaId);
+        }
+        if (template.slotClip && template.slotClip.mediaId) referenced.add(template.slotClip.mediaId);
+      }
+    }
     const mediaIds = await db.media.toCollection().primaryKeys();
     const orphanIds = mediaIds.filter(id => !referenced.has(id));
     if (!orphanIds.length) return 0;
