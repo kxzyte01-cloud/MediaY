@@ -9172,3 +9172,1267 @@ test('a completed render remains in FFmpeg storage after a delivery failure and 
   assert.match(app, /A completed render is waiting to be saved/);
 });
 
+
+
+================================================================================
+FILE: tests/export-memory.test.js
+BLOB SHA: d9e1cfccd8fb690ba1d23efaf8018332d8e7d70d
+================================================================================
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const app = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+
+test('video source staging mounts original Blob through WORKERFS instead of copying full ArrayBuffers', () => {
+  const start = app.indexOf('const ensureExportSource = async');
+  const end = app.indexOf('const ensureOverlayPng = async', start);
+  assert.ok(start >= 0 && end > start);
+  const source = app.slice(start, end);
+  assert.ok(source.includes('mountExportFile(file, name)'));
+  assert.ok(!source.includes('file.arrayBuffer()'));
+  assert.ok(app.includes("ff.mount('WORKERFS', { blobs: [{ name, data: file }] }, mountDir)"));
+});
+
+test('repeated audio tracks reuse one file-backed source and one FFmpeg input per media ID', () => {
+  const start = app.indexOf('const activeTracks = [], ins = [];');
+  const end = app.indexOf('const originalHasAudio', start);
+  assert.ok(start >= 0 && end > start);
+  const audio = app.slice(start, end);
+  assert.ok(audio.includes('const audioSources = new Map()'));
+  assert.ok(audio.includes('ensureExportSource(track.m, new Set([track.m]), audioSources)'));
+  assert.ok(!audio.includes('audioInputIndices'));
+  assert.ok(audio.includes('const inputIndex = activeTracks.length + 1'));
+  assert.ok(audio.includes('// Give every timeline track its own FFmpeg input index; filter graphs consume input pads once.'));
+  assert.ok(audio.includes('const audioStreamCache = new Map()'));
+  assert.ok(audio.includes("ins.push('-i', sourceName)"));
+  assert.ok(audio.includes('activeTracks.push({ ...track, inputIndex })'));
+  assert.ok(!audio.includes('mountExportFile('));
+  assert.ok(!audio.includes('arrayBuffer()'));
+});
+
+test('mounted source files are unmounted and their directories removed on eviction and final cleanup', () => {
+  const start = app.indexOf('const removeExportFile = async name =>');
+  const end = app.indexOf('const mountExportFile = async', start);
+  const cleanup = app.slice(start, end);
+  assert.ok(cleanup.includes('ff.unmount(mountDir)'));
+  assert.ok(cleanup.includes('ff.deleteDir(mountDir)'));
+  assert.ok(app.includes('for (const name of [...exportWorkspaceFiles]) {'));
+  assert.ok(app.includes('if (preserveOutputPath && name === preserveOutputPath) continue;'));
+  assert.ok(app.includes('await removeExportFile(name);'));
+});
+
+
+
+================================================================================
+FILE: tests/export-overlay-resolution.test.js
+BLOB SHA: 1d7df38454a717994fad94163c89a2cccda50c56
+================================================================================
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const app = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+
+test('overlay PNG rasterization scales to the selected export width', () => {
+  assert.match(app, /async function overlayPNG\(o, outputWidth = canvas\.getWidth\(\)\)/);
+  assert.match(app, /const multiplier = Math\.max\(1, Number\(outputWidth\) \/ Math\.max\(1, canvas\.getWidth\(\)\)\)/);
+  assert.match(app, /canvas\.toDataURL\(\{ format: 'png', multiplier \}\)/);
+});
+
+test('both FFmpeg and WebCodecs export paths request output-resolution overlay PNGs', () => {
+  assert.match(app, /overlayPNG\(overlay, W\)/);
+  assert.match(app, /overlayPNG\(o, W\), W, H/);
+});
+
+test('WebCodecs frame-count mismatch declines the fast path before muxing', () => {
+  assert.match(app, /sink\.frameCount !== chunkFrames/);
+  assert.match(app, /using the FFmpeg fallback/);
+});
+
+
+
+================================================================================
+FILE: tests/export-safety.test.js
+BLOB SHA: a8661a26b45e832f574dd6e27ff5c31d41ce164c
+================================================================================
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const app = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+
+test('muted picture-in-picture video audio is not unexpectedly mixed into exports', () => {
+  assert.match(app, /el\.muted\s*=\s*true/);
+  assert.match(app, /const ovA = \[\];/);
+  assert.match(app, /Do not unexpectedly mix their hidden audio into the exported soundtrack/);
+});
+
+test('dropping media caches releases decoded audio buffers and thumbnail data', () => {
+  const start = app.indexOf('function dropMediaCaches()');
+  const end = app.indexOf('// Does by itself what closing', start);
+  assert.ok(start >= 0 && end > start);
+  const source = app.slice(start, end);
+  assert.match(source, /for \(const id of Object\.keys\(decoded\)\) delete decoded\[id\]/);
+  assert.match(source, /for \(const id of Object\.keys\(thumbs\)\) delete thumbs\[id\]/);
+});
+
+test('undo history remains bounded and Fabric overlay media is explicitly disposed', () => {
+  assert.match(app, /undoStack\.length > 50/);
+  assert.match(app, /function disposeOverlayObject\(object, overlay\)/);
+  assert.match(app, /object\.dispose\(\)/);
+  assert.match(app, /element\.pause\(\)/);
+  assert.match(app, /element\.removeAttribute\('src'\)/);
+  assert.match(app, /for \(const object of canvas\.getObjects\(\)\.slice\(\)/);
+});
+
+test('overlay rebuild releases Fabric-owned video elements and ignores stale asynchronous rebuilds', () => {
+  assert.match(app, /object\.getElement\(\)/);
+  assert.match(app, /let rebuildGeneration = 0/);
+  assert.match(app, /generation !== rebuildGeneration/);
+  assert.match(app, /element\.removeAttribute\('src'\)/);
+});
+
+test('OOM retry detection matches the oom token, not arbitrary words containing those letters', () => {
+  assert.match(app, /\\boom\\b/);
+  assert.doesNotMatch(app, /allocation failed\|out of memory\|oom\/i/);
+});
+
+
+test('FFmpeg cache is purged only after an integrity or WebAssembly instantiation failure', () => {
+  assert.match(app, /function isFFmpegCacheIntegrityError\(error\)/);
+  assert.match(app, /if \(isFFmpegCacheIntegrityError\(error\) && window\.caches\)/);
+  const start = app.indexOf('async function loadFFmpegEngine()');
+  const end = app.indexOf('// One shared load:', start);
+  assert.ok(start >= 0 && end > start);
+  const load = app.slice(start, end);
+  assert.doesNotMatch(load, /if \(window\.caches\) caches\.delete\(ENGINE_CACHE\)/);
+});
+
+
+test('skip_loop_filter is restricted to the explicit Fast Draft preset', () => {
+  assert.match(app, /fastDraft: false/);
+  assert.match(app, /EXP\.fastDraft = false/);
+  assert.match(app, /EXP\.fastDraft = name === 'draft'/);
+  assert.match(app, /hiRate && EXP\.fastDraft \? \[true, false\] : \[false\]/);
+});
+
+
+
+================================================================================
+FILE: tests/export_integration.py
+BLOB SHA: 3be562b738444b3cb9ef4b24783aeddddd10c335
+================================================================================
+"""Real export test: real app + real FFmpeg.wasm + real H.264 encode, then inspects the MP4 that comes out.
+
+Checks, for a single clip and for two clips with a fade transition and a timed text overlay:
+  - the export completes and is a playable H.264 + AAC MP4 at the requested size,
+  - its duration matches the timeline,
+  - the transition occupies the right part of the timeline,
+  - the overlay appears and disappears where the timeline says (within two frames).
+Needs: ffmpeg + ffprobe on PATH, Playwright, and internet access (the app downloads Fabric, Dexie and the 31 MB FFmpeg
+core from CDNs). Offline: set MEDIAY_LOCAL_LIBS to a folder containing node_modules with fabric, animejs, dexie, lucide and
+@ffmpeg/core (npm packages) and those requests are served from disk instead.
+Run: python tests/export_integration.py
+"""
+import functools, http.server, json, os, socketserver, subprocess, sys, tempfile, threading, time
+from pathlib import Path
+from playwright.sync_api import sync_playwright
+
+ROOT = Path(__file__).resolve().parent.parent
+LOCAL = os.environ.get("MEDIAY_LOCAL_LIBS")
+FPS = 24
+
+def sh(*cmd, **kw):
+    return subprocess.run(cmd, capture_output=True, text=kw.pop("text", True), check=True, **kw)
+
+def make_clips(folder):
+    a, b = Path(folder) / "a.webm", Path(folder) / "b.webm"
+    common = ["-vf", "format=yuv420p", "-c:v", "libvpx", "-b:v", "300k", "-auto-alt-ref", "0", "-deadline", "realtime", "-cpu-used", "8", "-c:a", "libopus", "-shortest"]
+    sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=3", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=3", *common, str(a))
+    sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "rgbtestsrc=size=640x360:rate=30:duration=3", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=44100:duration=3", *common, str(b))
+    return str(a), str(b)
+
+def make_silent_clip(folder, name="silent.webm", duration=2, size="640x360"):
+    out = Path(folder) / name
+    sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=navy:s={size}:r=30:d={duration}",
+       "-vf", "format=yuv420p", "-c:v", "libvpx", "-b:v", "200k", "-deadline", "realtime", "-cpu-used", "8", "-an", str(out))
+    return str(out)
+
+def make_tone(folder, name, freq, duration=1.5):
+    out = Path(folder) / name
+    sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"sine=frequency={freq}:sample_rate=44100:duration={duration}",
+       "-c:a", "libopus", str(out))
+    return str(out)
+
+def make_voiced_clip(folder, name="pip_voiced.webm", duration=2, freq=880, size="320x180"):
+    out = Path(folder) / name
+    sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=blue:s={size}:r=30:d={duration}",
+       "-f", "lavfi", "-i", f"sine=frequency={freq}:sample_rate=44100:duration={duration}",
+       "-vf", "format=yuv420p", "-c:v", "libvpx", "-b:v", "200k", "-deadline", "realtime", "-cpu-used", "8",
+       "-c:a", "libopus", "-shortest", str(out))
+    return str(out)
+
+def probe(path):
+    j = json.loads(sh("ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type,codec_name,width,height", "-of", "json", path).stdout)
+    return float(j["format"]["duration"]), [(s["codec_type"], s["codec_name"], s.get("width"), s.get("height")) for s in j["streams"]]
+
+def rms_db(path, start, length):
+    output = sh("ffmpeg", "-v", "info", "-ss", str(start), "-t", str(length), "-i", path,
+                "-af", "astats=metadata=1:reset=0", "-f", "null", "-").stderr
+    values = []
+    for line in output.splitlines():
+        if "RMS level dB:" not in line:
+            continue
+        value = line.rsplit(":", 1)[-1].strip()
+        if value.lower() != "-inf":
+            try:
+                values.append(float(value))
+            except ValueError:
+                pass
+    return max(values) if values else -120.0
+
+def overlay_window(path, quiet_time, start, length, w=120, h=214):
+    """Seconds at which text appears/disappears in the bottom third, found from frame differences."""
+    raw = sh("ffmpeg", "-v", "error", "-ss", str(start), "-t", str(length), "-i", path, "-vf", f"fps=30,scale={w}:{h},format=gray", "-f", "rawvideo", "-", text=False).stdout
+    n = len(raw) // (w * h)
+    frames = [raw[i * w * h:(i + 1) * w * h] for i in range(n)]
+    crop = lambda f: [f[y * w + x] for y in range(int(h * .62), int(h * .82)) for x in range(w)]
+    base = crop(frames[int((quiet_time - start) * 30)])
+    diffs = [sum(abs(p - q) for p, q in zip(crop(f), base)) / len(base) for f in frames]
+    on = [i for i, d in enumerate(diffs) if d > 4]
+    return start + on[0] / 30, start + (on[-1] + 1) / 30
+
+def run_export(base, files, setup_js, route_libs, assets=None):
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        context = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True, service_workers="block")
+        route_libs(context)
+        for asset_name, asset_path in (assets or {}).items():
+            context.route(f"**/{asset_name.lstrip('/')}", lambda route, _request, path=str(asset_path): route.fulfill(path=path))
+        context.add_init_script("try{localStorage.setItem('pmy-consent-v1','yes')}catch(e){}")
+        page = context.new_page(); errors = []; browser_logs = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.on("console", lambda msg: browser_logs.append(f"{msg.type}: {msg.text}") if msg.type == "error" else None)
+        page.goto(base + "/index.html", wait_until="load")
+        page.wait_for_selector("#homeScreen:not([hidden])", timeout=30000)
+        page.locator("#hmNew").click(); page.wait_for_selector("#setup:not([hidden])")
+        page.locator("#suStart").click(); page.wait_for_function("document.querySelector('#homeScreen').hidden === true")
+        page.set_input_files("#mediaInput", files)
+        page.wait_for_function(f"S.main.length === {len(files)}", timeout=60000)
+        page.wait_for_function("document.querySelector('#busyOverlay').hidden === true", timeout=60000)
+        page.evaluate(setup_js)
+        # Wait for the browser download itself, then save it before closing Chromium.
+        # A page.on("download") callback can still be saving the artifact when browser.close()
+        # runs, which cancels Download.save_as and makes a successful export look like a failure.
+        try:
+            with page.expect_download(timeout=180000) as download_info:
+                page.evaluate("() => { $('goExport').onclick(null, 0); return true; }")
+            download = download_info.value
+        except Exception as error:
+            diagnostics = page.evaluate("""() => ({
+              status: document.getElementById('status')?.textContent || '',
+              busy: document.getElementById('busyOverlay')?.innerText || '',
+              progress: document.getElementById('busyProgress')?.getAttribute('aria-valuenow') || '',
+              ffLogs: (window.ffLogs || []).slice(-30),
+              native: !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform())
+            })""")
+            browser.close()
+            raise AssertionError(f"Export did not deliver a browser download: {error}; diagnostics={diagnostics}; pageErrors={errors[:10]}; consoleErrors={browser_logs[-15:]}") from error
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as output:
+            saved_path = output.name
+        download.save_as(saved_path)
+        status = page.evaluate("document.getElementById('status').textContent")
+        total = page.evaluate("total()")
+        browser.close()
+    return saved_path, status, total, errors
+
+def main():
+    class Quiet(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *a): pass
+    socketserver.TCPServer.allow_reuse_address = True
+    server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), functools.partial(Quiet, directory=str(ROOT)))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def route_libs(context):
+        if not LOCAL: return
+        nm = Path(LOCAL) / "node_modules"
+        files = {"fabric.min.js": nm / "fabric/dist/fabric.min.js", "anime.min.js": nm / "animejs/lib/anime.min.js", "dexie.min.js": nm / "dexie/dist/dexie.min.js",
+                 "lucide.min.js": nm / "lucide/dist/umd/lucide.min.js", "ffmpeg-core.js": nm / "@ffmpeg/core/dist/umd/ffmpeg-core.js", "ffmpeg-core.wasm": nm / "@ffmpeg/core/dist/umd/ffmpeg-core.wasm"}
+        def handler(route):
+            for name, path in files.items():
+                if route.request.url.endswith(name):
+                    return route.fulfill(body=path.read_bytes(), content_type="application/wasm" if name.endswith(".wasm") else "application/javascript")
+            return route.abort() if "fonts.g" in route.request.url else route.continue_()
+        for pattern in ("https://cdnjs.cloudflare.com/**", "https://unpkg.com/**", "https://cdn.jsdelivr.net/**", "https://fonts.googleapis.com/**", "https://fonts.gstatic.com/**"):
+            context.route(pattern, handler)
+
+    folder = tempfile.mkdtemp()
+    clip_a, clip_b = make_clips(folder)
+    fast = f"EXP.res = 480; EXP.fps = {FPS};"
+
+    # 1) single clip
+    t0 = time.time()
+    path, status, total, errors = run_export(base, [clip_a], fast + " 0", route_libs)
+    assert path, f"no file was produced ({status}; errors {errors[:2]})"
+    duration, streams = probe(path)
+    assert "Export complete" in status, status
+    assert abs(duration - total) < 0.15, (duration, total)
+    assert ("video", "h264", 480, 854) in streams and any(s[0] == "audio" for s in streams), streams
+    assert not errors, errors
+    print(f"PASS: single-clip export is a valid H.264+AAC MP4 of {duration:.2f} s (timeline {total:.2f} s) in {time.time() - t0:.0f} s")
+
+    # 2) two clips + fade transition + text overlay at 4.0-5.0 s
+    t0 = time.time()
+    setup = fast + """(async () => { S.main[1].tr = 'fade'; S.main[1].trDur = 0.5;
+      await commitCaptionDrafts([{ id: 'marker1', layer: S.nextLayer, type: 'text', caption: true, text: 'MARKER', style: 0, start: 4.0, dur: 1.0, top: RATIOS[S.ratio][1] * 0.72 }]); })()"""
+    path, status, total, errors = run_export(base, [clip_a, clip_b], setup, route_libs)
+    assert path, f"no file was produced ({status}; errors {errors[:2]})"
+    duration, streams = probe(path)
+    assert "Export complete" in status and not errors, (status, errors)
+    assert abs(duration - total) < 0.2, (duration, total)       # the transition must not shorten or lengthen the timeline
+    on, off = overlay_window(path, quiet_time=3.8, start=3.6, length=2.8)
+    frame = 1 / FPS
+    assert abs(on - 4.0) <= 2.5 * frame and abs(off - 5.0) <= 2.5 * frame, (on, off)
+    print(f"PASS: two-clip export keeps the timeline length ({duration:.2f} s vs {total:.2f} s) and shows the overlay at {on:.2f}-{off:.2f} s (timeline 4.00-5.00 s) in {time.time() - t0:.0f} s")
+
+    # 3) Silent intro + voiced clip + fade transition + silent video PiP.
+    # The main audio from clip_a must survive both the silent segment and silent PiP.
+    t0 = time.time()
+    silent_intro = make_silent_clip(folder, "intro_silent.webm", duration=2)
+    pip_silent = make_silent_clip(folder, "pip_silent.webm", duration=1, size="320x180")
+    setup = fast + """(async () => {
+      S.main[1].tr = 'fade'; S.main[1].trDur = 0.5;
+      const blob = await (await fetch('/pip_silent.webm')).blob();
+      const file = new File([blob], 'pip_silent.webm', { type: 'video/webm' });
+      const mediaId = await storeMedia(file);
+      await addOverlay({ type: 'video', mediaId, name: file.name, start: 0.5, dur: 1.0, sourceIn: 0, srcDur: 1.0 });
+    })()"""
+    path, status, total, errors = run_export(base, [silent_intro, clip_a], setup, route_libs,
+                                             assets={"pip_silent.webm": pip_silent})
+    duration, streams = probe(path)
+    assert "Export complete" in status and not errors, (status, errors)
+    assert abs(duration - total) < 0.2, (duration, total)
+    assert any(s[0] == "audio" for s in streams), f"missing AAC after silent intro: {streams}"
+    assert rms_db(path, 2.5, 1.5) > -30.0, "voiced main clip audio was lost after silent intro / silent PiP"
+    print(f"PASS: silent main segment and silent PiP preserve the voiced clip's audio ({duration:.2f} s) in {time.time() - t0:.0f} s")
+
+    # 4) Two external voice-overs on a silent main clip. The later track must not be
+    # truncated by the duration of the first (earlier) track.
+    t0 = time.time()
+    silent_main = make_silent_clip(folder, "silent_main.webm", duration=3)
+    voice_early = make_tone(folder, "voice_early.webm", 440, duration=0.8)
+    voice_late = make_tone(folder, "voice_late.webm", 880, duration=0.8)
+    setup = fast + """(async () => {
+      for (const [url, name, start] of [
+        ['/voice_early.webm', 'voice_early.webm', 0.2],
+        ['/voice_late.webm', 'voice_late.webm', 1.8]
+      ]) {
+        const blob = await (await fetch(url)).blob();
+        const file = new File([blob], name, { type: 'audio/webm' });
+        const mediaId = await storeMedia(file);
+        S.audio.push({ id: uid(), mediaId, name, start, in: 0, out: 0.8, src: 0.8 });
+      }
+    })()"""
+    path, status, total, errors = run_export(base, [silent_main], setup, route_libs,
+        assets={"voice_early.webm": voice_early, "voice_late.webm": voice_late})
+    duration, streams = probe(path)
+    assert "Export complete" in status and not errors, (status, errors)
+    assert abs(duration - total) < 0.15 and abs(duration - 3.0) < 0.15, (duration, total)
+    assert any(s[0] == "audio" for s in streams), f"missing mixed audio stream: {streams}"
+    assert rms_db(path, 0.3, 0.5) > -30.0, "first external voice-over was not audible in its window"
+    assert rms_db(path, 1.15, 0.45) < -45.0, "unexpected audio bleed in silent gap between voice-overs"
+    assert rms_db(path, 1.9, 0.6) > -30.0, "second external voice-over was truncated"
+    print(f"PASS: both delayed voice-overs remain independently audible and output stays within {duration:.2f} s timeline in {time.time() - t0:.0f} s")
+
+    # 5) PiP videos are intentionally muted in preview and export because there is no
+    # overlay-volume control. A voiced PiP must not add a hidden audio track.
+    t0 = time.time()
+    silent_main = make_silent_clip(folder, "pip_main_silent.webm", duration=3)
+    pip_silent = make_silent_clip(folder, "pip_only_silent.webm", duration=1, size="320x180")
+    pip_voiced = make_voiced_clip(folder, duration=2)
+    setup = fast + """(async () => {
+      const silentBlob = await (await fetch('/pip_only_silent.webm')).blob();
+      const silentFile = new File([silentBlob], 'pip_only_silent.webm', { type: 'video/webm' });
+      const silentId = await storeMedia(silentFile);
+      await addOverlay({ type: 'video', mediaId: silentId, name: silentFile.name, start: 0.2, dur: 0.8, sourceIn: 0, srcDur: 1.0 });
+      const voicedBlob = await (await fetch('/pip_voiced.webm')).blob();
+      const voicedFile = new File([voicedBlob], 'pip_voiced.webm', { type: 'video/webm' });
+      const voicedId = await storeMedia(voicedFile);
+      await addOverlay({ type: 'video', mediaId: voicedId, name: voicedFile.name, start: 1.0, dur: 0.8, sourceIn: 0.5, srcDur: 2.0 });
+    })()"""
+    path, status, total, errors = run_export(base, [silent_main], setup, route_libs,
+        assets={"pip_only_silent.webm": pip_silent, "pip_voiced.webm": pip_voiced})
+    duration, streams = probe(path)
+    assert "Export complete" in status and not errors, (status, errors)
+    assert abs(duration - total) < 0.15, (duration, total)
+    assert not any(s[0] == "audio" for s in streams), f"muted PiP unexpectedly added an audio track: {streams}"
+    print(f"PASS: silent and voiced PiP overlays remain muted; no hidden PiP audio is exported ({duration:.2f} s) in {time.time() - t0:.0f} s")
+
+    # 6) Reversed external audio-track order & overlong music track.
+    # Later music is pushed first and exceeds the 3-second project timeline.
+    t0 = time.time()
+    silent_main_rev = make_silent_clip(folder, "silent_main_rev.webm", duration=3)
+    music_overlong = make_tone(folder, "music_overlong.webm", 660, duration=5.0)
+    voice_first = make_tone(folder, "voice_first.webm", 440, duration=0.8)
+    setup = fast + """(async () => {
+      for (const [url, name, start, outDur, srcDur] of [
+        ['/music_overlong.webm', 'music_overlong.webm', 1.6, 4.5, 5.0],
+        ['/voice_first.webm', 'voice_first.webm', 0.2, 0.8, 0.8]
+      ]) {
+        const blob = await (await fetch(url)).blob();
+        const file = new File([blob], name, { type: 'audio/webm' });
+        const mediaId = await storeMedia(file);
+        S.audio.push({ id: uid(), mediaId, name, start, in: 0, out: outDur, src: srcDur });
+      }
+    })()"""
+    path, status, total, errors = run_export(base, [silent_main_rev], setup, route_libs,
+        assets={"music_overlong.webm": music_overlong, "voice_first.webm": voice_first})
+    duration, streams = probe(path)
+    assert "Export complete" in status and not errors, (status, errors)
+    assert abs(duration - total) < 0.15 and abs(duration - 3.0) < 0.15, (duration, total)
+    assert any(s[0] == "audio" and s[1] == "aac" for s in streams), f"missing AAC audio stream: {streams}"
+    assert rms_db(path, 0.3, 0.5) > -30.0, "earlier voice track (pushed second in reverse S.audio order) was lost"
+    assert rms_db(path, 1.1, 0.35) < -45.0, "unexpected audio bleed in silent gap before overlong music track"
+    assert rms_db(path, 1.8, 1.0) > -30.0, "overlong music track (pushed first in reverse S.audio order) was lost"
+    print(f"PASS: reversed S.audio order and overlong music track trim cleanly to {duration:.2f} s while preserving both tracks in {time.time() - t0:.0f} s")
+
+    # 7) Short overlapping fades & voiced -> silent -> voiced xfade transitions.
+    t0 = time.time()
+    short_voiced_1 = make_voiced_clip(folder, name="short_voiced_1.webm", duration=0.8, freq=440, size="640x360")
+    short_silent_mid = make_silent_clip(folder, name="short_silent_mid.webm", duration=0.6, size="640x360")
+    short_voiced_2 = make_voiced_clip(folder, name="short_voiced_2.webm", duration=0.8, freq=880, size="640x360")
+    setup = fast + """(() => {
+      S.main.forEach(c => { c.fade = true; });
+      S.main[1].tr = 'fade'; S.main[1].trDur = 0.2;
+      S.main[2].tr = 'fade'; S.main[2].trDur = 0.2;
+    })()"""
+    path, status, total, errors = run_export(base, [short_voiced_1, short_silent_mid, short_voiced_2], setup, route_libs)
+    duration, streams = probe(path)
+    assert "Export complete" in status and not errors, (status, errors)
+    assert abs(duration - total) < 0.2 and abs(total - 2.2) < 0.1, (duration, total)
+    assert ("video", "h264", 480, 854) in streams, f"invalid H.264 stream header: {streams}"
+    assert any(s[0] == "audio" and s[1] == "aac" for s in streams), f"missing AAC stream header: {streams}"
+    assert rms_db(path, 0.1, 0.5) > -35.0, "first sub-second voiced clip lost audio across fade/xfade"
+    assert rms_db(path, 1.45, 0.5) > -35.0, "second sub-second voiced clip lost audio after silent middle clip and xfade"
+    print(f"PASS: sub-second voiced -> silent -> voiced clips with overlapping fades and xfade transitions preserve both voiced segments ({duration:.2f} s) in {time.time() - t0:.0f} s")
+
+    server.shutdown()
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================================================
+FILE: tests/fast.test.js
+BLOB SHA: 1bccb2741dcba86e0f77f3029399fa849eb83a04
+================================================================================
+'use strict';
+// Unit tests for mediay-fast.js that need no browser: MP4 parsing, Annex B conversion and the planning maths.
+// The MP4 fixtures are generated with ffmpeg (skipped when ffmpeg is not installed).
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const Fast = require('../mediay-fast.js');
+
+const haveFfmpeg = spawnSync('ffmpeg', ['-version']).status === 0 && spawnSync('ffprobe', ['-version']).status === 0;
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mediay-fast-'));
+const sh = (cmd, args) => { const r = spawnSync(cmd, args, { encoding: 'utf8', maxBuffer: 1 << 28 }); if (r.status !== 0) throw new Error(cmd + ' failed: ' + r.stderr); return r.stdout; };
+const blobOf = file => new Blob([fs.readFileSync(file)]);
+const gen = (name, extra, vcodec = ['-c:v', 'libx264', '-preset', 'veryfast', '-bf', '2', '-g', '15', '-pix_fmt', 'yuv420p']) => {
+  const out = path.join(tmp, name);
+  sh('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=30:duration=2', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100:duration=2',
+    ...vcodec, '-c:a', 'aac', '-shortest', ...extra, out]);
+  return out;
+};
+const packets = file => sh('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'packet=pts_time,dts_time,size,pos,flags', '-of', 'json', file]);
+
+test('timeline frame planning rounds cumulative boundaries without per-clip overshoot', () => {
+  assert.deepEqual(Fast.planFrameCounts([1.01, 1.01], 30), [30, 31]);
+  assert.equal(Fast.planFrameCounts([1.01, 1.01], 30).reduce((a, b) => a + b, 0), Math.round(2.02 * 30));
+  assert.deepEqual(Fast.planFrameCounts([1 / 3, 1 / 3, 1 / 3], 30), [10, 10, 10]);
+  assert.deepEqual(Fast.planFrameCounts([0.001, 1.01], 30), [1, 29]);
+  assert.deepEqual(Fast.planFrameCounts([], 30), []);
+});
+
+test('planning maths', () => {
+  assert.equal(Fast.frameCount(1, 30), 30);
+  assert.equal(Fast.frameCount(1.01, 30), 30);
+  assert.equal(Fast.frameCount(0.001, 30), 1);
+  assert.equal(Fast.avcLevelIdc(720, 1280, 30), 31);
+  assert.equal(Fast.avcLevelIdc(1080, 1920, 30), 40);
+  assert.equal(Fast.avcLevelIdc(2160, 3840, 30), 51);
+  assert.deepEqual(Fast.fitRect(1920, 1080, 720, 1280), { x: 0, y: 436, w: 720, h: 406 });
+  assert.deepEqual(Fast.fitRect(1080, 1920, 720, 1280), { x: 0, y: 0, w: 720, h: 1280 });
+  const clip = { in: 2, speed: 2 };
+  assert.ok(Math.abs(Fast.sourceLimit(clip, 0, 30) - (2 + (0.5 / 30) * 2)) < 1e-9);
+  assert.ok(Fast.targetBitrate(720, 1280, 30) >= 1.5e6 && Fast.targetBitrate(3840, 2160, 60) <= 40e6);
+});
+
+test('eligibility reasons', () => {
+  assert.equal(Fast.ineligibleReason({ clips: [{}], overlays: [{ type: 'text' }] }), null);
+  assert.match(Fast.ineligibleReason({ clips: [{ reverse: true }] }), /reversed/);
+  assert.match(Fast.ineligibleReason({ clips: [{}, { transition: true }] }), /clip 2 has a transition/);
+  assert.match(Fast.ineligibleReason({ clips: [{}], overlays: [{ type: 'video' }] }), /video overlay/);
+  assert.match(Fast.ineligibleReason({ clips: [{}], overlays: [{ type: 'image', blend: 'multiply' }] }), /blend/);
+  assert.match(Fast.ineligibleReason({ clips: [] }), /no clips/);
+});
+
+test('HEVC codec string layout', () => {
+  // hvcC for Main profile, level 4.0 (120), as written by common encoders
+  const cfg = new Uint8Array(23);
+  cfg[0] = 1; cfg[1] = 0x01; cfg[2] = 0x60; cfg[3] = 0; cfg[4] = 0; cfg[5] = 0; cfg[6] = 0x90; cfg[12] = 120;
+  assert.equal(Fast.codecFromConfig('hvc1', cfg), 'hvc1.1.6.L120.90');
+});
+
+test('avcC / Annex B conversion on a synthetic sample', () => {
+  const avcC = Uint8Array.from([1, 0x64, 0, 0x1f, 0xff, 0xe1, 0, 3, 0x67, 1, 2, 1, 0, 2, 0x68, 9]);
+  const p = Fast.parseAvcC(avcC);
+  assert.equal(p.nalLength, 4); assert.equal(p.sps.length, 1); assert.equal(p.pps.length, 1);
+  const sample = Uint8Array.from([0, 0, 0, 3, 0x65, 0xaa, 0xbb, 0, 0, 0, 2, 0x41, 0xcc]);
+  assert.deepEqual(Array.from(Fast.avccToAnnexB(sample, 4, null)), [0, 0, 0, 1, 0x65, 0xaa, 0xbb, 0, 0, 0, 1, 0x41, 0xcc]);
+  assert.deepEqual(Array.from(Fast.avccToAnnexB(sample, 4, p)).slice(0, 12), [0, 0, 0, 1, 0x67, 1, 2, 0, 0, 0, 1, 0x68]);
+});
+
+test('Annex B sink enforces a bounded output buffer before copying oversized chunks', () => {
+  let copied = false;
+  const limited = new Fast.AnnexBSink(4);
+  assert.throws(() => limited.onChunk({ byteLength: 5, copyTo() { copied = true; } }), Fast.Unsupported);
+  assert.throws(() => limited.onChunk({ byteLength: 5, copyTo() { copied = true; } }), error => error.code === 'PIECE_BUDGET_EXCEEDED');
+  assert.equal(copied, false, 'an over-budget chunk must be rejected before allocating its copy');
+  assert.equal(limited.bytes, 0);
+
+  const exact = new Fast.AnnexBSink(5);
+  exact.onChunk({ byteLength: 5, copyTo(target) { target.fill(7); } });
+  assert.deepEqual(Array.from(exact.finish()), [7, 7, 7, 7, 7]);
+});
+
+test('demux matches ffprobe: sample table, key frames, timing (B-frames, moov at end and at start)', { skip: !haveFfmpeg }, async () => {
+  for (const [name, extra] of [['plain.mp4', []], ['faststart.mp4', ['-movflags', '+faststart']]]) {
+    const file = gen(name, extra);
+    const { video, hasAudio } = await Fast.demux(blobOf(file));
+    const ref = JSON.parse(packets(file)).packets;
+    assert.equal(hasAudio, true);
+    assert.equal(video.count, ref.length, name);
+    assert.equal(video.width, 320); assert.equal(video.height, 240);
+    assert.match(video.codec, /^avc1\.[0-9a-f]{6}$/);
+    assert.equal(video.rotation, 0);
+    // packets from ffprobe are in file (decode) order, like our sample table
+    for (let i = 0; i < ref.length; i++) {
+      assert.equal(video.sizes[i], Number(ref[i].size), `size ${i}`);
+      assert.equal(video.offsets[i], Number(ref[i].pos), `offset ${i}`);
+      assert.equal(video.key[i], ref[i].flags.startsWith('K') ? 1 : 0, `key ${i}`);
+      assert.ok(Math.abs(video.pts[i] - Number(ref[i].pts_time)) < 1e-4, `pts ${i}: ${video.pts[i]} vs ${ref[i].pts_time}`);
+    }
+  }
+});
+
+test('rotation metadata is read (90 and 270)', { skip: !haveFfmpeg }, async () => {
+  for (const deg of [90, 270, 180]) {
+    const base = gen('rot_src.mp4', []);
+    const out = path.join(tmp, `rot${deg}.mp4`);
+    sh('ffmpeg', ['-y', '-loglevel', 'error', '-display_rotation', String(deg), '-i', base, '-c', 'copy', out]);
+    const { video } = await Fast.demux(blobOf(out));
+    // ffmpeg's -display_rotation is counter-clockwise; the displayed picture is rotated that way,
+    // so the clockwise rotation we must apply to the stored picture is the complement.
+    assert.equal(video.rotation, (360 - deg) % 360 || 0, `deg ${deg}`);
+  }
+});
+
+test('AnnexBSink counts every encoded output chunk as one frame', () => {
+  const sink = new Fast.AnnexBSink(1024);
+  const chunk = { byteLength: 3, copyTo(target) { target.set([1, 2, 3]); } };
+  sink.onChunk(chunk, null);
+  sink.onChunk(chunk, null);
+  assert.equal(sink.frameCount, 2);
+  assert.deepEqual(Array.from(sink.finish()), [1, 2, 3, 1, 2, 3]);
+});
+
+test('AVCC to Annex B: the converted stream decodes to the same frames as the original file', { skip: !haveFfmpeg }, async () => {
+  // No B-frames here on purpose: that is what a WebCodecs encoder produces, and ffmpeg's raw .h264 reader
+  // itself loses leading frames of B-frame streams (verified against ffmpeg's own h264_mp4toannexb).
+  const file = gen('annexb.mp4', [], ['-c:v', 'libx264', '-preset', 'veryfast', '-bf', '0', '-g', '15', '-pix_fmt', 'yuv420p']);
+  const { video } = await Fast.demux(blobOf(file));
+  const params = Fast.parseAvcC(video.description);
+  const bytes = fs.readFileSync(file);
+  const parts = [];
+  for (let i = 0; i < video.count; i++) {
+    parts.push(Fast.avccToAnnexB(bytes.subarray(video.offsets[i], video.offsets[i] + video.sizes[i]), params.nalLength, video.key[i] ? params : null));
+  }
+  const es = path.join(tmp, 'annexb.h264');
+  fs.writeFileSync(es, Buffer.concat(parts));
+  const remuxed = path.join(tmp, 'annexb_out.mp4');
+  sh('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'h264', '-framerate', '30', '-i', es, '-c:v', 'copy', remuxed]);
+  const md5 = f => sh('ffmpeg', ['-v', 'error', '-i', f, '-map', '0:v:0', '-fps_mode', 'passthrough', '-f', 'framemd5', '-']).split('\n').filter(l => l && !l.startsWith('#')).map(l => l.split(',').pop().trim());
+  assert.deepEqual(md5(remuxed), md5(file));
+});
+
+test('unsupported inputs are rejected with Unsupported (so the caller can fall back)', { skip: !haveFfmpeg }, async () => {
+  const webm = path.join(tmp, 'a.webm');
+  sh('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=160x120:rate=10:duration=1', '-c:v', 'libvpx', webm]);
+  await assert.rejects(() => Fast.demux(blobOf(webm)), Fast.Unsupported);
+  const frag = path.join(tmp, 'frag.mp4');
+  sh('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=160x120:rate=10:duration=1', '-c:v', 'libx264', '-movflags', 'frag_keyframe+empty_moov', frag]);
+  await assert.rejects(() => Fast.demux(blobOf(frag)), Fast.Unsupported);
+  const ten = path.join(tmp, 'ten.mp4');
+  sh('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=160x120:rate=10:duration=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p10le', ten]);
+  await assert.rejects(() => Fast.demux(blobOf(ten)), Fast.Unsupported);
+});
+
+test.after(() => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { /* ignore */ } });
+test('encoder self-test times out and closes a stuck encoder', async () => {
+  const saved = {
+    VideoEncoder: globalThis.VideoEncoder,
+    VideoFrame: globalThis.VideoFrame,
+    OffscreenCanvas: globalThis.OffscreenCanvas,
+  };
+  class FakeCanvas {
+    getContext() { return { fillRect() {}, set fillStyle(_) {} }; }
+  }
+  class FakeFrame { close() {} }
+  try {
+    for (const mode of ['queue', 'flush']) {
+      let closed = false;
+      globalThis.OffscreenCanvas = FakeCanvas;
+      globalThis.VideoFrame = FakeFrame;
+      globalThis.VideoEncoder = class {
+        constructor() { this.encodeQueueSize = mode === 'queue' ? 5 : 0; }
+        configure() {}
+        encode() {}
+        flush() { return mode === 'flush' ? new Promise(() => {}) : Promise.resolve(); }
+        close() { closed = true; }
+      };
+      await assert.rejects(
+        () => Fast.benchmarkEncoder({ config: { width: 16, height: 16, framerate: 30 } }, 1, 15),
+        /Timed out/
+      );
+      assert.equal(closed, true, `${mode} timeout must close the encoder`);
+    }
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete globalThis[key];
+      else globalThis[key] = value;
+    }
+  }
+});
+
+
+
+================================================================================
+FILE: tests/fast_integration.py
+BLOB SHA: 827e441dec58dbab8feff8add07ccbe2dcf64f6d
+================================================================================
+"""Integration test for the device-encoder export path as it is wired into app.js.
+
+The real `tryDeviceEncoderExport` function is cut out of app.js and run in Chromium against stand-ins for the rest of the app
+(project state, FFmpeg worker, overlay renderer). The FFmpeg commands it issues are then executed with a real ffmpeg, and the
+resulting MP4 is inspected. It also checks that every reason to decline (and any mid-way failure) returns null and cleans up,
+because that is what lets the export fall back to the FFmpeg-only path.
+
+CODEC NOTE: The main integration path uses VP9 so it runs consistently across Chromium builds. The negative capability test
+explicitly makes H.264 configurations unsupported; it must not depend on which codecs happen to ship with the CI browser.
+H.264 bitstream specifics are covered by tests/fast.test.js; sound/assembly commands run with real FFmpeg.
+
+Run: python tests/fast_integration.py   (needs ffmpeg, ffprobe, Playwright + Chromium)
+"""
+import base64, functools, http.server, json, re, shutil, socketserver, subprocess, sys, tempfile, threading
+from pathlib import Path
+from playwright.sync_api import sync_playwright
+
+ROOT = Path(__file__).resolve().parent.parent
+APP = (ROOT / "app.js").read_text(encoding="utf-8")
+START = APP.index("const tryDeviceEncoderExport = async () => {")
+END = APP.index("\n    };", START) + len("\n    };")
+FN_SOURCE = APP[START:END].strip()
+FN_SOURCE = FN_SOURCE[len("const tryDeviceEncoderExport = "):].rstrip(";")
+
+
+def sh(*cmd, binary=False):
+    r = subprocess.run(cmd, capture_output=True, check=True)
+    return r.stdout if binary else r.stdout.decode()
+
+
+def make_av(path, offset=0, audio=True):
+    expr = "if(lt(Y,24),if(lt(X,288),if(bitand(floor((N+%d)/pow(2,floor(X/24))),1),235,16),16),16+X/8+Y/8)" % offset
+    args = ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=640x360:r=30:d=4"]
+    if audio:
+        args += ["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=4"]
+    args += ["-vf", f"format=gray,geq=lum='{expr}',format=yuv420p", "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "30", "-g", "15",
+             "-deadline", "realtime", "-cpu-used", "8"]
+    args += ["-c:a", "aac", "-shortest"] if audio else ["-an"]
+    sh(*args, str(path))
+
+
+HARNESS = r"""
+async (a) => {
+  const real = window.MediaYFast;
+  const useVp9 = !a.realCodecs;
+  let budgetInjected = false;
+  const originalIsConfigSupported = window.VideoEncoder.isConfigSupported;
+  if (a.noH264) {
+    // Make this test deterministic: newer Chromium builds may include H.264 even when older CI images did not.
+    window.VideoEncoder.isConfigSupported = async config => ({ supported: false, config });
+  }
+  const Fast = useVp9 ? Object.assign({}, real, {
+    chooseEncoderConfig: o => real.chooseEncoderConfig(Object.assign({}, o, { codecs: ['vp09.00.10.08'], acceleration: ['no-preference'] })),
+    AnnexBSink: function () { const sink = new real.IvfSink('VP90', 640, 360, 30); Object.defineProperty(sink, 'frameCount', { get: () => sink.frames.length }); return sink; },
+    renderTimeline: async opts => {
+      if (a.simulateBudgetOverrun && !budgetInjected) {
+        budgetInjected = true;
+        const error = new Error('simulated bounded-piece overrun'); error.code = 'PIECE_BUDGET_EXCEEDED'; throw error;
+      }
+      return real.renderTimeline(opts);
+    },
+    targetBitrate: (...args) => a.smallChunks ? 1.07e9 : real.targetBitrate(...args)
+  }) : real;
+  window.MediaYFast = Fast;
+  const blobs = {};
+  for (const [id, url] of Object.entries(a.media)) blobs[id] = await (await fetch(url)).blob();
+  const png = async () => {
+    const c = new OffscreenCanvas(640, 360), x = c.getContext('2d');
+    x.fillStyle = '#fff'; x.fillRect(300, 200, 40, 40);
+    return new Uint8Array(await (await c.convertToBlob({ type: 'image/png' })).arrayBuffer());
+  };
+  const log = { commands: [], written: {}, removed: [], notes: {}, stages: [], busy: [] };
+  const ctx = {
+    $: id => (id === 'useDeviceEncoder' ? { checked: a.toggle !== false } : null),
+    S: a.S, FX: [{ f: '' }, { f: 'eq=saturation=1.5' }], TD: a.TD || a.S.main.map(() => 0), adjustmentFilter: c => (c.adjust ? 'eq=brightness=0.1' : ''),
+    files: blobs, W: 640, H: 360, EXP: { fps: 30 }, dur: c => (c.out - c.in) / (c.speed || 1),
+    exportMetric: { stage: n => log.stages.push(n), note: (k, v) => { log.notes[k] = v; } },
+    exportCancelRequested: false,
+    exportProgressHandler: 'SAVED-HANDLER',
+    exportWorkspaceFiles: new Set(), exportSourceCache: new Map(), exportSourceCacheBytes: 0,
+    ff: { writeFile: async (n, d) => {
+      log.written[n] = (typeof d === 'string') ? d.length : d.length;
+      if (n === 'alist.txt') log.alist = new TextDecoder().decode(d);
+      if (n === 'vlist.txt') log.vlist = new TextDecoder().decode(d);
+    } },
+    run: async args => { if (a.failOn && args.join(' ').includes(a.failOn)) throw new Error('FFmpeg failed (code 1)'); log.commands.push(args); },
+    ensureExportSource: async id => ({ name: a.names[id], size: 1, cached: false }),
+    removeExportFile: async n => { log.removed.push(n); },
+    overlayPNG: png, updateBusy: (t, d, p) => log.busy.push(p), say: () => {}
+  };
+  const factory = new Function('ctx', 'with (ctx) { return (' + a.fn + '); }');
+  const fn = factory(ctx);
+  let returned, error = null;
+  try { returned = await fn(); } catch (e) { error = String(e && e.message || e); }
+  window.MediaYFast = real;
+  window.VideoEncoder.isConfigSupported = originalIsConfigSupported;
+  return { returned, error, log, budgetInjected, handlerAfter: ctx.exportProgressHandler, workspace: [...ctx.exportWorkspaceFiles] };
+}
+"""
+
+
+def ffprobe(path):
+    j = json.loads(sh("ffprobe", "-v", "error", "-count_packets", "-show_entries", "format=duration:stream=codec_type,codec_name,nb_read_packets", "-of", "json", str(path)))
+    return float(j["format"]["duration"]), {s["codec_type"]: (s["codec_name"], int(s.get("nb_read_packets", 0))) for s in j["streams"]}
+
+
+def main():
+    work = Path(tempfile.mkdtemp(prefix="mediay-fastint-"))
+    try:
+        shutil.copy(ROOT / "mediay-fast.js", work / "mediay-fast.js")
+        (work / "index.html").write_text("<!doctype html><title>t</title>")
+        make_av(work / "av.mp4", 0, audio=True)
+        make_av(work / "silent.mp4", 1000, audio=False)
+        handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(work))
+        handler.log_message = lambda *a, **k: None
+        socketserver.TCPServer.allow_reuse_address = True
+        server = socketserver.TCPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://localhost:{server.server_address[1]}"
+        failures = []
+
+        def check(name, cond, detail=""):
+            print(("PASS " if cond else "FAIL ") + name + ("" if cond else f"  [{detail}]"))
+            if not cond:
+                failures.append(name)
+
+        def clip(mid, a, b, **kw):
+            return dict({"mediaId": mid, "in": a, "out": b, "speed": 1, "fx": 0}, **kw)
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+            page = browser.new_page()
+            errors = []
+            page.on("pageerror", lambda e: errors.append(str(e)))
+            page.goto(base + "/index.html")
+            page.add_script_tag(url=base + "/mediay-fast.js")
+
+            def go(S, **kw):
+                args = dict(fn=FN_SOURCE, S=S, media={"m1": f"{base}/av.mp4", "m2": f"{base}/silent.mp4"}, names={"m1": "av.mp4", "m2": "silent.mp4"})
+                args.update(kw)
+                return page.evaluate(HARNESS, args)
+
+            overlay = {"id": "t1", "type": "text", "start": 0.2, "dur": 0.5, "layer": 1}
+
+            # 1. a normal project: two clips (one sped up, one faded), one caption
+            S = {"main": [clip("m1", 0, 1), clip("m1", 1, 3, speed=2, fade=True, vol=0.5)], "overlays": [overlay]}
+            r = go(S)
+            log = r["log"]
+            check("success: returns the joined file", r["returned"] == "joined.mp4" and r["error"] is None, json.dumps(r)[:300])
+            check("success: report says the device encoder was used", log["notes"].get("deviceEncoder", "").startswith("used"), str(log["notes"]))
+            check("success: bounded picture pieces, per-clip sound and assembly all issued",
+                  len([c for c in log["commands"] if "-f" in c and "h264" in c]) == 2
+                  and log["written"].get("fastvideo_0.h264", 0) > 1000
+                  and log["written"].get("fastvideo_1.h264", 0) > 1000
+                  and "vlist.txt" in log["written"] and "alist.txt" in log["written"],
+                  str(log["commands"])[:500])
+            check("success: temporary files removed, workspace list keeps only joined.mp4",
+                  {"fastvideo_0.h264", "fastvideo_1.h264", "fastsegment_0.mp4", "fastsegment_1.mp4",
+                   "vlist.txt", "alist.txt", "aseg0.wav", "aseg1.wav"} <= set(log["removed"])
+                  and "joined.mp4" in r["workspace"], f"{log['removed']} {r['workspace']}")
+            check("success: progress only moves forward", all(a <= b for a, b in zip(log["busy"], log["busy"][1:])), str(log["busy"]))
+
+            # run the recorded sound commands for real and check lengths
+            audio_cmds = [c for c in log["commands"] if c[-1].endswith(".wav")]
+            for cmd in audio_cmds:
+                sh("ffmpeg", "-y", "-loglevel", "error", *[("av.mp4" if x == "av.mp4" else x) for x in cmd]) if False else subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *cmd], cwd=work, check=True)
+            lens = [float(sh("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(work / c[-1])).strip()) for c in audio_cmds]
+            check("sound pieces have exactly the video length of their clip (1.0 s and 1.0 s)", len(lens) == 2 and all(abs(l - 1.0) < 0.003 for l in lens), str(lens))
+
+            # Stand in for the two bounded WebCodecs chunks with real H.264 pieces.
+            video_muxes = [c for c in log["commands"] if "-f" in c and "h264" in c]
+            for cmd in video_muxes:
+                raw = cmd[cmd.index("-i") + 1]
+                sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30",
+                   "-frames:v", "30", "-c:v", "libx264", "-bf", "0", "-pix_fmt", "yuv420p", "-f", "h264", str(work / raw))
+                subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *cmd], cwd=work, check=True)
+            (work / "vlist.txt").write_text(log["vlist"])
+            (work / "alist.txt").write_text(log["alist"])
+            mux = log["commands"][-1]
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *mux], cwd=work, check=True)
+            dur, streams = ffprobe(work / "joined.mp4")
+            check("assembled MP4 has H.264 picture (60 frames) and AAC sound, 2.0 s long", streams.get("video", ("", 0))[0] == "h264" and streams["video"][1] == 60 and streams.get("audio", ("",))[0] == "aac" and abs(dur - 2.0) < 0.05, f"{dur} {streams}")
+
+            # Force a tiny per-piece frame budget to prove a single one-second clip
+            # is rendered as multiple bounded segments instead of one large output buffer.
+            r = go({"main": [clip("m1", 0, 1)], "overlays": []}, smallChunks=True)
+            chunk_muxes = [c for c in r["log"]["commands"] if "-f" in c and "h264" in c]
+            check("long-output path: one clip is split into six independently muxed bounded pieces",
+                  r["returned"] == "joined.mp4" and len(chunk_muxes) == 6
+                  and all(f"fastvideo_{i}.h264" in r["log"]["written"] for i in range(6))
+                  and all(f"fastsegment_{i}.mp4" in r["log"]["removed"] for i in range(6)),
+                  f"returned={r['returned']} chunks={len(chunk_muxes)} workspace={r['workspace']}")
+
+            # An underestimated bitrate must shrink and retry the piece instead of abandoning WebCodecs.
+            r = go({"main": [clip("m1", 0, 4)], "overlays": []}, simulateBudgetOverrun=True)
+            check("budget overrun: retries at half-size and keeps the device encoder path",
+                  r["budgetInjected"] and r["returned"] == "joined.mp4" and
+                  r["log"]["notes"].get("deviceEncoder", "").startswith("used") and
+                  r["log"]["notes"].get("deviceEncoderBudgetRetry") == "retrying with 60 frames per piece",
+                  f"returned={r['returned']} notes={r['log']['notes']} error={r['error']}")
+
+            # 2. project without any sound track -> picture only
+            r = go({"main": [clip("m2", 0, 1)], "overlays": []})
+            mux = r["log"]["commands"][-1] if r["log"]["commands"] else []
+            check("silent project: one video piece and picture-only concat", r["returned"] == "joined.mp4"
+                  and len(r["log"]["commands"]) == 2 and "-f" in mux and "concat" in mux
+                  and "alist.txt" not in " ".join(mux), str(r["log"]["commands"]))
+
+            # 2b. mixed voiced + silent clips: the fast path must remain eligible and
+            # synthesize a silent WAV for the silent clip so concat has matching tracks.
+            r = go({"main": [clip("m1", 0, 1), clip("m2", 0, 1)], "overlays": []})
+            mixed_log = r["log"]
+            mixed_audio_cmds = [c for c in mixed_log["commands"] if c[-1].endswith(".wav")]
+            check("mixed-sound project: fast path stays enabled and creates one audio piece per clip",
+                  r["returned"] == "joined.mp4" and r["error"] is None and len(mixed_audio_cmds) == 2
+                  and any(any("anullsrc" in arg for arg in c) for c in mixed_audio_cmds)
+                  and "vlist.txt" in mixed_log["written"] and "alist.txt" in mixed_log["written"],
+                  f"returned={r['returned']} error={r['error']} commands={mixed_log['commands']}")
+            for cmd in mixed_audio_cmds:
+                subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *cmd], cwd=work, check=True)
+            mixed_lens = [float(sh("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                                   str(work / c[-1])).strip()) for c in mixed_audio_cmds]
+            check("mixed-sound project: voiced and synthetic-silence WAVs have matching 1.0 s durations",
+                  len(mixed_lens) == 2 and all(abs(x - 1.0) < 0.003 for x in mixed_lens), str(mixed_lens))
+            mixed_video_muxes = [c for c in mixed_log["commands"] if "-f" in c and "h264" in c]
+            for cmd in mixed_video_muxes:
+                raw = cmd[cmd.index("-i") + 1]
+                sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30",
+                   "-frames:v", "30", "-c:v", "libx264", "-bf", "0", "-pix_fmt", "yuv420p", "-f", "h264", str(work / raw))
+                subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *cmd], cwd=work, check=True)
+            (work / "vlist.txt").write_text(mixed_log["vlist"])
+            (work / "alist.txt").write_text(mixed_log["alist"])
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *mixed_log["commands"][-1]], cwd=work, check=True)
+            mixed_dur, mixed_streams = ffprobe(work / "joined.mp4")
+            check("mixed-sound project: final MP4 keeps AAC and full 2.0 s duration",
+                  mixed_streams.get("video", ("", 0))[0] == "h264" and mixed_streams.get("audio", ("",))[0] == "aac"
+                  and abs(mixed_dur - 2.0) < 0.05, f"{mixed_dur} {mixed_streams}")
+
+            # 3. reasons to decline: all must return null, write nothing, keep the original progress handler
+            def declines(name, S, expect, **kw):
+                r = go(S, **kw)
+                note = r["log"]["notes"].get("deviceEncoder", "")
+                ok = r["returned"] is None and r["error"] is None and expect in note and not r["log"]["written"] and not r["log"]["commands"]
+                check(f"declines: {name}", ok, f"returned={r['returned']} err={r['error']} note={note!r} written={list(r['log']['written'])}")
+
+            declines("reversed clip", {"main": [clip("m1", 0, 1, rev=True)], "overlays": []}, "reversed")
+            declines("filter on a clip", {"main": [clip("m1", 0, 1, fx=1)], "overlays": []}, "filter")
+            declines("colour adjustments", {"main": [clip("m1", 0, 1, adjust=True)], "overlays": []}, "color adjustments")
+            declines("transition", {"main": [clip("m1", 0, 1), clip("m1", 1, 2, tr="fade")], "overlays": []}, "transition", TD=[0, 0.5])
+            declines("video overlay", {"main": [clip("m1", 0, 1)], "overlays": [{"id": "v", "type": "video", "start": 0, "dur": 1, "layer": 1}]}, "video overlay")
+            declines("blend mode", {"main": [clip("m1", 0, 1)], "overlays": [{"id": "b", "type": "image", "start": 0, "dur": 1, "layer": 1, "blend": "multiply"}]}, "blend")
+            declines("odd speed", {"main": [clip("m1", 0, 2, speed=4)], "overlays": []}, "speed")
+            declines("switched off by the user", {"main": [clip("m1", 0, 1)], "overlays": []}, "turned off", toggle=False)
+            declines("device has no H.264 encoder (capability explicitly unavailable)", {"main": [clip("m1", 0, 1)], "overlays": []}, "no usable video encoder", realCodecs=True, noH264=True)
+
+            # 4. failure half way: must clean up everything it created and hand back the original handler
+            r = go({"main": [clip("m1", 0, 1), clip("m1", 1, 2)], "overlays": [overlay]}, failOn="aseg1.wav")
+            note = r["log"]["notes"].get("deviceEncoder", "")
+            check("failure while preparing sound: returns null, says why, removes its files, restores the progress handler",
+                  r["returned"] is None and "failed" in note
+                  and {"fastvideo_0.h264", "fastvideo_1.h264", "fastsegment_0.mp4", "fastsegment_1.mp4",
+                       "aseg0.wav", "aseg1.wav"} <= set(r["log"]["removed"])
+                  and r["handlerAfter"] == "SAVED-HANDLER",
+                  f"{r['returned']} {note} {r['log']['removed']} {r['handlerAfter']}")
+            r = go({"main": [clip("m1", 0, 1)], "overlays": []}, failOn="joined.mp4")
+            check("failure while assembling: all partial video/audio pieces and joined.mp4 are removed",
+                  r["returned"] is None
+                  and {"fastvideo_0.h264", "fastsegment_0.mp4", "aseg0.wav", "vlist.txt", "alist.txt", "joined.mp4"} <= set(r["log"]["removed"]),
+                  f"{r['returned']} {r['log']['removed']}")
+
+            check("no page errors", not errors, str(errors))
+            browser.close()
+        server.shutdown()
+        if failures:
+            print(f"\n{len(failures)} FAILED: {failures}")
+            sys.exit(1)
+        print("\nAll device-encoder integration checks passed.")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================================================
+FILE: tests/fast_pipeline.py
+BLOB SHA: b7fdc7edeeadf42416b6d90977b27e7d628c194f
+================================================================================
+"""Pipeline test for the fast export engine (mediay-fast.js) in a real browser.
+
+Real MP4 files -> real WebCodecs decode -> trim/speed/fade/overlay/rotation compositing -> real WebCodecs encode ->
+the result is decoded by ffmpeg and checked frame by frame.
+
+Source frames carry a 12-bit "barcode" of their frame number in the top-left corner, so the test can tell exactly
+which source frame ended up in which output frame.
+
+CODEC NOTE: The main frame-accuracy matrix uses VP9 for deterministic coverage. A separate test also attempts a real H.264
+WebCodecs encode and validates the Annex B output with FFmpeg when the installed Chromium build exposes an H.264 encoder.
+That desktop-browser check does not prove that Android WebView exposes a hardware encoder; physical-device validation remains
+required. See docs/fast-export.md.
+
+Needs: ffmpeg + ffprobe on PATH, Playwright with Chromium.
+Run: python tests/fast_pipeline.py
+"""
+import base64, functools, http.server, json, shutil, socketserver, subprocess, sys, tempfile, threading
+from pathlib import Path
+from playwright.sync_api import sync_playwright
+
+ROOT = Path(__file__).resolve().parent.parent
+FPS = 30
+
+
+def sh(*cmd, binary=False):
+    r = subprocess.run(cmd, capture_output=True, check=True)
+    return r.stdout if binary else r.stdout.decode()
+
+
+def make_source(path, offset=0, rot=None, seconds=4):
+    """640x360 VP9-in-MP4. Top-left: barcode of (frame number + offset). Background: dark gradient (asymmetric, for rotation checks)."""
+    expr = ("if(lt(Y,24),if(lt(X,288),if(bitand(floor((N+%d)/pow(2,floor(X/24))),1),235,16),16),16+X/8+Y/8)" % offset)
+    tmp = str(path) + ".tmp.mp4" if rot else str(path)
+    sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=black:s=640x360:r={FPS}:d={seconds}",
+       "-vf", f"format=gray,geq=lum='{expr}',format=yuv420p", "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "22", "-g", "15",
+       "-deadline", "realtime", "-cpu-used", "5", "-an", tmp)
+    if rot:
+        sh("ffmpeg", "-y", "-loglevel", "error", "-display_rotation", str(rot), "-i", tmp, "-c", "copy", str(path))
+
+
+def decode_gray(path, w, h, input_format=None):
+    args = ["ffmpeg", "-v", "error"]
+    if input_format:
+        args += ["-f", input_format]
+    args += ["-i", str(path), "-vf", "format=gray", "-f", "rawvideo", "-"]
+    raw = sh(*args, binary=True)
+    n = len(raw) // (w * h)
+    return [raw[i * w * h:(i + 1) * w * h] for i in range(n)]
+
+
+def barcode(frame, w):
+    bits = ["1" if frame[12 * w + 12 + 24 * i] > 128 else "0" for i in range(12)]
+    return int("".join(reversed(bits)), 2)
+
+
+def mean(frame, w, x0, y0, x1, y1):
+    vals = [frame[y * w + x] for y in range(y0, y1) for x in range(x0, x1)]
+    return sum(vals) / len(vals)
+
+
+HARNESS = """
+async (spec) => {
+  const Fast = window.MediaYFast;
+  const clips = [];
+  for (const c of spec.clips) {
+    const blob = await (await fetch(c.url)).blob();
+    const { video } = await Fast.demux(blob);
+    clips.push({ file: blob, track: video, in: c.in, out: c.out, speed: c.speed || 1, fade: !!c.fade });
+  }
+  const h264 = spec.codec === 'h264';
+  const sink = h264 ? new Fast.AnnexBSink() : new Fast.IvfSink('VP90', spec.W, spec.H, spec.fps);
+  let choice;
+  const overlays = (spec.overlays || []).map(o => {
+    const c = new OffscreenCanvas(o.w, o.h), x = c.getContext('2d');
+    x.fillStyle = '#fff'; x.fillRect(0, 0, o.w, o.h);
+    return { bitmap: c.transferToImageBitmap(), x: o.x, y: o.y, w: o.w, h: o.h, start: o.start, end: o.end };
+  });
+  let polled = 0;
+  const progress = [];
+  let result, error = null;
+  try {
+    choice = await Fast.chooseEncoderConfig({
+      W: spec.W, H: spec.H, fps: spec.fps, bitrate: 6e6,
+      ...(h264 ? {} : { codecs: ['vp09.00.10.08'], acceleration: ['no-preference'] })
+    });
+    result = await Fast.renderTimeline({ clips, W: spec.W, H: spec.H, fps: spec.fps, choice, sink, overlays,
+      isCancelled: () => spec.cancelAfter != null && ++polled > spec.cancelAfter, onProgress: p => progress.push(p) });
+  } catch (e) { error = String(e && e.message || e); }
+  const bytes = sink.finish();
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 32768) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 32768));
+  return { error, result, progress, format: h264 ? 'h264' : 'ivf', b64: btoa(bin) };
+}
+"""
+
+BENCH = """
+async () => {
+  const Fast = window.MediaYFast;
+  const choice = await Fast.chooseEncoderConfig({ W: 640, H: 360, fps: 30, codecs: ['vp09.00.10.08'], acceleration: ['no-preference'] });
+  return await Fast.benchmarkEncoder(choice, 12);
+}
+"""
+
+
+def main():
+    work = Path(tempfile.mkdtemp(prefix="mediay-fast-"))
+    try:
+        shutil.copy(ROOT / "mediay-fast.js", work / "mediay-fast.js")
+        (work / "index.html").write_text("<!doctype html><title>t</title>")
+        make_source(work / "a.mp4", 0)
+        make_source(work / "b.mp4", 1000)
+        make_source(work / "rot.mp4", 0, rot=90)
+
+        handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(work))
+        handler.log_message = lambda *a, **k: None
+        socketserver.TCPServer.allow_reuse_address = True
+        server = socketserver.TCPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://localhost:{server.server_address[1]}"
+
+        failures = []
+
+        def check(name, cond, detail=""):
+            print(("PASS " if cond else "FAIL ") + name + ("" if cond else f"  [{detail}]"))
+            if not cond:
+                failures.append(name)
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+            page = browser.new_page()
+            errors = []
+            page.on("pageerror", lambda e: errors.append(str(e)))
+            page.goto(base + "/index.html")
+            page.add_script_tag(url=base + "/mediay-fast.js")
+
+            def render(case_id, spec):
+                out = page.evaluate(HARNESS, spec)
+                output = work / f"{case_id}.h264" if spec.get("codec") == "h264" else work / f"{case_id}.ivf"
+                output.write_bytes(base64.b64decode(out["b64"]))
+                return out, output
+
+            def ids(output, w, h):
+                frames = decode_gray(output, w, h, "h264" if output.suffix == ".h264" else None)
+                return [barcode(f, w) for f in frames], frames
+
+            def clip(url, a, b, **kw):
+                return dict(url=f"{base}/{url}", **{"in": a, "out": b}, **kw)
+
+            # A. plain pass-through
+            out, ivf = render("A", dict(W=640, H=360, fps=30, clips=[clip("a.mp4", 0, 2)]))
+            got, _ = ids(ivf, 640, 360)
+            check("A: 2 s clip -> 60 frames in order", out["error"] is None and got == list(range(60)), f"{out['error']} {got[:6]}...{got[-3:]} n={len(got)}")
+            check("A: progress reaches 1", out["progress"] and out["progress"][-1] == 1, str(out["progress"][-2:]))
+
+            # B. trim
+            out, ivf = render("B", dict(W=640, H=360, fps=30, clips=[clip("a.mp4", 1.0, 2.0)]))
+            got, _ = ids(ivf, 640, 360)
+            check("B: trim 1.0-2.0 s -> source frames 30..59", got == list(range(30, 60)), f"{got}")
+
+            # C. 2x speed
+            out, ivf = render("C", dict(W=640, H=360, fps=30, clips=[clip("a.mp4", 0, 2, speed=2)]))
+            got, _ = ids(ivf, 640, 360)
+            check("C: 2x speed -> every 2nd frame, 30 frames", got == list(range(0, 60, 2)), f"{got}")
+
+            # D. half speed
+            out, ivf = render("D", dict(W=640, H=360, fps=30, clips=[clip("a.mp4", 0, 1, speed=0.5)]))
+            got, _ = ids(ivf, 640, 360)
+            check("D: 0.5x speed -> each frame twice, 60 frames", got == [k // 2 for k in range(60)], f"{got}")
+
+            # E. two clips from two files, one continuous stream
+            out, ivf = render("E", dict(W=640, H=360, fps=30, clips=[clip("a.mp4", 0, 1), clip("b.mp4", 1, 2)]))
+            got, _ = ids(ivf, 640, 360)
+            check("E: two clips join without gap or repeat", got == list(range(0, 30)) + list(range(1030, 1060)), f"{got}")
+            frames_total = out["result"]["frames"] if out["result"] else None
+            check("E: engine reports 60 frames", frames_total == 60, str(out["result"]))
+
+            # F. lower output frame rate
+            out, ivf = render("F", dict(W=640, H=360, fps=15, clips=[clip("a.mp4", 0, 2)]))
+            got, _ = ids(ivf, 640, 360)
+            check("F: 15 fps output from 30 fps source", got == list(range(0, 60, 2)), f"{got}")
+
+            # G. overlay window (timeline seconds 0.5 .. 1.0 inclusive -> frames 15..30)
+            out, ivf = render("G", dict(W=640, H=360, fps=30, clips=[clip("a.mp4", 0, 2)],
+                                        overlays=[dict(x=300, y=200, w=40, h=40, start=0.5, end=1.0)]))
+            _, frames = ids(ivf, 640, 360)
+            lit = [i for i, f in enumerate(frames) if mean(f, 640, 310, 210, 330, 230) > 200]
+            check("G: overlay visible exactly on frames 15..30", lit == list(range(15, 31)), f"{lit}")
+
+            # G2. overlay on the second clip uses TIMELINE time, not clip time
+            out, ivf = render("G2", dict(W=640, H=360, fps=30, clips=[clip("a.mp4", 0, 1), clip("b.mp4", 1, 2)],
+                                         overlays=[dict(x=300, y=200, w=40, h=40, start=1.5, end=1.8)]))
+            _, frames = ids(ivf, 640, 360)
+            lit = [i for i, f in enumerate(frames) if mean(f, 640, 310, 210, 330, 230) > 200]
+            check("G2: overlay timing continues across clips", lit == list(range(45, 55)), f"{lit}")
+
+            # H. letterbox: 640x360 into a 360x640 portrait frame
+            out, ivf = render("H", dict(W=360, H=640, fps=30, clips=[clip("a.mp4", 0, 1)]))
+            _, frames = ivf and ids(ivf, 360, 640)
+            f = frames[10]
+            top = mean(f, 360, 0, 10, 360, 100); mid = mean(f, 360, 0, 300, 360, 340)
+            check("H: letterbox bars are black, picture in the middle", top < 25 and mid > 25 and len(frames) == 30, f"top={top:.1f} mid={mid:.1f} n={len(frames)}")
+
+            # I. rotation: compare with ffmpeg's own auto-rotated decode of the same file
+            out, ivf = render("I", dict(W=360, H=640, fps=30, clips=[clip("rot.mp4", 0, 1)]))
+            _, ours = ids(ivf, 360, 640)
+            ref = decode_gray(work / "rot.mp4", 360, 640)
+            def diff(a, b):
+                return sum(abs(x - y) for x, y in zip(a[::7], b[::7])) / len(a[::7])
+            wrong = bytes(reversed(ref[10]))  # 180 degrees off
+            d_ok, d_bad = diff(ours[10][100 * 360:], ref[10][100 * 360:]), diff(ours[10][100 * 360:], wrong[100 * 360:])
+            check("I: 90-degree metadata is honoured (matches ffmpeg's autorotate)", d_ok < 12 and d_ok * 2 < d_bad and len(ref) >= 30, f"d_ok={d_ok:.1f} d_bad={d_bad:.1f}")
+
+            # J. fade in/out
+            out, ivf = render("J", dict(W=640, H=360, fps=30, clips=[clip("a.mp4", 0, 2, fade=True)]))
+            _, frames = ids(ivf, 640, 360)
+            first, middle, last = mean(frames[0], 640, 0, 100, 640, 360), mean(frames[30], 640, 0, 100, 640, 360), mean(frames[-1], 640, 0, 100, 640, 360)
+            check("J: fade starts and ends near black", first < middle * 0.4 and last < middle * 0.4, f"{first:.1f} {middle:.1f} {last:.1f}")
+
+            # K. cancel stops cleanly and fast
+            out, ivf = render("K", dict(W=640, H=360, fps=30, clips=[clip("a.mp4", 0, 3)], cancelAfter=10))
+            check("K: cancel is reported and does not hang", out["error"] and "cancel" in out["error"].lower(), str(out["error"]))
+
+            # L. self-test benchmark
+            bench = page.evaluate(BENCH)
+            check("L: encoder self-test reports a speed", bench["fps"] > 1, str(bench))
+            print(f"   (info) software VP9 encoder self-test here: {bench['fps']:.0f} fps at 640x360")
+
+            # M. Exercise the actual H.264 WebCodecs encoder and Annex B sink where Chromium supports it.
+            h264_out, h264_file = render("M", dict(W=640, H=360, fps=30, codec="h264", clips=[clip("a.mp4", 0, 2)]))
+            if h264_out["error"] and "no usable video encoder" in h264_out["error"]:
+                print("SKIP M: this Chromium build does not expose an H.264 WebCodecs encoder")
+            elif h264_out["error"] or not h264_out["result"]:
+                check("M: H.264 WebCodecs output is valid Annex B and preserves all 60 frames", False, h264_out["error"])
+            else:
+                h264_ids, _ = ids(h264_file, 640, 360)
+                check("M: H.264 WebCodecs output is valid Annex B and preserves all 60 frames",
+                      h264_out["result"]["frames"] == 60 and h264_ids == list(range(60)),
+                      f"frames={len(h264_ids)} ids={h264_ids[:8]}...{h264_ids[-4:]}")
+
+            # N. fractional clip lengths share one cumulative frame grid instead of rounding each clip up.
+            out, ivf = render("N", dict(W=640, H=360, fps=30,
+                                        clips=[clip("a.mp4", 0, 1.01), clip("b.mp4", 0, 1.01)]))
+            got, _ = ids(ivf, 640, 360)
+            expected = list(range(0, 30)) + list(range(1000, 1031))
+            check("N: fractional clips use cumulative frame boundaries (61 frames)",
+                  out["error"] is None and out["result"] and out["result"]["frames"] == 61 and got == expected,
+                  f"frames={len(got)} result={out['result']} ids={got[:5]}...{got[-5:]}")
+
+            check("no page errors", not errors, str(errors))
+            browser.close()
+        server.shutdown()
+        if failures:
+            print(f"\n{len(failures)} FAILED: {failures}")
+            sys.exit(1)
+        print("\nAll fast-export pipeline checks passed.")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================================================
+FILE: tests/history-autosave.test.js
+BLOB SHA: a8469fb03aa71b9a1ff31cc71ae2726d4461c9b8
+================================================================================
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const app = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+
+test('history autosave is debounced and reports storage failures without losing editor state', () => {
+  const start = app.indexOf('function scheduleProjectSave()');
+  const end = app.indexOf('function commit()', start);
+  assert.ok(start >= 0 && end > start, 'shared autosave helper must exist');
+  const helper = app.slice(start, end);
+  assert.match(helper, /clearTimeout\(saveTimer\)/);
+  assert.match(helper, /setTimeout\(/);
+  assert.match(helper, /\), 800\)/);
+  assert.match(helper, /saveProject\(\)\.catch/);
+  assert.match(helper, /Auto-save failed/);
+});
+
+test('normal edit commits schedule persistence and retain bounded undo history', () => {
+  const start = app.indexOf('function commit()');
+  const end = app.indexOf('function normalizeState', start);
+  assert.ok(start >= 0 && end > start);
+  const commit = app.slice(start, end);
+  assert.match(commit, /undoStack\.push\(snap\(\)\)/);
+  assert.match(commit, /undoStack\.length > 50/);
+  assert.match(commit, /redoStack = \[\]/);
+  assert.match(commit, /scheduleProjectSave\(\)/);
+});
+
+test('undo and redo schedule persistence only after the restored state is applied', () => {
+  const undoStart = app.indexOf("$('undoBtn').onclick");
+  const redoStart = app.indexOf("$('redoBtn').onclick", undoStart);
+  const saveStart = app.indexOf('async function saveProject()', redoStart);
+  assert.ok(undoStart >= 0 && redoStart > undoStart && saveStart > redoStart);
+  const undo = app.slice(undoStart, redoStart);
+  const redo = app.slice(redoStart, saveStart);
+  assert.match(undo, /await restore\(undoStack\[undoStack\.length - 1\]\)/);
+  assert.match(undo, /await restore[\s\S]*scheduleProjectSave\(\)/);
+  assert.match(redo, /await restore\(s\)/);
+  assert.match(redo, /await restore[\s\S]*scheduleProjectSave\(\)/);
+  assert.match(undo, /if \(undoStack\.length < 2\) return/);
+  assert.match(redo, /if \(!redoStack\.length\) return/);
+});
+
