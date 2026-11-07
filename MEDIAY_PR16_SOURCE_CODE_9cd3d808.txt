@@ -4964,3 +4964,1830 @@ Use these as behavior references, not as code to paste into MediaY:
 
 The product advantage should be predictability: frame-accurate, reversible edits with identical preview/export timing and an explicit answer to “which tracks will move?” before destructive timeline operations.
 
+
+
+================================================================================
+FILE: favicon.svg
+BLOB SHA: d5c75d2c065ffeef23263f30be734413179f4e2a
+================================================================================
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">MediaY Neon Aperture</title><desc id="desc">A geometric cyan and white Y surrounding a violet camera aperture, with cyan and violet editing timeline bars.</desc>
+<defs>
+ <linearGradient id="cyan" x1="16" y1="10" x2="55" y2="100" gradientUnits="userSpaceOnUse"><stop stop-color="#12F1F4"/><stop offset="1" stop-color="#168BFF"/></linearGradient>
+ <linearGradient id="violet" x1="50" y1="18" x2="108" y2="105" gradientUnits="userSpaceOnUse"><stop stop-color="#B58BFF"/><stop offset="1" stop-color="#713BDB"/></linearGradient>
+ <linearGradient id="white" x1="70" y1="10" x2="111" y2="67" gradientUnits="userSpaceOnUse"><stop stop-color="#FFFFFF"/><stop offset="1" stop-color="#C9D8F2"/></linearGradient>
+ <linearGradient id="stem" x1="52" y1="74" x2="76" y2="120" gradientUnits="userSpaceOnUse"><stop stop-color="#25EAF3"/><stop offset="1" stop-color="#178DFF"/></linearGradient>
+</defs>
+<g stroke-linejoin="round">
+ <!-- Y arms -->
+ <path d="M13 12H34L54 45L45 58L27 37Z" fill="url(#cyan)"/>
+ <path d="M115 12H94L74 45L83 58L101 37Z" fill="url(#white)"/>
+ <!-- segmented left arm -->
+ <path d="M21 25H37L42 32H25Z M29 38H45L49 45H33Z" fill="#071321" opacity=".9"/>
+ <!-- Aperture ring and six blades -->
+ <circle cx="64" cy="51" r="25" fill="#11112D" stroke="#8B5CF6" stroke-width="4"/>
+ <circle cx="64" cy="51" r="19.5" fill="#0B1222" stroke="#20DDF4" stroke-width="1.5"/>
+ <path d="M64 32L77 39L73 53L60 55L52 43Z" fill="#13DCEB"/>
+ <path d="M77 39L83 52L73 64L65 54L73 53Z" fill="#8B5CF6"/>
+ <path d="M83 52L77 66L62 70L64 56L73 64Z" fill="#6C43D5"/>
+ <path d="M77 66L63 70L51 62L62 53L62 70Z" fill="#18A9FF"/>
+ <path d="M51 62L45 49L52 36L62 48L62 53Z" fill="#22E5ED"/>
+ <path d="M45 49L52 36L64 32L62 48L52 53Z" fill="#327CF5"/>
+ <circle cx="64" cy="51" r="5" fill="#0A1220"/>
+ <!-- Y stem -->
+ <path d="M49 72L64 78L79 72L75 120H53Z" fill="url(#stem)"/>
+ <path d="M64 78V119" stroke="#D8FFFF" stroke-width="2" opacity=".75"/>
+ <!-- timeline/editing rails -->
+ <path d="M9 91H43V98H9Z M9 104H43V108H9Z" fill="#10DDEB"/>
+ <path d="M85 91H119V98H85Z M85 104H119V108H85Z" fill="#8B5CF6"/>
+ <path d="M48 91H55V98H48Z M73 91H80V98H73Z" fill="#B58BFF"/>
+</g>
+</svg>
+
+
+================================================================================
+FILE: ffmpeg-worker-smoke.html
+BLOB SHA: 8aed7f17b54ea7eb6dc359bdd68ea5b2c2708cd0
+================================================================================
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MediaY FFmpeg Worker Smoke Test</title>
+  <script src="./vendor/ffmpeg/ffmpeg.js"></script>
+</head>
+<body>
+  <h1>MediaY FFmpeg worker integration test</h1>
+  <p id="stage">Starting…</p>
+  <pre id="log"></pre>
+  <script>
+  (async () => {
+    const stage = document.querySelector('#stage');
+    const log = document.querySelector('#log');
+    const write = (message) => { stage.textContent = message; log.textContent += message + '\n'; };
+    let ff;
+    try {
+      if (!window.FFmpegWASM || !FFmpegWASM.FFmpeg) throw new Error('Local FFmpeg wrapper did not expose FFmpegWASM.FFmpeg.');
+      const base = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd/';
+      const objectUrls = [];
+      const remoteBlobURL = async (url, mime) => {
+        write('Downloading ' + url.split('/').pop() + '…');
+        const response = await fetch(url, { mode: 'cors', cache: 'force-cache' });
+        if (!response.ok) throw new Error('HTTP ' + response.status + ' loading ' + url);
+        const objectURL = URL.createObjectURL(new Blob([await response.blob()], {type:mime}));
+        objectUrls.push(objectURL);
+        return objectURL;
+      };
+      ff = new FFmpegWASM.FFmpeg();
+      ff.on('log', ({message}) => { if (/error|failed|invalid/i.test(message || '')) log.textContent += String(message) + '\n'; });
+      const coreURL = await remoteBlobURL(base + 'ffmpeg-core.js', 'text/javascript');
+      const wasmURL = await remoteBlobURL(base + 'ffmpeg-core.wasm', 'application/wasm');
+      write('Starting local same-origin worker…');
+      await ff.load({coreURL, wasmURL});
+      if (!ff.loaded) throw new Error('FFmpeg load resolved but the worker is not marked loaded.');
+      write('Rendering a small test MP4…');
+      const code = await ff.exec(['-f','lavfi','-i','color=c=red:s=64x64:r=10:d=0.5','-frames:v','5','-c:v','libx264','-pix_fmt','yuv420p','smoke.mp4']);
+      if (code !== 0) throw new Error('FFmpeg exited with code ' + code);
+      const output = await ff.readFile('smoke.mp4');
+      if (!output || output.length < 100) throw new Error('FFmpeg returned an empty MP4.');
+
+      // Regression test for the exact phone failure: shorthand d=.4 is rejected by this core.
+      write('Testing fade and Adjust filter chain…');
+      const filters = "fps=10,eq=brightness=0.12:contrast=1.2:saturation=1.35,curves=all='0/0 0.25/0.28 0.5/0.5 0.75/0.78 1/1',unsharp=5:5:1.0:5:5:0.0,noise=alls=5:allf=t+u,fade=type=in:duration=0.2,fade=type=out:start_time=0.3:duration=0.2";
+      const effectCode = await ff.exec(['-f','lavfi','-i','color=c=red:s=64x64:r=10:d=0.5','-vf',filters,'-frames:v','5','-c:v','libx264','-pix_fmt','yuv420p','effects-smoke.mp4']);
+      if (effectCode !== 0) throw new Error('FFmpeg could not encode fade + Adjust filter chain (code ' + effectCode + ').');
+      const effects = await ff.readFile('effects-smoke.mp4');
+      if (!effects || effects.length < 100) throw new Error('FFmpeg returned an empty adjusted/faded MP4.');
+
+      write('Testing alpha-masked blend mode…');
+      const canvas = document.createElement('canvas');
+      canvas.width = 64; canvas.height = 64;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = 'rgba(0,255,0,0.5)'; ctx.fillRect(16,16,32,32);
+      const png = await new Promise(resolve => canvas.toBlob(resolve,'image/png'));
+      await ff.writeFile('blend-overlay.png', new Uint8Array(await png.arrayBuffer()));
+      const blendGraph = "[0:v]format=yuv444p,split[baseKeep][baseBlend];[1:v]scale=64:64,format=rgba,split[overlayColor][overlayAlpha];[overlayColor]format=yuv444p[overlayYuv];[baseBlend][overlayYuv]blend=all_mode=multiply:all_opacity=1[blendFrame];[overlayAlpha]alphaextract,format=yuv444p,geq=lum='(lum(X,Y)-16)*255/219':cb='(lum(X,Y)-16)*255/219':cr='(lum(X,Y)-16)*255/219'[blendMask];[baseKeep][blendFrame][blendMask]maskedmerge=enable='between(t,0,0.5)'[out]";
+      const blendCode = await ff.exec(['-f','lavfi','-i','color=c=red:s=64x64:r=10:d=0.5','-i','blend-overlay.png','-filter_complex',blendGraph,'-map','[out]','-c:v','libx264','-pix_fmt','yuv420p','-t','0.5','blend-smoke.mp4']);
+      if (blendCode !== 0) throw new Error('FFmpeg could not render the masked overlay blend mode (code ' + blendCode + ').');
+      const blendOut = await ff.readFile('blend-smoke.mp4');
+      if (!blendOut || blendOut.length < 100) throw new Error('FFmpeg returned an empty blended MP4.');
+      window.testResult = {ok:true, bytes:output.length, adjustedBytes:effects.length, blendedBytes:blendOut.length, message:'same-origin worker encoded MP4, fade/Adjust effects, and alpha-masked blend'};
+      write('PASS — encoded base, fade/Adjust, and blend test videos.');
+      ff.terminate();
+      objectUrls.forEach(URL.revokeObjectURL);
+    } catch (error) {
+      window.testResult = {ok:false, error:String(error && error.message || error), stack:String(error && error.stack || '')};
+      write('FAIL — ' + window.testResult.error);
+      try { if (ff) ff.terminate(); } catch (_) {}
+    }
+  })();
+  </script>
+</body>
+</html>
+
+
+
+================================================================================
+FILE: index.html
+BLOB SHA: 5a9da196b79e07d4cee5fb5395461a47a7c740ec
+================================================================================
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#080D18">
+  <meta name="description" content="MediaY — a focused video studio for editing on your device.">
+  <title>MediaY — Video Studio</title>
+  <link rel="manifest" href="./manifest.json">
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./setup.css">
+  <script src="./vendor/media-libraries/fabric.min.js" integrity="sha256-uwRC1ppNRnMyD2ibxuFsBaDj8WzPv1UfOU2Qp+fPx3I=" crossorigin="anonymous"></script>
+  <script src="./vendor/media-libraries/anime.min.js" integrity="sha256-tc4b48P1MPGS4PJXHRlChGCW1mEZy62jS/3JEsSHPzU=" crossorigin="anonymous"></script>
+  <script src="./vendor/media-libraries/dexie.min.js" integrity="sha256-2JhqFVK0mn2MsIWpLGaYWuvzuzO2Stb3uu0kYdm2R/8=" crossorigin="anonymous"></script>
+  <script src="./vendor/ffmpeg/ffmpeg.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <button id="homeBtn" class="home-nav" type="button" aria-label="Open project home">⌂ <span>Home</span></button>
+    <div class="brand"><span class="brand-icon"><img class="brand-mark" src="./favicon.svg" alt="" aria-hidden="true"></span><span class="brand-lockup"><strong class="brand-text">MediaY</strong><small>VIDEO STUDIO</small></span></div>
+    <select id="aspectRatio" aria-label="Aspect ratio">
+      <option value="9:16">9:16</option><option value="16:9">16:9</option><option value="1:1">1:1</option>
+    </select>
+    <button id="tplBtn">Templates</button>
+    <button id="saveBtn">Save</button>
+    <button id="exportBtn" class="primary">Export</button>
+  </header>
+
+  <main>
+    <div class="stage">
+      <div id="emptyState">
+        <div class="empty-logo"><img src="./favicon.svg" alt="" aria-hidden="true"></div>
+        <h1>What are you making?</h1>
+        <label for="mediaInput" class="primary import-label">Import media</label>
+        <small class="muted">You can pick several videos at once.</small>
+        <button id="tplStart" class="wide-btn">Use my template</button>
+        <a href="./legal.html">Terms, privacy &amp; licenses</a>
+      </div>
+      <div id="previewFrame" class="preview-frame">
+        <video id="sourceVideo" playsinline preload="metadata"></video>
+        <canvas id="overlayCanvas"></canvas>
+        
+      </div>
+    </div>
+    <input id="tplInput" type="file" accept="video/*" multiple hidden>
+    <input id="repInput" type="file" hidden>
+    <input id="mediaInput" type="file" accept="video/*,image/*,audio/*" multiple hidden>
+    <p id="status" role="status">Ready to create.</p>
+
+    <section class="transport">
+      <div class="nav"><button id="toStart" aria-label="Go to start">⏮</button><button id="playBtn" class="play-button" aria-label="Play">▶</button><button id="toEnd" aria-label="Go to end">⏭</button></div>
+      <span id="timeDisplay">00:00 / 00:00</span>
+      <div class="history"><button id="undoBtn" aria-label="Undo">↶</button><button id="redoBtn" aria-label="Redo">↷</button></div>
+    </section>
+    <div id="tipBar" class="tip"><span id="tip"></span><button id="tipOff">Got it</button></div>
+    <section class="timeline">
+      <div class="timeline-tools" role="toolbar" aria-label="Timeline tools">
+        <span class="timeline-tools-title">TIMELINE</span>
+        <div class="timeline-zoom" aria-label="Timeline zoom controls">
+          <button id="tlZoomOut" type="button" aria-label="Zoom out timeline" title="Zoom out">−</button>
+          <input id="tlZoom" type="range" min="6" max="90" step="3" value="30" aria-label="Timeline zoom">
+          <button id="tlZoomIn" type="button" aria-label="Zoom in timeline" title="Zoom in">+</button>
+          <button id="tlZoomFit" type="button" aria-label="Fit timeline" title="Fit timeline">Fit</button>
+          <span id="tlZoomLabel" aria-live="polite">1.0×</span>
+        </div>
+        <button id="copyTillBtn" type="button" title="Repeat the selected item from its end to the playhead" aria-label="Copy the selected item until the playhead" disabled>Copy till here</button>
+      </div>
+      <div id="tl"><div class="pad"></div><div id="tlInner"></div><div class="pad"></div></div>
+      <i class="cursor"></i>
+      <button id="addClip" aria-label="Add media">＋</button>
+      <input id="playhead" type="range" min="0" max="1000" value="0" hidden>
+    </section>
+  </main>
+
+  <div id="sheet" class="sheet" hidden>
+    <div class="sheet-head"><span data-pane="fx">Filters</span><span data-pane="adjust" hidden>Adjust</span><span data-pane="blend" hidden>Blending</span><span data-pane="text" hidden>Text</span><span data-pane="export" hidden>Export</span><span data-pane="speed" hidden>Speed</span><span data-pane="vol" hidden>Volume</span><span data-pane="tr" hidden>Transition</span><span data-pane="cap" hidden>Auto captions</span><span data-pane="tpl" hidden>Templates</span><span data-pane="key" hidden>Chroma key</span><button id="sheetClose" aria-label="Close">✕</button></div>
+    <div data-pane="fx"><div id="fxList" class="chips"></div></div>
+    <div data-pane="adjust" hidden>
+      <button id="adjustApplyAll" class="apply-all" type="button">▱ Apply to all</button>
+      <div id="adjustControls" class="adjust-grid">
+        <label class="adjust-control"><span>Brightness <output id="adjustValBrightness">0</output></span><input type="range" min="-100" max="100" step="1" value="0" data-adjust="brightness"></label>
+        <label class="adjust-control"><span>Contrast <output id="adjustValContrast">100%</output></span><input type="range" min="0" max="200" step="1" value="100" data-adjust="contrast"></label>
+        <label class="adjust-control"><span>Saturation <output id="adjustValSaturation">100%</output></span><input type="range" min="0" max="200" step="1" value="100" data-adjust="saturation"></label>
+        <label class="adjust-control"><span>Sharpen <output id="adjustValSharpen">0</output></span><input type="range" min="0" max="100" step="1" value="0" data-adjust="sharpen"></label>
+        <label class="adjust-control"><span>Highlights <output id="adjustValHighlights">0</output></span><input type="range" min="-100" max="100" step="1" value="0" data-adjust="highlights"></label>
+        <label class="adjust-control"><span>Shadows <output id="adjustValShadows">0</output></span><input type="range" min="-100" max="100" step="1" value="0" data-adjust="shadows"></label>
+        <label class="adjust-control"><span>Grain <output id="adjustValGrain">0</output></span><input type="range" min="0" max="100" step="1" value="0" data-adjust="grain"></label>
+      </div>
+      <p class="lbl">Adjustments update the preview where supported and are rendered during export. Use Apply to all to copy these settings to every video clip.</p>
+    </div>
+    <div data-pane="blend" hidden>
+      <button id="blendApplyAll" class="apply-all" type="button">▱ Apply to all</button>
+      <label class="adjust-control blend-opacity"><span>Opacity <output id="blendOpacityLabel">100%</output></span><input id="blendOpacity" type="range" min="0" max="100" step="1" value="100"></label>
+      <p class="lbl">Blending mode</p>
+      <div id="blendModes" class="pills blend-modes"></div>
+      <p class="lbl">Blend modes and opacity are included in the exported video for picture overlays.</p>
+    </div>
+    <div data-pane="export" hidden>
+      <p class="lbl">Quality: 1080p is best for YouTube. 2K and 4K are very heavy for a phone, so the app drops to 1080p if it runs out of memory</p><div id="resList" class="pills"></div>
+      <p class="lbl">Frames per second</p><div id="fpsList" class="pills"></div>
+      <button id="fastExportBtn" class="wide" type="button">⚡ Fast draft — 480p / 24 fps</button>
+      <p class="lbl">Fast draft prioritizes speed for review copies. Choose a higher resolution or frame rate for your final export.</p>
+      <label class="lbl" style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" id="useDeviceEncoder" checked><span>Use this phone’s video encoder when supported. Turn off to always use the standard encoder.</span></label>
+      <button id="goExport" class="primary wide">Export video</button>
+      <details class="perf-tools">
+        <summary>Performance diagnostics</summary>
+        <p class="lbl">Reports separate initialization, encoding, transitions, audio mixing, save, model load, audio decode, and inference time. Copy this report when reporting a slowdown.</p>
+        <button id="copyPerfReport" class="wide" type="button">Copy performance report</button>
+        <pre id="perfReport" class="perf-report" aria-live="polite">No diagnostics yet. Run an export or generate captions to record stage timings on this device.</pre>
+      </details>
+          <p class="lbl">Android exports use an ongoing foreground-service notification so rendering can continue when you switch apps. Device power settings may still interrupt processing; return to MediaY if progress pauses. In browser builds, keep this tab open.</p>
+    </div>
+    <div data-pane="key" hidden>
+      <div id="keyColors" class="pills"><button data-c="#00ff00">Green</button><button data-c="#0000ff">Blue</button><button data-c="off">Off</button></div>
+      <label class="chk">Other color <input id="keyCol" type="color" value="#00ff00"></label>
+      <p class="lbl">Strength: how much of that color to remove</p>
+      <input id="keySim" class="rng" type="range" min="0" max="100" value="50">
+      <p class="lbl">Edge softness (used in the exported video)</p>
+      <input id="keySoft" class="rng" type="range" min="0" max="100" value="20">
+      <p class="lbl">Put your green-screen video on the Overlay layer, resize it, and it plays over the main video.</p>
+    </div>
+    <div data-pane="tpl" hidden>
+      <div id="tplList"></div>
+      <p class="lbl">Save this project as a template</p>
+      <input id="tplName" type="text" maxlength="40" placeholder="Template name, e.g. Evening News">
+      <p class="lbl">Which clip is the news video? It is swapped each time you use the template.</p>
+      <select id="tplSlot" aria-label="News video clip"></select>
+      <button id="tplSave" class="primary wide">Save template</button>
+    </div>
+    <div data-pane="cap" hidden>
+      <select id="capLang" aria-label="Spoken language"></select>
+      <label class="chk"><input type="checkbox" id="capTr"> Translate speech to English</label>
+      <button id="capGo" class="primary wide">Generate captions</button>
+      <button id="capCancelBtn" class="wide" type="button" hidden>Request cancellation</button>
+      <p class="lbl">Speech is processed in 30-second chunks with progress. Cancelling before completion leaves the project unchanged. The model (about 40 MB) downloads on the first run.</p>
+      <p class="lbl">Long or high-resolution videos can still take time to decode. The model is cached by the browser when supported.</p>
+    </div>
+    <div data-pane="tr" hidden>
+      <p class="lbl">Choose a transition for the cut before this clip. Includes the full built-in FFmpeg transition set.</p>
+      <div id="trList" class="pills"></div>
+      <div class="tr-duration"><label for="trDuration">Duration <b id="trDurationLabel">0.5 s</b></label><input id="trDuration" class="rng" type="range" min="0.2" max="1.5" step="0.1" value="0.5"></div>
+      <section class="tr-preview" aria-label="Transition visual preview">
+        <div id="trPreviewStage" class="tr-preview-stage">
+          <video id="trPreviewBefore" muted playsinline preload="metadata" aria-label="Previous clip preview"></video>
+          <video id="trPreviewAfter" muted playsinline preload="metadata" aria-label="Incoming clip preview"></video>
+          <div id="trPreviewEmpty" class="tr-preview-empty">Select the second clip and choose a transition above.</div>
+        </div>
+        <button id="trPreviewPlay" class="wide" type="button" disabled>Preview selected transition</button>
+        <p id="trPreviewStatus" class="lbl" aria-live="polite">Choose a transition to see an animated preview using your clips.</p>
+      </section>
+      <p class="lbl">The preview shows the selected transition with your clips. Complex FFmpeg effects may look slightly different in the exported MP4.</p>
+    </div>
+    <div data-pane="vol" hidden>
+      <input id="volRange" type="range" min="0" max="200" value="100" aria-label="Volume">
+      <p id="volLbl" class="lbl">100%</p>
+      <button id="muteBtn" class="wide">Mute clip</button>
+    </div>
+    <div data-pane="speed" hidden>
+      <div id="speedList" class="pills"></div>
+      <button id="revBtn" class="wide">⟲ Reverse clip</button>
+    </div>
+    <div data-pane="text" hidden>
+      <input id="textInput" type="text" maxlength="200" placeholder="Type your caption">
+      <div id="styleList" class="pills"></div>
+      <button id="addText" class="primary wide">Add to video</button>
+    </div>
+  </div>
+
+  <nav id="dockMain" class="dock" aria-label="Add to your video">
+    <button id="importBtn"><i data-lucide="image-plus"></i>Media</button>
+    <button id="repMain"><i data-lucide="replace"></i>Replace</button>
+    <button id="audioBtn"><i data-lucide="music"></i>Audio</button>
+    <button id="voiceBtn"><i data-lucide="mic"></i>Voice</button>
+    <button id="textBtn" data-sheet="text"><i data-lucide="type"></i>Text</button>
+    <button id="capBtn" data-sheet="cap"><i data-lucide="captions"></i>Captions</button>
+    <button id="pipBtn"><i data-lucide="layers"></i>Overlay</button>
+  </nav>
+  <nav id="dockEdit" class="dock" aria-label="Edit the selected clip" hidden>
+    <button id="doneBtn"><i data-lucide="check"></i>Done</button>
+    <button id="splitBtn" data-for="main"><i data-lucide="scissors"></i>Split</button>
+    <button id="trimStartBtn" data-for="main audio overlay" title="Keep the selected clip from the playhead through its end"><i data-lucide="skip-back"></i>From here</button>
+    <button id="trimEndBtn" data-for="main audio overlay" title="Keep the selected clip from its start up to the playhead"><i data-lucide="skip-forward"></i>To here</button>
+    <button id="speedBtn" data-sheet="speed" data-for="main"><i data-lucide="gauge"></i>Speed</button>
+    <button id="volBtn" data-sheet="vol" data-for="main audio"><i data-lucide="volume-2"></i>Volume</button>
+    <button id="fxBtn" data-sheet="fx" data-for="main"><i data-lucide="palette"></i>Filters</button>
+    <button id="adjustBtn" data-sheet="adjust" data-for="main"><i data-lucide="sliders-horizontal"></i>Adjust</button>
+    <button id="blendBtn" data-sheet="blend" data-for="overlay"><i data-lucide="blend"></i>Blending</button>
+    <button id="fadeBtn" data-for="main audio"><i data-lucide="blend"></i>Fade</button>
+    <button id="trBtn" data-sheet="tr" data-for="main"><i data-lucide="arrow-left-right"></i>Transition</button>
+    <button id="styleBtn" data-sheet="text" data-for="overlay"><i data-lucide="type"></i>Edit text</button>
+    <button id="keyBtn" data-sheet="key" data-for="overlay"><i data-lucide="palette"></i>Chroma key</button>
+    <button id="fitBtn" data-for="overlay audio"><i data-lucide="move-horizontal"></i>Whole video</button>
+    <button id="replBtn" data-for="main audio overlay"><i data-lucide="replace"></i>Replace</button>
+    <button id="deleteBtn" data-for="main audio overlay"><i data-lucide="trash-2"></i>Delete</button>
+  </nav>
+
+  <dialog id="consentDialog" aria-labelledby="consentTitle">
+    <h2 id="consentTitle">Before you start</h2>
+    <ul>
+      <li>Only edit photos, videos, music and fonts you own or have permission to use.</li>
+      <li>Your media and projects stay on this device. Nothing is uploaded.</li>
+      <li>The app is provided “as is”, without warranty. Keep a copy of videos you export.</li>
+    </ul>
+    <p><a href="./legal.html">Read the terms, privacy policy and licenses</a></p>
+    <button id="consentBtn" class="primary">I agree and continue</button>
+  </dialog>
+
+  <div id="busyOverlay" class="busy-overlay" role="dialog" aria-modal="true" aria-labelledby="busyTitle" aria-describedby="busyDetail" hidden>
+    <div class="busy-card">
+      <div class="busy-symbol" aria-hidden="true"><span class="busy-spinner"></span></div>
+      <p class="busy-eyebrow">MEDIAY WORKSPACE</p>
+      <h2 id="busyTitle">Working on your video…</h2>
+      <p id="busyDetail">Please keep this tab open while the task finishes.</p>
+      <progress id="busyProgress" max="100"></progress>
+      <div class="busy-footer"><span id="busyStage">Processing</span><span id="busyPercent"></span></div>
+      <button id="busyCancel" class="busy-cancel" type="button" hidden>Request cancellation</button>
+      <button id="busyDismiss" class="busy-dismiss" type="button" hidden>Close</button>
+    </div>
+  </div>
+
+  <script src="./mediay-icons.js"></script>
+  <script src="./mediay-core.js"></script>
+  <script src="./mediay-fast.js"></script>
+  <script src="./app.js"></script>
+  <script src="./setup.js"></script>
+  <script>if (window.MediaYIcons) MediaYIcons.render(document);</script>
+</body>
+</html>
+
+
+
+================================================================================
+FILE: legal.html
+BLOB SHA: 06802130f5293f571e79b574fdba8860762e4a9e
+================================================================================
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#EDF6FA">
+  <title>Terms, Privacy and Licenses — ProjectMedia Y</title>
+  <style>
+    :root { color-scheme:light; --bg:#edf6fa; --panel:#f9fcfd; --text:#193448; --muted:#536d7d; --border:#cfdee6; --accent:#1e668c; }
+    body { margin:0; background:var(--bg); color:var(--text); font:16px/1.6 "Avenir Next",Avenir,"Segoe UI",system-ui,sans-serif; }
+    main { max-width:680px; margin:auto; padding:20px 18px 48px; }
+    h1 { font-size:24px; margin:8px 0 4px; } h2 { font-size:19px; margin:32px 0 8px; padding-top:8px; border-top:1px solid var(--border); }
+    h3 { font-size:16px; margin:18px 0 4px; } p,li { color:var(--muted); } a { color:var(--accent); }
+    .meta { color:var(--muted); font-size:14px; } table { width:100%; border-collapse:collapse; font-size:14px; display:block; overflow-x:auto; background:var(--panel); }
+    th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
+  </style>
+</head>
+<body>
+<main>
+  <p><a href="./index.html">← Back to the app</a></p>
+  <h1>Terms, Privacy and Licenses</h1>
+  <p class="meta">ProjectMedia Y · Last updated October 19, 2026</p>
+
+  <h2>1. Terms of use</h2>
+  <p>By using ProjectMedia Y (“the app”) you agree to these terms. If you don’t agree, please don’t use the app.</p>
+  <h3>Your media is your responsibility</h3>
+  <p>Only import, edit and export photos, videos, music, fonts and other material that you own or have permission to use. You are responsible for what you create and share, including respecting copyright, trademark, privacy and publicity rights of others. Do not use the app to make content that is illegal, harassing, hateful, sexually exploits minors, or that impersonates a real person in a misleading or harmful way.</p>
+  <h3>No warranty</h3>
+  <p>The app is provided “as is” and “as available”, without warranties of any kind, express or implied, including fitness for a particular purpose and non-infringement. Video editing is demanding on phones, and the app may crash, run slowly or produce unexpected results.</p>
+  <h3>Limit of liability</h3>
+  <p>To the fullest extent permitted by law, the developer is not liable for any indirect, incidental or consequential damages, or for lost data, lost projects or lost profits arising from your use of the app. Projects are stored only in your browser or app storage and can be lost if you clear site data or uninstall the app, so keep a copy of anything important.</p>
+  <h3>Changes</h3>
+  <p>These terms may be updated. The date above shows the latest version. Nothing in these terms limits rights you have under consumer law that cannot be excluded.</p>
+
+  <h2>2. Privacy policy</h2>
+  <p><b>Short version:</b> the app has no accounts, no ads, no analytics and no servers that receive your media. Your videos stay on your device.</p>
+  <h3>What stays on your device</h3>
+  <p>Media you choose and your project data are saved in your browser’s local storage (IndexedDB) on your device. They are never uploaded to the developer. Exporting happens on your device. The app only reads files you pick yourself.</p>
+  <h3>What the app does not collect</h3>
+  <p>The developer does not collect your name, email, location, contacts, advertising ID or usage statistics. The microphone is used only while you record a voice-over; the recording is saved on your device and is not uploaded. Templates you save also stay on your device.</p>
+  <h3>Third-party services that see your IP address</h3>
+  <p>To start, the app downloads code and fonts from public content delivery networks: cdnjs.cloudflare.com, unpkg.com, cdn.jsdelivr.net, fonts.googleapis.com and fonts.gstatic.com. If you use Auto captions, the app also downloads a speech model once from huggingface.co and its content network; your audio is processed on your device and is not uploaded. The web version is also hosted on GitHub Pages. These providers can see your IP address and basic device information when your device requests files, under their own privacy policies.</p>
+  <h3>Deleting your data</h3>
+  <p>Clear the site data for this app in your browser, or uninstall the Android app, to remove saved projects and media.</p>
+  <h3>Children</h3>
+  <p>The app is not directed at children. A parent or guardian should supervise use by minors.</p>
+
+  <h2>3. Copyright complaints</h2>
+  <p>The app does not host, publish or share user content, so it has no content to remove. If you believe the app itself copies your work, open an issue at <a href="https://github.com/kxzyte01-cloud/Media-Y/issues">github.com/kxzyte01-cloud/Media-Y/issues</a> and describe what you found.</p>
+
+  <h2>4. Open-source licenses</h2>
+  <p>The source code of ProjectMedia Y is available at <a href="https://github.com/kxzyte01-cloud/Media-Y">github.com/kxzyte01-cloud/Media-Y</a> under the license shown in that repository. The app uses these third-party components, each under its own license:</p>
+  <table>
+    <tr><th>Component</th><th>License</th></tr>
+    <tr><td>Fabric.js</td><td>MIT</td></tr>
+    <tr><td>Anime.js</td><td>MIT</td></tr>
+    <tr><td>Dexie.js</td><td>Apache License 2.0</td></tr>
+    <tr><td>MediaY original SVG icons</td><td>Original in-project artwork</td></tr>
+    <tr><td>FFmpeg.wasm wrapper (@ffmpeg/ffmpeg, @ffmpeg/util)</td><td>MIT</td></tr>
+    <tr><td>FFmpeg.wasm core (@ffmpeg/core), loaded when you export</td><td>FFmpeg and its libraries, including x264, under GPL version 2 or later. Source: <a href="https://ffmpeg.org/download.html">ffmpeg.org</a> and <a href="https://github.com/ffmpegwasm/ffmpeg.wasm-core">ffmpeg.wasm-core</a></td></tr>
+    <tr><td>Transformers.js (@xenova/transformers) and ONNX Runtime Web, used for Auto captions</td><td>Apache License 2.0 and MIT</td></tr>
+    <tr><td>Whisper speech model (OpenAI), ONNX conversion by Xenova</td><td>MIT</td></tr>
+    
+    <tr><td>Capacitor (Android app wrapper)</td><td>MIT</td></tr>
+  </table>
+  <p>“FFmpeg” is a trademark of Fabrice Bellard. All other names and trademarks belong to their owners. ProjectMedia Y is not affiliated with or endorsed by them.</p>
+</main>
+</body>
+</html>
+
+
+
+================================================================================
+FILE: make_icons.py
+BLOB SHA: 9792d7edbb0769cfb6b23daa6a8e33adcc3a53ed
+================================================================================
+#!/usr/bin/env python3
+"""Generate MediaY launcher icons from the selected Neon Aperture Y mark."""
+import glob
+import os
+import re
+import sys
+from PIL import Image, ImageDraw
+
+BACKGROUND = (8, 13, 24, 255)
+CYAN = (0, 231, 242, 255)
+BLUE = (22, 139, 255, 255)
+VIOLET = (139, 92, 246, 255)
+WHITE = (243, 247, 255, 255)
+
+
+def render_icon(size: int, maskable: bool = False) -> Image.Image:
+    scale = 4
+    side = size * scale
+    image = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image, "RGBA")
+    pad = 0 if maskable else int(side * .035)
+    radius = 0 if maskable else int(side * .22)
+    draw.rounded_rectangle((pad, pad, side-pad-1, side-pad-1), radius=radius, fill=BACKGROUND)
+    if not maskable:
+        draw.rounded_rectangle((pad+2, pad+2, side-pad-3, side-pad-3),
+                               radius=max(1, radius-2), outline=CYAN, width=max(2, side//180))
+    # Leave safe space for Android's adaptive-icon mask.
+    factor = .78 if maskable else .88
+    def p(x, y):
+        x = 64 + (x-64)*factor
+        y = 64 + (y-64)*factor
+        return (int(x/128*side), int(y/128*side))
+    def poly(points, fill, outline=None):
+        draw.polygon([p(x,y) for x,y in points], fill=fill, outline=outline)
+    # Y arms: cyan left and porcelain-white right.
+    poly([(13,12),(36,12),(58,49),(48,62),(27,38)], CYAN)
+    poly([(115,12),(92,12),(70,49),(80,62),(101,38)], WHITE)
+    # Segmented cuts on the left arm.
+    poly([(20,25),(38,25),(42,32),(24,32)], BACKGROUND)
+    poly([(28,39),(46,39),(50,46),(32,46)], BACKGROUND)
+    # Circular camera aperture with violet ring and cyan inner edge.
+    cx, cy = p(64,52)
+    rad = int(26/128*side*factor)
+    draw.ellipse((cx-rad,cy-rad,cx+rad,cy+rad), fill=(15,18,43,255), outline=VIOLET, width=max(3,side//42))
+    inner = int(20/128*side*factor)
+    draw.ellipse((cx-inner,cy-inner,cx+inner,cy+inner), outline=CYAN, width=max(2,side//100))
+    # Six shutter blades, all meeting around a small dark iris.
+    poly([(64,32),(79,40),(75,54),(62,56),(52,43)], CYAN)
+    poly([(79,40),(85,53),(75,66),(65,55),(75,54)], VIOLET)
+    poly([(85,53),(78,68),(63,72),(64,57),(75,66)], (105,65,210,255))
+    poly([(78,68),(63,72),(50,63),(62,54),(63,72)], BLUE)
+    poly([(50,63),(44,50),(52,37),(62,49),(62,54)], CYAN)
+    poly([(44,50),(52,37),(64,32),(62,49),(52,54)], (47,124,245,255))
+    iris = int(5/128*side*factor)
+    draw.ellipse((cx-iris,cy-iris,cx+iris,cy+iris), fill=BACKGROUND)
+    # Stem and restrained timeline tracks.
+    poly([(49,73),(64,79),(79,73),(75,120),(53,120)], BLUE)
+    draw.line([p(64,80),p(64,119)], fill=WHITE, width=max(2,side//150))
+    poly([(8,92),(42,92),(42,99),(8,99)], CYAN)
+    poly([(8,105),(42,105),(42,109),(8,109)], BLUE)
+    poly([(86,92),(120,92),(120,99),(86,99)], VIOLET)
+    poly([(86,105),(120,105),(120,109),(86,109)], (105,65,210,255))
+    return image.resize((size,size), Image.Resampling.LANCZOS)
+
+
+def create():
+    render_icon(192).save("icon-192.png", "PNG", optimize=True)
+    render_icon(512).save("icon-512.png", "PNG", optimize=True)
+    render_icon(512, maskable=True).save("icon-maskable-512.png", "PNG", optimize=True)
+    print("Generated selected MediaY Neon Aperture icons.")
+
+
+def apply():
+    resources = "android/app/src/main/res"
+    for path in glob.glob(resources + "/mipmap-*/ic_launcher*.png"):
+        foreground = "foreground" in os.path.basename(path)
+        source = "icon-maskable-512.png" if foreground else "icon-512.png"
+        with Image.open(source) as icon:
+            size = Image.open(path).size
+            icon.convert("RGBA").resize(size, Image.Resampling.LANCZOS).save(path)
+    for path in glob.glob(resources + "/drawable*/splash.png"):
+        with Image.open(path) as old:
+            width, height = old.size
+        image = Image.new("RGBA", (width, height), BACKGROUND)
+        side = int(min(width, height) * .4)
+        with Image.open("icon-512.png") as icon:
+            logo = icon.convert("RGBA").resize((side, side), Image.Resampling.LANCZOS)
+        image.paste(logo, ((width-side)//2,(height-side)//2), logo)
+        image.save(path)
+    background_xml = resources + "/values/ic_launcher_background.xml"
+    if os.path.exists(background_xml):
+        with open(background_xml, encoding="utf-8") as f:
+            source = f.read()
+        with open(background_xml, "w", encoding="utf-8") as f:
+            f.write(re.sub(r"#[0-9a-fA-F]{6}", "#080D18", source, count=1))
+
+
+if __name__ == "__main__":
+    mode = sys.argv[1] if len(sys.argv) > 1 else "before"
+    create() if mode == "before" else apply()
+
+
+
+================================================================================
+FILE: manifest.json
+BLOB SHA: d6561a3df65f35d58fde911d19db921e4b26654a
+================================================================================
+{
+  "id": "./",
+  "name": "MediaY — Video Studio",
+  "short_name": "MediaY",
+  "description": "A focused, mobile-first video editing studio.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#080D18",
+  "theme_color": "#080D18",
+  "categories": [
+    "video",
+    "multimedia",
+    "productivity"
+  ],
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
+
+
+
+================================================================================
+FILE: mediay-core.js
+BLOB SHA: 67b493ee21203420d7464793e7b235f2a69a7dac
+================================================================================
+/* MediaY core logic — pure functions with no DOM, no network and no global state.
+   Loaded as a browser global (window.MediaYCore) and as a Node module (for tests).
+   Everything here is deterministic so it can be verified automatically. */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.MediaYCore = factory();
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  const TIMELINE_FPS = 30;
+  const MIN_FRAME = 1 / TIMELINE_FPS;
+  const num = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  /* ------------------------------------------------------------------
+     1. Speech activity detection (energy based, adaptive, no model)
+     ------------------------------------------------------------------ */
+  const ACTIVITY = Object.freeze({
+    hopSeconds: 0.02,        // 20 ms analysis frames
+    closeGapSeconds: 0.15,   // bridge short pauses inside a phrase
+    minRunSeconds: 0.06,     // ignore clicks/pops shorter than this
+    minDynamicRangeDb: 14,   // below this the signal has no usable speech/noise contrast
+    maxVoicedRatio: 0.98     // above this it is music/noise everywhere: do not trust it
+  });
+
+  function percentile(sortedAscending, q) {
+    if (!sortedAscending.length) return 0;
+    const i = clamp(Math.round(q * (sortedAscending.length - 1)), 0, sortedAscending.length - 1);
+    return sortedAscending[i];
+  }
+
+  /** Returns { hop, frames, voiced:Uint8Array, intervals:[[s,e]...], reliable, thresholdDb, duration } */
+  function analyzeSpeechActivity(pcm, sampleRate = 16000) {
+    const hopSamples = Math.max(1, Math.round(sampleRate * ACTIVITY.hopSeconds));
+    const frames = Math.floor((pcm ? pcm.length : 0) / hopSamples);
+    const duration = pcm ? pcm.length / sampleRate : 0;
+    const result = { hop: ACTIVITY.hopSeconds, frames, voiced: new Uint8Array(frames), intervals: [], reliable: false, thresholdDb: -60, duration, voicedRatio: 0 };
+    if (frames < 5) return result;
+
+    const db = new Float32Array(frames);
+    for (let f = 0; f < frames; f++) {
+      let sum = 0;
+      const from = f * hopSamples;
+      for (let i = from; i < from + hopSamples; i++) sum += pcm[i] * pcm[i];
+      db[f] = 20 * Math.log10(Math.sqrt(sum / hopSamples) + 1e-9);
+    }
+    const sorted = Array.from(db).sort((a, b) => a - b);
+    const low = percentile(sorted, 0.05), high = percentile(sorted, 0.95);
+    result.dynamicRangeDb = high - low;
+    // Threshold: above the noise floor, but always well below the loud speech level.
+    const threshold = Math.min(Math.max(low + 10, -55), high - 18);
+    result.thresholdDb = threshold;
+    if (high < -50) return result; // essentially silent
+
+    const raw = new Uint8Array(frames);
+    for (let f = 0; f < frames; f++) raw[f] = db[f] > threshold ? 1 : 0;
+
+    // 1) close short gaps, 2) drop short runs
+    const closeFrames = Math.round(ACTIVITY.closeGapSeconds / ACTIVITY.hopSeconds);
+    const minRun = Math.max(1, Math.round(ACTIVITY.minRunSeconds / ACTIVITY.hopSeconds));
+    const runs = [];
+    let start = -1;
+    for (let f = 0; f <= frames; f++) {
+      const on = f < frames && raw[f] === 1;
+      if (on && start < 0) start = f;
+      if (!on && start >= 0) { runs.push([start, f]); start = -1; }
+    }
+    const merged = [];
+    for (const run of runs) {
+      const last = merged[merged.length - 1];
+      if (last && run[0] - last[1] <= closeFrames) last[1] = run[1];
+      else merged.push([run[0], run[1]]);
+    }
+    let voicedFrames = 0;
+    for (const [a, b] of merged) {
+      if (b - a < minRun) continue;
+      result.intervals.push([a * ACTIVITY.hopSeconds, b * ACTIVITY.hopSeconds]);
+      for (let f = a; f < b; f++) result.voiced[f] = 1;
+      voicedFrames += b - a;
+    }
+    result.voicedRatio = voicedFrames / frames;
+    result.reliable = result.dynamicRangeDb >= ACTIVITY.minDynamicRangeDb &&
+      result.voicedRatio <= ACTIVITY.maxVoicedRatio && result.intervals.length > 0;
+    return result;
+  }
+
+  /* ------------------------------------------------------------------
+     2. Silence-aware chunk planning for Whisper (max 30 s windows)
+     ------------------------------------------------------------------ */
+  /** Splits [0,total) into windows <= maxSeconds, preferring to cut in the middle of a pause. */
+  function planCaptionChunks(totalSeconds, activity, opts = {}) {
+    const maxS = opts.maxSeconds || 30, searchS = opts.searchSeconds || 8, minS = opts.minSeconds || 12;
+    const plan = [];
+    let start = 0;
+    while (totalSeconds - start > maxS + 1e-6) {
+      let cut = start + maxS;
+      if (activity && activity.reliable) {
+        // Look for the longest pause (unvoiced run) in [start+maxS-searchS, start+maxS].
+        const lo = Math.max(start + minS, start + maxS - searchS), hi = start + maxS;
+        let best = null;
+        let gapStart = null;
+        const f0 = Math.floor(lo / activity.hop), f1 = Math.min(activity.frames, Math.floor(hi / activity.hop));
+        for (let f = f0; f <= f1; f++) {
+          const silent = f < f1 && !activity.voiced[f];
+          if (silent && gapStart === null) gapStart = f;
+          if (!silent && gapStart !== null) {
+            const len = f - gapStart;
+            if (len >= 5 && (!best || len > best.len)) best = { from: gapStart, len };
+            gapStart = null;
+          }
+        }
+        if (best) cut = (best.from + best.len / 2) * activity.hop;
+      }
+      plan.push([start, cut]);
+      start = cut;
+    }
+    if (totalSeconds - start > 1e-6) plan.push([start, totalSeconds]);
+    return plan;
+  }
+
+  /**
+   * Builds bounded decode windows with overlap while assigning each source-time position
+   * to exactly one window. This gives Whisper boundary context without duplicate captions.
+   */
+  function planCaptionStreamWindows(totalSeconds, windowSeconds = 600, overlapSeconds = 1.5) {
+    const total = Number(totalSeconds), width = Number(windowSeconds);
+    if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(width) || width <= 0) return [];
+    const overlap = Math.max(0, Math.min(Number(overlapSeconds) || 0, width / 2));
+    const half = overlap / 2, count = Math.ceil(total / width), windows = [];
+    for (let index = 0; index < count; index++) {
+      const coreStartSeconds = index * width;
+      const coreEndSeconds = Math.min(total, coreStartSeconds + width);
+      const offsetSeconds = Math.max(0, coreStartSeconds - half);
+      const decodeEndSeconds = Math.min(total, coreEndSeconds + half);
+      windows.push({
+        index, count, offsetSeconds,
+        durationSeconds: decodeEndSeconds - offsetSeconds,
+        coreStartSeconds, coreEndSeconds,
+        ownershipStartSeconds: index === 0 ? 0 : coreStartSeconds - half,
+        ownershipEndSeconds: index === count - 1 ? total : coreEndSeconds - half
+      });
+    }
+    return windows;
+  }
+
+  /* ------------------------------------------------------------------
+     3. Caption alignment: ASR segments + speech activity -> timed lines
+     ------------------------------------------------------------------ */
+  const CAPTION = Object.freeze({
+    maxWords: 4, maxChars: 30, pauseBreakSeconds: 0.55,
+    startSlackBefore: 0.9, endSlackAfter: 0.9,
+    lead: 0.04, hold: 0.14, minDuration: 0.45, bridgeGap: 0.3, wordTrust: 0.5
+  });
+
+  const wordWeight = w => Math.max(1, w.replace(/[^\p{L}\p{N}]/gu, '').length) + 0.6;
+
+  /** Collapse pathological Whisper token-repetition loops (see FilmCraft crates/speech/src/whisper.rs `repeating`). */
+  function stripRepeatingLoops(text) {
+    const tokens = String(text || '').trim().split(/\s+/).filter(Boolean);
+    const norm = w => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+    const out = [];
+    let i = 0;
+    while (i < tokens.length) {
+      let collapsed = false;
+      for (let n = 1; n <= 6; n++) {
+        // Conservative thresholds: preserve natural emphasis and laughter.
+        const minReps = n === 1 ? 8 : 5;
+        const minTokens = 8;
+        if (i + n * minReps > tokens.length || n * minReps < minTokens) continue;
+        const pat = tokens.slice(i, i + n).map(norm);
+        if (pat.some(p => !p)) continue;
+        let reps = 1;
+        while (i + (reps + 1) * n <= tokens.length) {
+          let match = true;
+          for (let k = 0; k < n; k++) {
+            if (norm(tokens[i + reps * n + k]) !== pat[k]) { match = false; break; }
+          }
+          if (!match) break;
+          reps++;
+        }
+        if (reps >= minReps) {
+          out.push(...tokens.slice(i, i + n));
+          i += reps * n;
+          collapsed = true;
+          break;
+        }
+      }
+      if (!collapsed) out.push(tokens[i++]);
+    }
+    return out.join(' ');
+  }
+
+  // Remove only rapid, long runs of identical short Whisper segments. Repeated
+  // phrases separated by real pauses are legitimate speech and must survive.
+  function dropIdenticalSegmentRuns(segments, maxGapSeconds = 1.5, minRun = 8) {
+    const key = text => String(text || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+    const out = [];
+    for (let i = 0; i < segments.length;) {
+      const currentKey = key(segments[i].text);
+      let j = i + 1;
+      while (currentKey && j < segments.length && key(segments[j].text) === currentKey) {
+        const prevEnd = Number(segments[j - 1].end);
+        const nextStart = Number(segments[j].start);
+        if (!Number.isFinite(prevEnd) || !Number.isFinite(nextStart) || nextStart - prevEnd > maxGapSeconds) break;
+        j++;
+      }
+      const short = String(segments[i].text || '').trim().split(/\s+/).length <= 8;
+      if (currentKey && short && j - i >= minRun) out.push(segments[i]);
+      else out.push(...segments.slice(i, j));
+      i = j;
+    }
+    return out;
+  }
+
+  function voicedWithin(activity, a, b) {
+    const out = [];
+    for (const [s, e] of activity.intervals) {
+      if (e <= a) continue;
+      if (s >= b) break;
+      out.push([Math.max(s, a), Math.min(e, b)]);
+    }
+    return out;
+  }
+
+  function saneWordTimes(list) {
+    let previous = -Infinity;
+    for (const w of list) {
+      const a = Number(w.start), b = Number(w.end);
+      if (!Number.isFinite(a) || !Number.isFinite(b) || b < a || a < previous - 0.05 || b - a > 4) return false;
+      previous = a;
+    }
+    return true;
+  }
+
+  /** Joins model word-level output ([{text,start,end}]) into phrase segments at pauses and sentence ends. */
+  function groupWordsIntoPhrases(wordList, opts = {}) {
+    const gap = opts.gapSeconds || 0.35, maxWords = opts.maxWords || 14;
+    const phrases = [];
+    let cur = null;
+    const cleaned = (wordList || []).map(w => ({ text: String(w.text || '').trim(), start: num(w.start), end: Number.isFinite(Number(w.end)) ? Number(w.end) : NaN }))
+      .filter(w => w.text);
+    cleaned.forEach((w, i) => {
+      if (!Number.isFinite(w.end)) w.end = Math.max(w.start + 0.2, cleaned[i + 1] ? cleaned[i + 1].start : w.start + 0.4);
+      if (/^[,.;:!?%…]+$/.test(w.text) && cur) { // stray punctuation token joins the previous word
+        cur.words[cur.words.length - 1].text += w.text; cur.words[cur.words.length - 1].end = Math.max(cur.words[cur.words.length - 1].end, w.end);
+        cur.text += w.text; cur.end = Math.max(cur.end, w.end); return;
+      }
+      if (cur && (w.start - cur.end > gap || cur.words.length >= maxWords || /[.!?…]["')\]]?$/.test(cur.words[cur.words.length - 1].text))) { phrases.push(cur); cur = null; }
+      if (!cur) cur = { text: '', start: w.start, end: w.end, words: [] };
+      cur.words.push({ text: w.text, start: w.start, end: w.end });
+      cur.text = cur.words.map(x => x.text).join(' ');
+      cur.end = Math.max(cur.end, w.end);
+    });
+    if (cur) phrases.push(cur);
+    return phrases;
+  }
+
+  /** True when at least `minSeconds` of detected speech lies inside [a,b]. */
+  function hasSpeech(activity, a, b, minSeconds = 0.25) {
+    if (!activity || !activity.reliable) return true; // unknown: let the speech model decide
+    let total = 0;
+    for (const [s, e] of voicedWithin(activity, a, b)) total += e - s;
+    return total >= minSeconds;
+  }
+
+  /** Map a position along the voiced axis (0..total) back to real time. */
+  function voicedToTime(intervals, position) {
+    let remaining = position;
+    for (const [s, e] of intervals) {
+      const len = e - s;
+      if (remaining <= len) return s + remaining;
+      remaining -= len;
+    }
+    return intervals.length ? intervals[intervals.length - 1][1] : 0;
+  }
+
+  /** Merge mixed Whisper output without moving phrase segments across neighbouring word runs. */
+  function mergeCaptionSegments(entries) {
+    const ordered = (entries || []).filter(entry => entry && String(entry.text || '').trim())
+      .map(entry => ({ ...entry, text: String(entry.text).trim() }));
+    const output = [];
+    let wordRun = [];
+    const flushWords = () => {
+      if (wordRun.length) output.push(...groupWordsIntoPhrases(wordRun));
+      wordRun = [];
+    };
+    for (const entry of ordered) {
+      if (entry.word) wordRun.push(entry);
+      else { flushWords(); output.push({ text: entry.text, start: num(entry.start), end: Number.isFinite(Number(entry.end)) ? Number(entry.end) : NaN }); }
+    }
+    flushWords();
+    return output;
+  }
+
+  /**
+   * segments: [{ text, start, end }] in seconds relative to the same origin as `activity`.
+   * Returns lines: [{ text, start, end }] — sorted, non-overlapping, inside [0,duration].
+   */
+  function buildCaptionLines(segments, activity, duration, opts = {}) {
+    const cfg = { ...CAPTION, ...opts };
+    const usable = activity && activity.reliable;
+    const clean = (segments || [])
+      .map(seg => ({
+        text: stripRepeatingLoops(String(seg && seg.text || '').trim()),
+        start: num(seg && seg.start, 0),
+        end: seg && Number.isFinite(Number(seg.end)) ? Number(seg.end) : NaN,
+        words: Array.isArray(seg && seg.words) ? seg.words : null
+      }))
+      .filter(seg => seg.text && !/^[\[(♪♫].*[\])♪♫]$/.test(seg.text) && !/^[♪♫\s]+$/.test(seg.text))
+      .sort((a, b) => a.start - b.start);
+    const deduplicated = dropIdenticalSegmentRuns(clean);
+
+    const words = []; // { text, start, end, segmentIndex }
+    let previousEnd = 0;
+    deduplicated.forEach((seg, index) => {
+      const tokens = seg.text.split(/\s+/).filter(Boolean);
+      if (!tokens.length) return;
+      let s = clamp(seg.start, 0, duration);
+      let e = Number.isFinite(seg.end) ? clamp(seg.end, s, duration) : Math.min(duration, s + tokens.length * 0.35);
+      if (e - s < 0.05) e = Math.min(duration, s + Math.max(0.2, tokens.length * 0.25));
+      const next = deduplicated[index + 1];
+      let rs = s, re = e, voiced = null;
+      if (usable) {
+        const windowStart = Math.max(previousEnd, s - cfg.startSlackBefore);
+        const nextStart = next ? clamp(next.start, e, duration) : duration;
+        const windowEnd = Math.min(duration, Math.min(e + cfg.endSlackAfter, Math.max(e, (e + nextStart) / 2 + 0.15)));
+        const inside = voicedWithin(activity, windowStart, Math.max(windowStart, windowEnd));
+        if (inside.length) {
+          // The segment must actually overlap speech, otherwise keep the model's own times.
+          const overlaps = inside.some(([a, b]) => b > s - 0.2 && a < e + 0.2);
+          if (overlaps) {
+            const used = inside.filter(([a, b]) => b > s - cfg.startSlackBefore && a < e + cfg.endSlackAfter);
+            // Tighten against pauses (FilmCraft vad.rs `split_at_pauses` / `trim_edges`):
+            // 1) A tiny click/scrap before a >= 200ms pause prior to `s` is not the start of this segment.
+            while (used.length > 1 && used[0][1] <= s + 0.05 && used[1][0] - used[0][1] >= 0.2 && used[0][1] - used[0][0] < 0.12) {
+              used.shift();
+            }
+            // 2) When Whisper's contiguous segment end spills across a >= 200ms pause into the next segment's
+            //    speech onset, end this segment at the pause so `previousEnd` does not push `next` late.
+            if (next && used.length > 1) {
+              const minExpectedSpeech = Math.min(0.25, tokens.length * 0.08);
+              while (used.length > 1) {
+                const lastInt = used[used.length - 1];
+                const prevInt = used[used.length - 2];
+                const pauseGap = lastInt[0] - prevInt[1];
+                const speechBefore = used.slice(0, -1).reduce((acc, [a, b]) => acc + (b - a), 0);
+                const rawContinuesIntoNext = activity.intervals.some(([ia, ib]) => ia <= lastInt[0] + 1e-4 && ib >= lastInt[1] - 1e-4 && ib > next.start + 0.05);
+                if (pauseGap >= 0.2 && speechBefore >= minExpectedSpeech && (rawContinuesIntoNext || lastInt[0] >= Math.min(e, nextStart) - cfg.startSlackBefore)) {
+                  used.pop();
+                } else {
+                  break;
+                }
+              }
+            }
+            if (used.length) {
+              rs = used[0][0];
+              re = used[used.length - 1][1];
+              voiced = voicedWithin(activity, rs, re);
+            }
+          }
+        }
+      }
+      if (re - rs < 0.05) { rs = s; re = e; voiced = null; }
+      previousEnd = re;
+
+      // Speech-weighted positions: words share the detected speech time in proportion to their length.
+      const weights = tokens.map(wordWeight);
+      const totalWeight = weights.reduce((a, b) => a + b, 0);
+      const axis = voiced && voiced.length ? voiced : [[rs, re]];
+      const axisLength = axis.reduce((a, [x, y]) => a + (y - x), 0);
+      // Model word times (when supplied and sane) keep their relative spacing, fitted to the same start/end.
+      const modelWords = seg.words && seg.words.length === tokens.length && saneWordTimes(seg.words) ? seg.words : null;
+      const trust = modelWords ? clamp(num(cfg.wordTrust, 0.5), 0, 1) : 0;
+      const modelFrom = modelWords ? num(modelWords[0].start) : 0;
+      const modelSpan = modelWords ? Math.max(1e-3, num(modelWords[modelWords.length - 1].end) - modelFrom) : 1;
+      let acc = 0;
+      tokens.forEach((token, i) => {
+        const from = acc / totalWeight * axisLength;
+        acc += weights[i];
+        const to = acc / totalWeight * axisLength;
+        let ws = voicedToTime(axis, from), we = voicedToTime(axis, to);
+        let speechInterval = 0;
+        if (voiced && voiced.length) {
+          let remaining = (from + to) / 2;
+          for (let intervalIndex = 0; intervalIndex < axis.length; intervalIndex++) {
+            const intervalLength = axis[intervalIndex][1] - axis[intervalIndex][0];
+            if (remaining <= intervalLength || intervalIndex === axis.length - 1) {
+              speechInterval = intervalIndex;
+              const [intervalStart, intervalEnd] = axis[intervalIndex];
+              ws = clamp(ws, intervalStart, intervalEnd);
+              we = clamp(we, intervalStart, intervalEnd);
+              if (we - ws < 0.04) {
+                const center = clamp((ws + we) / 2, intervalStart, intervalEnd);
+                ws = Math.max(intervalStart, center - 0.02);
+                we = Math.min(intervalEnd, Math.max(ws + 0.04, center + 0.02));
+              }
+              break;
+            }
+            remaining -= intervalLength;
+          }
+        }
+        if (modelWords) {
+          const ms = rs + (num(modelWords[i].start) - modelFrom) / modelSpan * (re - rs);
+          const me = rs + (num(modelWords[i].end) - modelFrom) / modelSpan * (re - rs);
+          ws = trust * ms + (1 - trust) * ws; we = trust * me + (1 - trust) * we;
+        }
+        words.push({ text: token, start: ws, end: Math.max(we, ws + 0.04), segmentIndex: index, speechInterval });
+      });
+    });
+
+    // Group words into display lines. Break on pauses, on the word/char limit, and at segment ends.
+    const lines = [];
+    let current = [];
+    const flush = () => {
+      if (!current.length) return;
+      lines.push({ text: current.map(w => w.text).join(' '), start: current[0].start, end: current[current.length - 1].end });
+      current = [];
+    };
+    words.forEach((word, i) => {
+      const prev = current[current.length - 1];
+      const chars = current.reduce((a, w) => a + w.text.length + 1, 0) + word.text.length;
+      if (prev && (word.segmentIndex !== prev.segmentIndex || word.speechInterval !== prev.speechInterval || word.start - prev.end > cfg.pauseBreakSeconds || current.length >= cfg.maxWords || chars > cfg.maxChars)) flush();
+      current.push(word);
+      if (/[.!?…]$/.test(word.text) && words[i + 1]) flush();
+    });
+    flush();
+
+    // Final timing pass: lead-in, hold, no overlaps, no flicker between near-adjacent lines.
+    lines.forEach(line => {
+      line.start = Math.max(0, line.start - cfg.lead);
+      line.end = line.end + cfg.hold;
+    });
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i], next = lines[i + 1];
+      if (next) {
+        if (next.start - line.end < cfg.bridgeGap) line.end = Math.max(line.start + MIN_FRAME, next.start);
+        if (line.end > next.start) line.end = next.start;
+      }
+      if (line.end - line.start < cfg.minDuration) {
+        line.end = Math.min(next ? next.start : duration, line.start + cfg.minDuration);
+      }
+      line.end = Math.min(line.end, duration);
+      if (line.end - line.start < MIN_FRAME) line.end = Math.min(duration, line.start + MIN_FRAME);
+    }
+    return lines.filter(l => l.end - l.start >= MIN_FRAME * 0.99 && l.start < duration);
+  }
+
+  const resampleTableCache = new Map();
+  /** Windowed-sinc resampling with a cached polyphase table to suppress aliasing without per-sample trig overhead. */
+  function resamplePcm(pcm, inputRate, outputRate) {
+    if (!pcm || !pcm.length || !(inputRate > 0) || !(outputRate > 0)) return new Float32Array(0);
+    if (inputRate === outputRate) return Float32Array.from(pcm);
+    const ratio = inputRate / outputRate;
+    const outputLength = Math.max(1, Math.round(pcm.length / ratio));
+    const output = new Float32Array(outputLength);
+    const radius = 12;
+    const taps = radius * 2;
+    const isIntRatio = Math.abs(ratio - Math.round(ratio)) < 1e-9;
+    const PHASES = isIntRatio ? 1 : 512;
+    const cacheKey = `${inputRate}:${outputRate}`;
+    let table = resampleTableCache.get(cacheKey);
+    if (!table) {
+      const cutoff = Math.min(0.5, 0.5 / ratio) * 0.92;
+      const sinc = x => Math.abs(x) < 1e-8 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x);
+      table = new Float32Array(PHASES * taps);
+      for (let p = 0; p < PHASES; p++) {
+        const frac = p / PHASES;
+        const base = p * taps;
+        let weightSum = 0;
+        for (let k = 0; k < taps; k++) {
+          const offset = k - radius + 1;
+          const distance = offset - frac;
+          const normalized = distance / radius;
+          if (Math.abs(normalized) >= 1) continue;
+          const win = 0.5 + 0.5 * Math.cos(Math.PI * normalized);
+          const w = 2 * cutoff * sinc(2 * cutoff * distance) * win;
+          table[base + k] = w;
+          weightSum += w;
+        }
+        if (weightSum > 0) {
+          const inv = 1 / weightSum;
+          for (let k = 0; k < taps; k++) table[base + k] *= inv;
+        }
+      }
+      resampleTableCache.set(cacheKey, table);
+    }
+
+    const pcmLen = pcm.length;
+    const safeStart = Math.ceil(radius / ratio);
+    const safeEnd = Math.min(outputLength, Math.floor((pcmLen - radius - 1) / ratio));
+    for (let i = 0; i < outputLength; i++) {
+      const position = i * ratio;
+      const center = position | 0;
+      const firstSample = center - radius + 1;
+      if (i >= safeStart && i < safeEnd) {
+        const base = isIntRatio ? 0 : Math.min(PHASES - 1, ((position - center) * PHASES + 0.5) | 0) * taps;
+        output[i] =
+          pcm[firstSample] * table[base] + pcm[firstSample + 1] * table[base + 1] +
+          pcm[firstSample + 2] * table[base + 2] + pcm[firstSample + 3] * table[base + 3] +
+          pcm[firstSample + 4] * table[base + 4] + pcm[firstSample + 5] * table[base + 5] +
+          pcm[firstSample + 6] * table[base + 6] + pcm[firstSample + 7] * table[base + 7] +
+          pcm[firstSample + 8] * table[base + 8] + pcm[firstSample + 9] * table[base + 9] +
+          pcm[firstSample + 10] * table[base + 10] + pcm[firstSample + 11] * table[base + 11] +
+          pcm[firstSample + 12] * table[base + 12] + pcm[firstSample + 13] * table[base + 13] +
+          pcm[firstSample + 14] * table[base + 14] + pcm[firstSample + 15] * table[base + 15] +
+          pcm[firstSample + 16] * table[base + 16] + pcm[firstSample + 17] * table[base + 17] +
+          pcm[firstSample + 18] * table[base + 18] + pcm[firstSample + 19] * table[base + 19] +
+          pcm[firstSample + 20] * table[base + 20] + pcm[firstSample + 21] * table[base + 21] +
+          pcm[firstSample + 22] * table[base + 22] + pcm[firstSample + 23] * table[base + 23];
+      } else {
+        const phase = Math.min(PHASES - 1, Math.round((position - center) * PHASES));
+        const base = phase * taps;
+        let sum = 0, weightSum = 0;
+        for (let k = 0; k < taps; k++) {
+          const sample = firstSample + k;
+          if (sample < 0 || sample >= pcmLen) continue;
+          const w = table[base + k];
+          sum += pcm[sample] * w;
+          weightSum += w;
+        }
+        output[i] = weightSum > 0 ? sum / weightSum : 0;
+      }
+    }
+    return output;
+  }
+
+  /* ------------------------------------------------------------------
+     4. Source time -> timeline time
+     ------------------------------------------------------------------ */
+  /** clip: { in, out, speed }, clipStart: where the clip begins on the timeline. */
+  function sourceToTimeline(sourceRelativeSeconds, clipStart, speed) {
+    const sp = num(speed, 1) > 0 ? num(speed, 1) : 1;
+    return clipStart + sourceRelativeSeconds / sp;
+  }
+
+
+  return {
+    TIMELINE_FPS, MIN_FRAME, ACTIVITY, CAPTION,
+    analyzeSpeechActivity, planCaptionChunks, planCaptionStreamWindows, buildCaptionLines, groupWordsIntoPhrases, mergeCaptionSegments, hasSpeech, resamplePcm, sourceToTimeline, stripRepeatingLoops
+  };
+}));
+
+
+================================================================================
+FILE: mediay-fast.js
+BLOB SHA: 545593583d829de4c145a8960b36558721bc6ffd
+================================================================================
+/* MediaY fast export engine (WebCodecs).
+   Decodes the source video with the device's own video decoder, composites trim/speed/fade/overlays on a canvas,
+   and encodes with the device's own H.264 encoder (hardware where the phone has it). Audio and the final MP4 are
+   still produced by FFmpeg (cheap work). Every public function either returns a result or throws; the caller
+   falls back to the FFmpeg-only export on ANY problem, so this module can never be the reason an export fails.
+
+   Loaded as a browser global (window.MediaYFast) and as a Node module (parsing/planning helpers are unit-tested in Node;
+   the decode/encode parts need a browser with WebCodecs). */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.MediaYFast = factory();
+}(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  class Unsupported extends Error {
+    constructor(message) { super(message); this.name = 'Unsupported'; }
+  }
+  const TS_BIAS_US = 5e6; // chunk timestamps must not be negative; edit lists can make early frames negative
+  const even = n => Math.max(2, Math.round(n / 2) * 2);
+
+  /* ------------------------------------------------------------------
+     1. MP4 / MOV parsing (moov box only; sample data is read later, in ranges)
+     ------------------------------------------------------------------ */
+  const fourcc = (v, o) => String.fromCharCode(v.getUint8(o), v.getUint8(o + 1), v.getUint8(o + 2), v.getUint8(o + 3));
+  const u64 = (v, o) => Number(v.getBigUint64(o));
+
+  function listBoxes(v, start, end) {
+    const out = [];
+    let p = start;
+    while (p + 8 <= end) {
+      let size = v.getUint32(p);
+      const type = fourcc(v, p + 4);
+      let header = 8;
+      if (size === 1) { size = u64(v, p + 8); header = 16; } else if (size === 0) size = end - p;
+      if (size < header || p + size > end) break;
+      out.push({ type, start: p + header, end: p + size });
+      p += size;
+    }
+    return out;
+  }
+  const child = (v, box, type) => listBoxes(v, box.start, box.end).find(b => b.type === type) || null;
+  const childrenOf = (v, box, type) => listBoxes(v, box.start, box.end).filter(b => b.type === type);
+
+  async function readMoov(file) {
+    let pos = 0;
+    const size = file.size;
+    while (pos + 8 <= size) {
+      const head = new DataView(await file.slice(pos, Math.min(size, pos + 16)).arrayBuffer());
+      if (head.byteLength < 8) break;
+      let boxSize = head.getUint32(0);
+      const type = fourcc(head, 4);
+      let header = 8;
+      if (boxSize === 1 && head.byteLength >= 16) { boxSize = u64(head, 8); header = 16; } else if (boxSize === 0) boxSize = size - pos;
+      if (boxSize < header) throw new Unsupported('damaged MP4 box');
+      if (type === 'moof') throw new Unsupported('fragmented MP4');
+      if (type === 'moov') {
+        if (boxSize > 512 * 1024 * 1024) throw new Unsupported('moov too large');
+        return await file.slice(pos + header, pos + boxSize).arrayBuffer();
+      }
+      pos += boxSize;
+    }
+    throw new Unsupported('not an MP4/MOV file (no moov box)');
+  }
+
+  function hex2(n) { return (n & 255).toString(16).padStart(2, '0'); }
+
+  function codecFromConfig(fourccName, cfg) {
+    if (fourccName === 'avc1' || fourccName === 'avc3') return 'avc1.' + hex2(cfg[1]) + hex2(cfg[2]) + hex2(cfg[3]);
+    if (fourccName === 'hvc1' || fourccName === 'hev1') {
+      const profileSpace = cfg[1] >> 6, tier = (cfg[1] >> 5) & 1, profile = cfg[1] & 31;
+      let compat = ((cfg[2] << 24) | (cfg[3] << 16) | (cfg[4] << 8) | cfg[5]) >>> 0, rev = 0;
+      for (let i = 0; i < 32; i++) { rev = ((rev << 1) | (compat & 1)) >>> 0; compat >>>= 1; }
+      const constraints = Array.from(cfg.subarray(6, 12));
+      while (constraints.length && constraints[constraints.length - 1] === 0) constraints.pop();
+      return fourccName + '.' + ['', 'A', 'B', 'C'][profileSpace] + profile + '.' + rev.toString(16).toUpperCase() +
+        '.' + (tier ? 'H' : 'L') + cfg[12] + (constraints.length ? '.' + constraints.map(b => b.toString(16).toUpperCase()).join('.') : '');
+    }
+    if (fourccName === 'vp09') { // vpcC: 4 bytes version/flags, profile, level, bitDepth(4) chroma(3) range(1)
+      return 'vp09.' + String(cfg[4]).padStart(2, '0') + '.' + String(cfg[5]).padStart(2, '0') + '.' + String(cfg[6] >> 4).padStart(2, '0');
+    }
+    return null;
+  }
+
+  function parseTrack(v, trak) {
+    const tkhd = child(v, trak, 'tkhd'), mdia = child(v, trak, 'mdia');
+    if (!tkhd || !mdia) return null;
+    const mdhd = child(v, mdia, 'mdhd'), hdlr = child(v, mdia, 'hdlr'), minf = child(v, mdia, 'minf');
+    if (!mdhd || !hdlr || !minf) return null;
+    const handler = fourcc(v, hdlr.start + 8);
+    const mdhdVersion = v.getUint8(mdhd.start);
+    const timescale = mdhdVersion === 1 ? v.getUint32(mdhd.start + 20) : v.getUint32(mdhd.start + 12);
+    const mediaDuration = mdhdVersion === 1 ? u64(v, mdhd.start + 24) : v.getUint32(mdhd.start + 16);
+    const track = { handler, timescale, mediaDuration };
+    // display matrix -> rotation (clockwise degrees as shown on screen)
+    const m = v.getUint8(tkhd.start) === 1 ? tkhd.start + 52 : tkhd.start + 40;
+    const a = v.getInt32(m) / 65536, b = v.getInt32(m + 4) / 65536;
+    const angle = Math.round(Math.atan2(b, a) * 180 / Math.PI);
+    track.rotation = ((angle % 360) + 360) % 360;
+    if (![0, 90, 180, 270].includes(track.rotation)) track.rotation = 0;
+    const stbl = child(v, minf, 'stbl');
+    if (!stbl) return null;
+    const stsd = child(v, stbl, 'stsd');
+    const entry = stsd && listBoxes(v, stsd.start + 8, stsd.end)[0];
+    track.sampleEntry = entry ? entry.type : null;
+    if (handler === 'soun') return track;
+    if (handler !== 'vide' || !entry) return null;
+
+    const entryChildren = listBoxes(v, entry.start + 78, entry.end);
+    track.width = v.getUint16(entry.start + 24);
+    track.height = v.getUint16(entry.start + 26);
+    const cfgBox = entryChildren.find(b => ['avcC', 'hvcC', 'vpcC'].includes(b.type));
+    if (!cfgBox) throw new Unsupported('video codec ' + track.sampleEntry + ' is not supported by the fast export');
+    const cfg = new Uint8Array(v.buffer, v.byteOffset + cfgBox.start, cfgBox.end - cfgBox.start);
+    track.codec = codecFromConfig(track.sampleEntry, cfg);
+    if (!track.codec) throw new Unsupported('video codec ' + track.sampleEntry + ' is not supported by the fast export');
+    track.description = cfgBox.type === 'vpcC' ? null : new Uint8Array(cfg);
+    track.configType = cfgBox.type;
+    // 10-bit / HDR sources look wrong when drawn to an 8-bit canvas, so leave those to the FFmpeg path.
+    if (cfgBox.type === 'avcC' && cfg[1] >= 100 && cfg[1] !== 100) track.highBitDepth = true; // High 10 / 4:2:2 / 4:4:4
+    if (cfgBox.type === 'hvcC' && (cfg[1] & 31) !== 1) track.highBitDepth = true; // anything but Main
+    if (cfgBox.type === 'vpcC' && (cfg[6] >> 4) > 8) track.highBitDepth = true;
+    const colr = entryChildren.find(b => b.type === 'colr');
+    if (colr && fourcc(v, colr.start) === 'nclx') {
+      const transfer = v.getUint16(colr.start + 6);
+      if (transfer === 16 || transfer === 18) track.hdr = true; // PQ / HLG
+    }
+
+    // ---- sample tables ----
+    const stts = child(v, stbl, 'stts'), stsz = child(v, stbl, 'stsz'), stsc = child(v, stbl, 'stsc');
+    const stco = child(v, stbl, 'stco') || child(v, stbl, 'co64'), ctts = child(v, stbl, 'ctts'), stss = child(v, stbl, 'stss');
+    if (!stts || !stsz || !stsc || !stco) throw new Unsupported('incomplete MP4 sample tables');
+    const count = v.getUint32(stsz.start + 8);
+    const fixed = v.getUint32(stsz.start + 4);
+    const sizes = new Uint32Array(count);
+    for (let i = 0; i < count; i++) sizes[i] = fixed || v.getUint32(stsz.start + 12 + i * 4);
+
+    const dts = new Float64Array(count), cts = new Float64Array(count);
+    let n = 0, t = 0;
+    const sttsCount = v.getUint32(stts.start + 4);
+    for (let e = 0; e < sttsCount && n < count; e++) {
+      const c = v.getUint32(stts.start + 8 + e * 8), d = v.getUint32(stts.start + 12 + e * 8);
+      for (let k = 0; k < c && n < count; k++) { dts[n++] = t; t += d; }
+    }
+    if (n !== count) throw new Unsupported('inconsistent MP4 timing table');
+    cts.set(dts);
+    if (ctts) {
+      const signed = v.getUint8(ctts.start) === 1, cc = v.getUint32(ctts.start + 4);
+      let idx = 0;
+      for (let e = 0; e < cc && idx < count; e++) {
+        const c = v.getUint32(ctts.start + 8 + e * 8);
+        const off = signed ? v.getInt32(ctts.start + 12 + e * 8) : v.getUint32(ctts.start + 12 + e * 8);
+        for (let k = 0; k < c && idx < count; k++, idx++) cts[idx] += off;
+      }
+    }
+
+    const key = new Uint8Array(count);
+    if (stss) {
+      const kc = v.getUint32(stss.start + 4);
+      for (let i = 0; i < kc; i++) { const s = v.getUint32(stss.start + 8 + i * 4) - 1; if (s >= 0 && s < count) key[s] = 1; }
+    } else key.fill(1);
+
+    const is64 = stco.type === 'co64', chunkCount = v.getUint32(stco.start + 4);
+    const stscCount = v.getUint32(stsc.start + 4);
+    const offsets = new Float64Array(count);
+    let s = 0;
+    for (let e = 0; e < stscCount; e++) {
+      const first = v.getUint32(stsc.start + 8 + e * 12), per = v.getUint32(stsc.start + 12 + e * 12);
+      const last = e + 1 < stscCount ? v.getUint32(stsc.start + 8 + (e + 1) * 12) - 1 : chunkCount;
+      for (let ch = first; ch <= last; ch++) {
+        let off = is64 ? u64(v, stco.start + 8 + (ch - 1) * 8) : v.getUint32(stco.start + 8 + (ch - 1) * 4);
+        for (let k = 0; k < per && s < count; k++) { offsets[s] = off; off += sizes[s]; s++; }
+      }
+    }
+    if (s !== count) throw new Unsupported('inconsistent MP4 chunk table');
+
+    // edit list: the first real edit's media_time is where presentation starts
+    let editStart = 0;
+    const edts = child(v, trak, 'edts'), elst = edts && child(v, edts, 'elst');
+    if (elst) {
+      const ver = v.getUint8(elst.start), ec = v.getUint32(elst.start + 4);
+      for (let e = 0; e < ec; e++) {
+        const base = elst.start + 8 + e * (ver === 1 ? 20 : 12);
+        const mediaTime = ver === 1 ? Number(v.getBigInt64(base + 8)) : v.getInt32(base + 4);
+        if (mediaTime >= 0) { editStart = mediaTime; break; }
+      }
+    }
+    const pts = new Float64Array(count);
+    for (let i = 0; i < count; i++) { pts[i] = (cts[i] - editStart) / timescale; dts[i] = dts[i] / timescale; }
+    let maxEnd = 0;
+    for (let i = 0; i < count; i++) if (pts[i] > maxEnd) maxEnd = pts[i];
+    Object.assign(track, { count, sizes, offsets, key, pts, dts, duration: maxEnd });
+    return track;
+  }
+
+  /** Reads an MP4/MOV and returns { video, hasAudio }. Throws Unsupported for anything the fast path should not touch. */
+  async function demux(file) {
+    const buf = await readMoov(file);
+    const v = new DataView(buf);
+    const moov = { start: 0, end: buf.byteLength };
+    let video = null, hasAudio = false;
+    for (const trak of childrenOf(v, moov, 'trak')) {
+      const t = parseTrack(v, trak);
+      if (!t) continue;
+      if (t.handler === 'vide' && !video) video = t;
+      else if (t.handler === 'soun') hasAudio = true;
+    }
+    if (!video) throw new Unsupported('no video track');
+    if (video.highBitDepth || video.hdr) throw new Unsupported('10-bit or HDR video');
+    if (video.count < 1) throw new Unsupported('video track has no frames');
+    return { video, hasAudio };
+  }
+
+  /* ------------------------------------------------------------------
+     2. H.264 helpers: avcC parsing and AVCC -> Annex B conversion
+     ------------------------------------------------------------------ */
+  function parseAvcC(d) {
+    const u8 = d instanceof Uint8Array ? d : new Uint8Array(d);
+    const nalLength = (u8[4] & 3) + 1;
+    let p = 6;
+    const sps = [], pps = [];
+    for (let i = 0, n = u8[5] & 31; i < n; i++) { const len = (u8[p] << 8) | u8[p + 1]; sps.push(u8.subarray(p + 2, p + 2 + len)); p += 2 + len; }
+    const ppsCount = u8[p++];
+    for (let i = 0; i < ppsCount; i++) { const len = (u8[p] << 8) | u8[p + 1]; pps.push(u8.subarray(p + 2, p + 2 + len)); p += 2 + len; }
+    return { nalLength, sps, pps };
+  }
+
+  /** Converts one length-prefixed H.264 sample to Annex B (00 00 00 01 start codes). When `params` is given
+      (key frames), SPS and PPS are written first so every key frame is a valid stream start. */
+  function avccToAnnexB(sample, nalLength, params) {
+    const data = sample instanceof Uint8Array ? sample : new Uint8Array(sample);
+    let total = 0, p = 0;
+    const lens = [];
+    while (p + nalLength <= data.length) {
+      let len = 0;
+      for (let i = 0; i < nalLength; i++) len = len * 256 + data[p + i];
+      p += nalLength;
+      if (len <= 0 || p + len > data.length) break;
+      lens.push([p, len]); total += 4 + len; p += len;
+    }
+    let extra = 0;
+    if (params) for (const x of [...params.sps, ...params.pps]) extra += 4 + x.length;
+    const out = new Uint8Array(extra + total);
+    let o = 0;
+    const startCode = () => { out[o++] = 0; out[o++] = 0; out[o++] = 0; out[o++] = 1; };
+    if (params) for (const x of [...params.sps, ...params.pps]) { startCode(); out.set(x, o); o += x.length; }
+    for (const [start, len] of lens) { startCode(); out.set(data.subarray(start, start + len), o); o += len; }
+    return out;
+  }
+
+  /* ------------------------------------------------------------------
+     3. Planning helpers (pure, unit-tested)
+     ------------------------------------------------------------------ */
+  /** Output frame count for a clip that lasts `seconds` on the timeline. Matches `-t` + the fps filter. */
+  const frameCount = (seconds, fps) => Math.max(1, Math.round(seconds * fps));
+  // Quantize cumulative timeline boundaries, not each clip independently. This prevents
+  // fractional-frame rounding from adding one extra frame per cut in long projects.
+  function planFrameCounts(durations, fps) {
+    const rate = Number(fps);
+    if (!Array.isArray(durations) || !Number.isFinite(rate) || rate <= 0) return [];
+    let timelineSeconds = 0, previousFrame = 0;
+    return durations.map(value => {
+      const duration = Number(value);
+      timelineSeconds += Number.isFinite(duration) && duration > 0 ? duration : 0;
+      const boundaryFrame = Math.round(timelineSeconds * rate);
+      const frames = Math.max(1, boundaryFrame - previousFrame);
+      previousFrame += frames;
+      return frames;
+    });
+  }
+
+  /** Source time (seconds) below which the source frame for output slot k is chosen. Same rule as FFmpeg's `fps` filter (round to nearest). */
+  const sourceLimit = (clip, k, fps) => clip.in + ((k + 0.5) / fps) * (clip.speed || 1);
+
+  /** Level_idc for H.264 at this size and rate (Annex A limits for MaxFS and MaxMBPS). */
+  function avcLevelIdc(W, H, fps) {
+    const mbs = Math.ceil(W / 16) * Math.ceil(H / 16), mbps = mbs * fps;
+    const levels = [[30, 1620, 40500], [31, 3600, 108000], [40, 8192, 245760], [42, 8704, 522240], [50, 22080, 589824], [51, 36864, 983040], [52, 36864, 2073600]];
+    for (const [idc, maxFs, maxMbps] of levels) if (mbs <= maxFs && mbps <= maxMbps) return idc;
+    return 52;
+  }
+
+  /** Bits per second: about what libx264 -crf 28 produces, never absurd. */
+  function targetBitrate(W, H, fps) {
+    return Math.round(Math.min(40e6, Math.max(1.5e6, W * H * fps * 0.09)));
+  }
+
+  /** Rectangle (output pixels) a video of displayW x displayH occupies when scaled to fit and centered, like scale(decrease)+pad. */
+  function fitRect(displayW, displayH, W, H) {
+    const sc = Math.min(W / displayW, H / displayH);
+    const w = Math.min(W, even(displayW * sc)), h = Math.min(H, even(displayH * sc));
+    return { x: Math.floor((W - w) / 2 / 2) * 2, y: Math.floor((H - h) / 2 / 2) * 2, w, h };
+  }
+
+  /** Decode range for one clip: first sample to feed (a key frame at or before `in`) and last sample needed. */
+  function clipSampleRange(track, clip, frames, fps) {
+    const limit = sourceLimit(clip, frames - 1, fps);
+    let start = 0;
+    for (let i = 0; i < track.count; i++) if (track.key[i] && track.pts[i] <= clip.in + 1e-4) start = i;
+    let end = start;
+    for (let i = start; i < track.count; i++) if (track.pts[i] < limit + 1e-4) end = i; // feeding one extra frame is harmless
+    return { start, end };
+  }
+
+  /** Why the fast path cannot be used for this project, or null when it can. `project` carries plain booleans. */
+  function ineligibleReason(project) {
+    if (!project || !project.clips || !project.clips.length) return 'no clips';
+    for (const [i, c] of project.clips.entries()) {
+      if (c.reverse) return `clip ${i + 1} is reversed`;
+      if (c.effect) return `clip ${i + 1} has a filter`;
+      if (c.adjust) return `clip ${i + 1} has color adjustments`;
+      if (c.transition) return `clip ${i + 1} has a transition`;
+    }
+    for (const o of project.overlays || []) {
+      if (o.type === 'video') return 'a video overlay is present';
+      if (o.blend && o.blend !== 'normal') return 'an overlay uses a blend mode';
+    }
+    return null;
+  }
+
+  /* ------------------------------------------------------------------
+     4. Encoder configuration and self-test (browser only)
+     ------------------------------------------------------------------ */
+  function requireWebCodecs() {
+    const g = typeof self !== 'undefined' ? self : globalThis;
+    if (typeof g.VideoEncoder !== 'function' || typeof g.VideoDecoder !== 'function' || typeof g.EncodedVideoChunk !== 'function' || typeof g.VideoFrame !== 'function') {
+      throw new Unsupported('this browser has no WebCodecs video support');
+    }
+    if (typeof g.OffscreenCanvas !== 'function' && typeof g.document === 'undefined') throw new Unsupported('no canvas available');
+    if (typeof g.createImageBitmap !== 'function') throw new Unsupported('no createImageBitmap');
+  }
+
+  function h264Candidates(W, H, fps) {
+    const level = hex2(avcLevelIdc(W, H, fps));
+    return ['64', '4d', '42'].map(profile => 'avc1.' + profile + '00' + level); // High, Main, Baseline
+  }
+
+  /** First encoder configuration the device accepts, preferring hardware. Returns { config, codec, acceleration } or throws Unsupported. */
+  async function chooseEncoderConfig(opts) {
+    requireWebCodecs();
+    const { W, H, fps } = opts;
+    const bitrate = opts.bitrate || targetBitrate(W, H, fps);
+    const codecs = opts.codecs || h264Candidates(W, H, fps);
+    // Some phone encoders reject optional settings (variable bitrate, quality mode); retry with fewer of them before giving up on a codec.
+    const variants = [{ bitrateMode: 'variable', latencyMode: 'quality' }, { bitrateMode: 'variable' }, {}];
+    for (const acceleration of opts.acceleration || ['prefer-hardware', 'no-preference']) {
+      for (const codec of codecs) {
+        for (const extra of variants) {
+          const cfg = Object.assign({ codec, width: W, height: H, bitrate, framerate: fps, hardwareAcceleration: acceleration }, extra);
+          try {
+            const r = await VideoEncoder.isConfigSupported(cfg);
+            if (r && r.supported) return { config: cfg, codec, acceleration };
+          } catch (_) { /* try the next one */ }
+        }
+      }
+    }
+    throw new Unsupported('this device has no usable video encoder for ' + W + 'x' + H + ' at ' + fps + ' fps');
+  }
+
+  /** Encodes a few synthetic frames and reports real speed, so a device whose "fast" encoder is slow is detected up front. */
+  async function benchmarkEncoder(choice, frames = 12, timeoutMs = 15000) {
+    const { config } = choice, W = config.width, H = config.height;
+    const canvas = typeof OffscreenCanvas === 'function' ? new OffscreenCanvas(W, H) : Object.assign(document.createElement('canvas'), { width: W, height: H });
+    const ctx = canvas.getContext('2d');
+    let err = null, outputs = 0;
+    const enc = new VideoEncoder({ output: () => { outputs++; }, error: e => { err = e; } });
+    const t0 = performance.now();
+    const deadline = t0 + timeoutMs;
+    const remaining = label => {
+      const ms = deadline - performance.now();
+      if (ms <= 0) throw new Error('Timed out: encoder self-test ' + label);
+      return ms;
+    };
+    try {
+      enc.configure(config);
+      for (let i = 0; i < frames; i++) {
+        if (err) throw new Unsupported('encoder self-test failed: ' + (err.message || err));
+        ctx.fillStyle = `hsl(${(i * 37) % 360},70%,50%)`; ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = '#fff'; ctx.fillRect((i * 17) % W, H / 3, W / 4, H / 4);
+        const f = new VideoFrame(canvas, { timestamp: Math.round(i * 1e6 / config.framerate) });
+        try { enc.encode(f, { keyFrame: i === 0 }); } finally { f.close(); }
+        while (enc.encodeQueueSize > 4) {
+          await withTimeout(new Promise(r => setTimeout(r, 2)), remaining('waiting for encoder queue'));
+        }
+      }
+      await withTimeout(enc.flush(), remaining('flush'));
+      if (err) throw new Unsupported('encoder self-test failed: ' + (err.message || err));
+      if (outputs < 1) throw new Unsupported('encoder self-test produced no output');
+      const ms = performance.now() - t0;
+      return { fps: frames / (ms / 1000), ms };
+    } finally {
+      // A stuck encoder must not keep the export pipeline alive or retain device resources.
+      try { enc.close(); } catch (_) { /* already closed or failed to configure */ }
+    }
+  }
+
+  /* ------------------------------------------------------------------
+     5. Sources: ranged file reads and a decoder that yields frames in display order
+     ------------------------------------------------------------------ */
+  class RangeReader {
+    constructor(file, windowBytes = 8 * 1024 * 1024) { this.file = file; this.win = windowBytes; this.buf = null; this.start = 0; this.end = 0; }
+    async read(offset, size) {
+      if (this.buf && offset >= this.start && offset + size <= this.end) return this.buf.subarray(offset - this.start, offset - this.start + size);
+      const end = Math.min(this.file.size, offset + Math.max(size, this.win));
+      this.buf = new Uint8Array(await this.file.slice(offset, end).arrayBuffer());
+      this.start = offset; this.end = end;
+      return this.buf.subarray(0, size);
+    }
+  }
+
+  function withTimeout(promise, ms, label) {
+    let timer;
+    const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Timed out: ' + label)), ms); });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  }
+
+  /** True when this device can decode the track (checked up front so an unsupported phone never starts a long render). */
+  async function checkDecoder(track) {
+    requireWebCodecs();
+    const cfg = { codec: track.codec, codedWidth: track.width, codedHeight: track.height };
+    if (track.description) cfg.description = track.description;
+    try { const r = await VideoDecoder.isConfigSupported(cfg); return !!(r && r.supported); } catch (_) { return false; }
+  }
+
+  class ClipDecoder {
+    constructor(track, reader, range, opts = {}) {
+      this.track = track; this.reader = reader; this.range = range;
+      this.q = []; this.waiters = []; this.gates = [];
+      this.err = null; this.done = false; this.closed = false;
+      this.maxQueued = opts.maxQueued || 3;
+      this.timeoutMs = opts.timeoutMs || 30000;
+      this.decodeAcceleration = opts.acceleration || 'no-preference';
+      this.dec = new VideoDecoder({
+        output: frame => { if (this.closed) frame.close(); else { this.q.push(frame); this._wake(); } },
+        error: e => { this.err = e; this._wake(); this._openGate(); }
+      });
+      this.dec.ondequeue = () => this._openGate();
+    }
+    async start() {
+      const t = this.track;
+      const cfg = { codec: t.codec, codedWidth: t.width, codedHeight: t.height, hardwareAcceleration: this.decodeAcceleration, optimizeForLatency: true };
+      if (t.description) cfg.description = t.description;
+      const support = await VideoDecoder.isConfigSupported(cfg);
+      if (!support || !support.supported) throw new Unsupported('this device cannot decode ' + t.codec);
+      this.dec.configure(cfg);
+      this._feed();
+    }
+    _wake() { const w = this.waiters; this.waiters = []; for (const r of w) r(); }
+    _openGate() { const g = this.gates; this.gates = []; for (const r of g) r(); }
+    async _feed() {
+      const t = this.track;
+      try {
+        for (let i = this.range.start; i <= this.range.end && !this.closed; i++) {
+          while (!this.closed && !this.err && (this.dec.decodeQueueSize > 6 || this.q.length >= this.maxQueued)) {
+            await withTimeout(new Promise(r => this.gates.push(r)), this.timeoutMs, 'decoder did not accept more input');
+          }
+          if (this.closed || this.err) return;
+          const data = await this.reader.read(t.offsets[i], t.sizes[i]);
+          this.dec.decode(new EncodedVideoChunk({
+            type: t.key[i] ? 'key' : 'delta',
+            timestamp: Math.round(t.pts[i] * 1e6) + TS_BIAS_US,
+            data
+          }));
+        }
+        if (!this.closed && !this.err) await withTimeout(this.dec.flush(), this.timeoutMs, 'decoder flush');
+        this.done = true;
+      } catch (e) {
+        if (!this.closed) this.err = e;
+      } finally { this._wake(); }
+    }
+    /** Next decoded frame in display order as { frame, pts } (pts in source seconds), or null at the end. */
+    async next() {
+      for (;;) {
+        if (this.q.length) { const frame = this.q.shift(); this._openGate(); return { frame, pts: (frame.timestamp - TS_BIAS_US) / 1e6 }; }
+        if (this.err) throw this.err;
+        if (this.done) return null;
+        await withTimeout(new Promise(r => this.waiters.push(r)), this.timeoutMs, 'decoder produced no frame');
+      }
+    }
+    close() {
+      this.closed = true;
+      try { if (this.dec.state !== 'closed') this.dec.close(); } catch (_) { /* already closed */ }
+      for (const f of this.q) { try { f.close(); } catch (_) { /* ignore */ } }
+      this.q = []; this._openGate(); this._wake();
+    }
+  }
+
+  /* ------------------------------------------------------------------
+     6. Output sinks
+     ------------------------------------------------------------------ */
+  /** Collects H.264 as an Annex B elementary stream (what `ffmpeg -f h264` reads). */
+  class AnnexBSink {
+    constructor(maxBytes = Infinity) {
+      this.parts = []; this.bytes = 0; this.frameCount = 0; this.params = null; this.nalLength = 4;
+      this.maxBytes = Number.isFinite(maxBytes) && maxBytes > 0 ? maxBytes : Infinity;
+    }
+    onChunk(chunk, meta) {
+      // A rendered stream is temporarily held as individual JS chunks, then as one
+      // contiguous Uint8Array, and then copied into FFmpeg.wasm. Refuse to grow
+      // beyond the caller's memory budget rather than risking a WebView OOM.
+      if (this.bytes + chunk.byteLength > this.maxBytes) {
+        const error = new Unsupported('device video output exceeded its safe in-memory buffer budget'); error.code = 'PIECE_BUDGET_EXCEEDED'; throw error;
+      }
+      if (meta && meta.decoderConfig && meta.decoderConfig.description) {
+        const parsed = parseAvcC(meta.decoderConfig.description);
+        this.params = parsed; this.nalLength = parsed.nalLength;
+      }
+      const raw = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(raw);
+      let out;
+      if (this.params) out = avccToAnnexB(raw, this.nalLength, chunk.type === 'key' ? this.params : null);
+      else out = raw; // encoder already produced Annex B
+      if (this.bytes + out.length > this.maxBytes) {
+        const error = new Unsupported('device video output exceeded its safe in-memory buffer budget'); error.code = 'PIECE_BUDGET_EXCEEDED'; throw error;
+      }
+      this.parts.push(out); this.bytes += out.length; this.frameCount++;
+    }
+    finish() {
+      const all = new Uint8Array(this.bytes);
+      let o = 0;
+      for (const p of this.parts) { all.set(p, o); o += p.length; }
+      this.parts = [];
+      return all;
+    }
+  }
+
+  /** IVF container, used by tests to inspect VP8/VP9 output with ffmpeg. Not used in production. */
+  class IvfSink {
+    constructor(fourccName, W, H, fps) { this.fourcc = fourccName; this.W = W; this.H = H; this.fps = fps; this.frames = []; }
+    onChunk(chunk) { const d = new Uint8Array(chunk.byteLength); chunk.copyTo(d); this.frames.push({ d, ts: chunk.timestamp }); }
+    finish() {
+      const size = 32 + this.frames.reduce((s, f) => s + 12 + f.d.length, 0);
+      const out = new Uint8Array(size), v = new DataView(out.buffer);
+      out.set([0x44, 0x4b, 0x49, 0x46]); v.setUint16(4, 0, true); v.setUint16(6, 32, true);
+      for (let i = 0; i < 4; i++) out[8 + i] = this.fourcc.charCodeAt(i);
+      v.setUint16(12, this.W, true); v.setUint16(14, this.H, true); v.setUint32(16, this.fps, true); v.setUint32(20, 1, true); v.setUint32(24, this.frames.length, true);
+      let o = 32;
+      this.frames.forEach((f, i) => { v.setUint32(o, f.d.length, true); v.setBigUint64(o + 4, BigInt(i), true); out.set(f.d, o + 12); o += 12 + f.d.length; });
+      return out;
+    }
+  }
+
+  /* ------------------------------------------------------------------
+     7. The render loop
+     ------------------------------------------------------------------ */
+  /**
+   * Renders the main timeline to an encoded elementary stream.
+   * opts.clips: [{ file, track, in, out, speed, fade }]  (track from demux().video)
+   * opts.overlays: [{ bitmap, x, y, w, h, start, end }]  start/end in timeline seconds, x/y/w/h in output pixels
+   * opts.choice: result of chooseEncoderConfig; opts.sink: AnnexBSink (or IvfSink in tests)
+   * Resolves { frames, clipFrames:[n...], bytes, ms }.
+   */
+  async function renderTimeline(opts) {
+    requireWebCodecs();
+    const { clips, W, H, fps, choice, sink } = opts;
+    const overlays = opts.overlays || [];
+    const onProgress = opts.onProgress || (() => {});
+    const isCancelled = opts.isCancelled || (() => false);
+    const timeoutMs = opts.timeoutMs || 30000;
+    const canvas = typeof OffscreenCanvas === 'function' ? new OffscreenCanvas(W, H) : Object.assign(document.createElement('canvas'), { width: W, height: H });
+    const ctx = canvas.getContext('2d', { alpha: false });
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+
+    let encErr = null, encoderWaiters = [], encoder = null;
+
+    const plan = clips.map(c => ({ c, td: (c.out - c.in) / (c.speed || 1) }));
+    const plannedFrames = planFrameCounts(plan.map(p => p.td), fps);
+    plan.forEach((p, i) => { p.frames = plannedFrames[i]; });
+    const totalFrames = plan.reduce((s, p) => s + p.frames, 0);
+    const gop = Math.max(1, Math.round(fps * 2));
+    const frameUs = Math.round(1e6 / fps);
+    let globalFrame = 0, timelineOffset = 0;
+    const t0 = performance.now();
+    const cleanup = [];
+    try {
+      // Configure inside the guarded region so even a rejected configuration closes the encoder.
+      encoder = new VideoEncoder({
+        output: (chunk, meta) => { try { sink.onChunk(chunk, meta); } catch (e) { encErr = e; } },
+        error: e => { encErr = e; }
+      });
+      encoder.ondequeue = () => { const w = encoderWaiters; encoderWaiters = []; for (const r of w) r(); };
+      encoder.configure(choice.config);
+      for (const p of plan) {
+        const { c } = p;
+        const track = c.track, reader = new RangeReader(c.file);
+        const range = clipSampleRange(track, c, p.frames, fps);
+        const decoder = new ClipDecoder(track, reader, range, { timeoutMs });
+        cleanup.push(() => decoder.close());
+        await decoder.start();
+        const rot = track.rotation, swap = rot === 90 || rot === 270;
+        const fd = Math.min(0.4, Math.max(0.05, p.td / 2));
+        let cur = null, nxt = null;
+        try {
+          nxt = await decoder.next();
+          for (let k = 0; k < p.frames; k++) {
+          if (isCancelled()) throw new Error('Export cancelled');
+          if (encErr) throw encErr;
+          const limit = sourceLimit(c, k, fps);
+          // A frame exactly on the half-slot boundary belongs to the NEXT slot (FFmpeg rounds .5 up). Timestamps are whole
+          // microseconds, so allow for rounding: without this, 60 fps footage exported at 30 fps picks the wrong neighbour.
+          while (nxt && nxt.pts < limit - 2e-6) { if (cur) cur.frame.close(); cur = nxt; nxt = await decoder.next(); }
+          if (!cur && nxt) { cur = nxt; nxt = await decoder.next(); }
+          if (!cur) throw new Error('The video has no decodable frames in the selected range.');
+
+          const tClip = k / fps;
+          let alpha = 1;
+          const fadeIn = c.fadeIn == null ? !!c.fade : !!c.fadeIn;
+          const fadeOut = c.fadeOut == null ? !!c.fade : !!c.fadeOut;
+          if (fadeIn || fadeOut) alpha = Math.max(0, Math.min(1,
+            fadeIn ? tClip / fd : 1, fadeOut ? (p.td - tClip) / fd : 1));
+          ctx.globalAlpha = 1; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+          const f = cur.frame;
+          const dw = swap ? f.displayHeight : f.displayWidth, dh = swap ? f.displayWidth : f.displayHeight;
+          const r = fitRect(dw, dh, W, H);
+          ctx.save();
+          ctx.globalAlpha = alpha;
+          ctx.translate(r.x + r.w / 2, r.y + r.h / 2);
+          ctx.rotate(rot * Math.PI / 180);
+          const pw = swap ? r.h : r.w, ph = swap ? r.w : r.h;
+          ctx.drawImage(f, -pw / 2, -ph / 2, pw, ph);
+          ctx.restore();
+          ctx.globalAlpha = 1;
+          const tl = timelineOffset + tClip;
+          for (const o of overlays) {
+            if (tl >= o.start - 1e-6 && tl <= o.end + 1e-6) ctx.drawImage(o.bitmap, o.x, o.y, o.w, o.h);
+          }
+
+          const vf = new VideoFrame(canvas, { timestamp: globalFrame * frameUs, duration: frameUs });
+          try { encoder.encode(vf, { keyFrame: globalFrame % gop === 0 }); } finally { vf.close(); }
+          globalFrame++;
+          while (!encErr && encoder.encodeQueueSize > 6) {
+            await withTimeout(new Promise(res => encoderWaiters.push(res)), timeoutMs, 'video encoder stopped accepting frames');
+          }
+          if (globalFrame % 8 === 0 || globalFrame === totalFrames) onProgress(globalFrame / totalFrames);
+          }
+        } finally {
+          // Frames already handed out by decoder.next() are no longer in its internal queue.
+          // Close both even when rendering is cancelled or a later decode/encode operation throws.
+          if (cur) { try { cur.frame.close(); } catch (_) { /* already closed */ } }
+          if (nxt) { try { nxt.frame.close(); } catch (_) { /* already closed */ } }
+          decoder.close();
+        }
+        timelineOffset += p.td;
+      }
+      await withTimeout(encoder.flush(), timeoutMs * 2, 'video encoder flush');
+      if (encErr) throw encErr;
+      if (Number.isFinite(sink.frameCount) && sink.frameCount !== globalFrame) {
+        throw new Unsupported(`device encoder emitted ${sink.frameCount} output frames for ${globalFrame} submitted frames`);
+      }
+    } finally {
+      for (const fn of cleanup) { try { fn(); } catch (_) { /* ignore */ } }
+      try { if (encoder && encoder.state !== 'closed') encoder.close(); } catch (_) { /* ignore */ }
+    }
+    return { frames: globalFrame, clipFrames: plan.map(p => p.frames), ms: performance.now() - t0, totalFrames };
+  }
+
+  /** Crops a full-canvas transparent overlay (the PNG of the whole editor canvas) to the pixels that matter, so 100 captions
+      do not cost 100 full frames of memory. outW x outH is the exported video size; the PNG is stretched over the whole
+      frame exactly like FFmpeg's scale=W:H did. Returns null for a fully transparent overlay. */
+  async function overlayFromPng(pngBytes, outW, outH) {
+    const full = await createImageBitmap(new Blob([pngBytes], { type: 'image/png' }));
+    const width = full.width, height = full.height;
+    const probe = typeof OffscreenCanvas === 'function' ? new OffscreenCanvas(width, height) : Object.assign(document.createElement('canvas'), { width, height });
+    const pctx = probe.getContext('2d', { willReadFrequently: true });
+    pctx.drawImage(full, 0, 0);
+    const data = pctx.getImageData(0, 0, width, height).data;
+    let x0 = width, y0 = height, x1 = -1, y1 = -1;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0, i = y * width * 4 + 3; x < width; x++, i += 4) {
+        if (data[i] !== 0) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+      }
+    }
+    if (x1 < 0) { full.close(); return null; }
+    const cw = x1 - x0 + 1, ch = y1 - y0 + 1;
+    const bitmap = await createImageBitmap(full, x0, y0, cw, ch);
+    full.close();
+    const sx = outW / width, sy = outH / height;
+    const x = Math.floor(x0 * sx), y = Math.floor(y0 * sy);
+    return { bitmap, x, y, w: Math.max(1, Math.min(outW - x, Math.ceil((x0 + cw) * sx) - x)), h: Math.max(1, Math.min(outH - y, Math.ceil((y0 + ch) * sy) - y)) };
+  }
+
+  return {
+    Unsupported, demux, parseAvcC, avccToAnnexB, codecFromConfig,
+    frameCount, planFrameCounts, sourceLimit, avcLevelIdc, targetBitrate, fitRect, clipSampleRange, ineligibleReason,
+    chooseEncoderConfig, benchmarkEncoder, checkDecoder, renderTimeline, overlayFromPng,
+    AnnexBSink, IvfSink, RangeReader, ClipDecoder
+  };
+}));
+
