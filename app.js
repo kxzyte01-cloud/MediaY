@@ -74,7 +74,16 @@ const MIN_TIMELINE_FRAME = 1 / TIMELINE_FPS;
 const say = m => ($('status').textContent = m);
 
 // Shared blocking progress UI for long-running media tasks.
+let nativeExportServiceActive = false, lastNativeServiceRenewAt = 0;
+function renewNativeExportServiceIfNeeded() {
+  if (!nativeExportServiceActive || Date.now() - lastNativeServiceRenewAt < 60_000) return;
+  const plugin = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.MediaYExportService;
+  if (!plugin || typeof plugin.renew !== 'function') return;
+  lastNativeServiceRenewAt = Date.now();
+  Promise.resolve(plugin.renew()).catch(error => console.warn('Could not renew native export protection:', error));
+}
 function updateBusy(title, detail, progress = null, stage = 'Working') {
+  renewNativeExportServiceIfNeeded();
   const overlay = $('busyOverlay');
   if (!overlay) return;
   overlay.hidden = false;
@@ -1492,6 +1501,8 @@ async function beginNativeExportService() {
   if (!plugin || typeof plugin.start !== 'function') return false;
   try {
     await plugin.start();
+    nativeExportServiceActive = true;
+    lastNativeServiceRenewAt = Date.now();
     return true;
   } catch (error) {
     console.warn('Could not start native export foreground service:', error);
@@ -1499,6 +1510,7 @@ async function beginNativeExportService() {
   }
 }
 async function endNativeExportService() {
+  nativeExportServiceActive = false;
   const plugin = isNative() && window.Capacitor && window.Capacitor.Plugins &&
     window.Capacitor.Plugins.MediaYExportService;
   if (!plugin || typeof plugin.stop !== 'function') return;
@@ -1778,7 +1790,7 @@ const runExport = async (_event, recoveryAttempt = 0) => {
         const videoSegments = [], clipFrames = [];
         const minPieceFrames = Math.max(1, Math.round(EXP.fps));
         let adaptiveChunkLimit = maxChunkFrames;
-        let renderedFrames = 0, segmentIndex = 0, timelineOffset = 0;
+        let renderedFrames = 0, segmentIndex = 0, timelineOffset = 0, lastDeviceProgress = 0;
         const rate = String(EXP.fps);
         exportProgressHandler = null;
         for (let i = 0; i < S.main.length; i++) {
@@ -1814,8 +1826,9 @@ const runExport = async (_event, recoveryAttempt = 0) => {
                   isCancelled: () => exportCancelRequested,
                   onProgress: f => {
                     const progress = (renderedFrames + f * chunkFrames) / Math.max(1, totalFrames);
-                    updateBusy('Rendering video…', `Encoding with this phone’s video encoder: ${Math.round(progress * 100)}%.`,
-                      8 + progress * 50, 'Rendering');
+                    lastDeviceProgress = Math.max(lastDeviceProgress, progress);
+                    updateBusy('Rendering video…', `Encoding with this phone’s video encoder: ${Math.round(lastDeviceProgress * 100)}%.`,
+                      8 + lastDeviceProgress * 50, 'Rendering');
                   }
                 });
               } catch (error) {
@@ -2088,7 +2101,7 @@ const runExport = async (_event, recoveryAttempt = 0) => {
         const mixInputs = (originalHasAudio ? '[0:a]' : '') + activeTracks.map((_, i) => `[a${i}]`).join('');
         const mixCount = activeTracks.length + (originalHasAudio ? 1 : 0);
         const mix = mixCount === 1 ? `${mixInputs}anull[mixed]`
-          : `${mixInputs}amix=inputs=${mixCount}:duration=longest:normalize=0[mixed]`;
+          : `${mixInputs}amix=inputs=${mixCount}:duration=longest:normalize=0:dropout_transition=0[mixed]`;
         const filter = `${parts.join(';')};${mix};[mixed]apad=whole_dur=${timelineDur}[m]`;
         exportWorkspaceFiles.add('final.mp4');
         await run(['-i', out, ...ins, '-filter_complex', filter, '-map', '0:v', '-map', '[m]',
@@ -2912,6 +2925,7 @@ async function commitCaptionDrafts(drafts) {
     ));
     if (!verified) throw new Error('Captions were generated but could not be verified in the saved project. Check device storage and try again.');
 
+    if (captionCancelRequested) throw abortCaption();
     restack();
     commit();
     return staged.length;
