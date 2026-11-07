@@ -33,3 +33,10 @@ test('FFmpeg commands have a progress/log inactivity watchdog, not a fixed expor
   assert.ok(app.includes('window.clearTimeout(watchdogTimer)'));
   assert.ok(app.includes('FFmpeg stopped reporting activity for 15 minutes'));
 });
+
+test('caption commit checks cancellation immediately before committing the transaction', () => {
+  const start = app.indexOf('async function commitCaptionDrafts');
+  const end = app.indexOf('async function ', start + 20);
+  const source = app.slice(start, end);
+  assert.match(source, /if \(captionCancelRequested\) throw abortCaption\(\);\s*restack\(\);\s*commit\(\);/);
+});
