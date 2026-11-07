@@ -8,7 +8,7 @@ const app = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
 
 test('caption commit checks cancellation immediately before committing staged overlays', () => {
   const start = app.indexOf('async function commitCaptionDrafts(drafts)');
-  const end = app.indexOf('\nasync function ', start + 1);
+  const end = app.indexOf('\nfunction requestExportCancel()', start + 1);
   assert.ok(start >= 0 && end > start, 'caption commit function must exist');
   const commit = app.slice(start, end);
   const cancel = commit.lastIndexOf('if (captionCancelRequested) throw abortCaption();');
