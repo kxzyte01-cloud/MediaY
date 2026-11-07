@@ -107,7 +107,9 @@ test('contrast smoke test checks gradient stops and every inspector form control
   const smoke=read('test_smoke.py');
   assert.doesNotMatch(smoke,/if \(gradient\) continue/);
   assert.match(smoke,/st\.backgroundImage\.match/);
-  assert.match(smoke,/all inspector panes, form controls and performance diagnostics/);
-  assert.match(smoke,/#sheet input/);
+  assert.match(smoke,/all inspector panes, text form controls and performance diagnostics/);
+  assert.match(smoke,/#sheet input:not\(\[type=range\]\)/);
+  assert.match(smoke,/assert_range_accent_contrast\(page, '#sheet input\[type=range\]'/);
   assert.match(smoke,/#perfReport/);
+  assert.match(style,/#sheet input\[type=range\] \{ accent-color:#00647A; \}/);
 });
