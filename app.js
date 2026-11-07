@@ -118,9 +118,24 @@ function hideBusy() {
   if (overlay) { overlay.hidden = true; delete overlay.dataset.state; }
   const dismiss = $('busyDismiss');
   if (dismiss) { dismiss.textContent = 'Close'; dismiss.disabled = false; dismiss.onclick = hideBusy; }
+  const discard = $('busyDiscard');
+  if (discard) discard.hidden = true;
   document.body.removeAttribute('aria-busy');
 }
 $('busyDismiss').onclick = hideBusy;
+$('busyDiscard').onclick = async () => {
+  const pending = pendingExportSave;
+  if (!pending) return;
+  if (!window.confirm('Discard the completed render? Your editing project will remain unchanged, but this exported MP4 will be lost.')) return;
+  pendingExportSave = null;
+  pending.data = null;
+  if (pending.engine && pending.path) {
+    try { await pending.engine.deleteFile(pending.path); } catch (_) {}
+  }
+  await releaseHeavyResources();
+  hideBusy();
+  say('Completed render discarded. Your editing project is unchanged.');
+};
 
 /* ---------- Database (Dexie): media blobs + project state ---------- */
 const db = new Dexie('projectmedia-y');
@@ -2328,6 +2343,7 @@ const runExport = async (_event, recoveryAttempt = 0) => {
       const message = 'The video finished rendering, but saving failed. Your completed MP4 is still preserved in MediaY memory. Check storage or Android save permissions, then tap Retry save. Keep MediaY open.';
       say(message);
       showBusyError('Video rendered — save failed', message);
+      $('busyDiscard').hidden = false;
       const retry = $('busyDismiss');
       retry.textContent = 'Retry save';
       retry.onclick = retryPendingExportSave;
