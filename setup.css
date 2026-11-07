@@ -261,3 +261,6 @@
   .media-library-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
   .media-library-item { padding: 5px; }
 }
+
+/* Inspector sliders sit on pale cards; use a darker teal with >=3:1 non-text contrast. */
+#sheet input[type=range] { accent-color:#006B78; }
