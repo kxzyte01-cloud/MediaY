@@ -1,12 +1,98 @@
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
+def assert_computed_contrast(page, selectors, label):
+    report = page.evaluate("""selectors => {
+      const parse = value => {
+        const text = String(value);
+        const m = text.match(/rgba?\\(\\s*([\\d.]+)[,\\s]+([\\d.]+)[,\\s]+([\\d.]+)(?:\\s*[,/]\\s*([\\d.]+))?\\s*\\)/i);
+        if (m) return [Number(m[1]), Number(m[2]), Number(m[3]), m[4] === undefined ? 1 : Number(m[4])];
+        const h = text.match(/^#([0-9a-f]{3,8})$/i);
+        if (!h) return null;
+        let v = h[1];
+        if (v.length === 3 || v.length === 4) v = v.slice(0,3).split('').map(x=>x+x).join('') + (v.length === 4 ? v[3]+v[3] : '');
+        if (v.length !== 6 && v.length !== 8) return null;
+        return [parseInt(v.slice(0,2),16),parseInt(v.slice(2,4),16),parseInt(v.slice(4,6),16),v.length===8?parseInt(v.slice(6,8),16)/255:1];
+      };
+      const luminance = rgb => {
+        const c = rgb.map(v => { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; });
+        return .2126 * c[0] + .7152 * c[1] + .0722 * c[2];
+      };
+      const results = [];
+      for (const selector of selectors) for (const el of document.querySelectorAll(selector)) {
+        const cs = getComputedStyle(el);
+        const label = el.textContent.trim() ||
+          (el.labels ? Array.from(el.labels).map(x => x.innerText).join(' ').trim() : '') ||
+          el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.id || '';
+        if (!label || el.matches(':disabled') || cs.display === 'none' || cs.visibility === 'hidden' || !el.getClientRects().length) continue;
+        let chain = [], node = el, backgrounds = [[8, 13, 24]], opacity = 1;
+        while (node) { chain.unshift(node); node = node.parentElement; }
+        const blend = (bg, color) => bg.map((v, i) => color[i] * color[3] + v * (1 - color[3]));
+        for (const item of chain) {
+          const st = getComputedStyle(item);
+          if (st.backgroundImage !== 'none') {
+            const tokens = st.backgroundImage.match(/#[0-9a-f]{3,8}|rgba?\\([^)]*\\)/gi) || [];
+            const stops = tokens.map(parse).filter(color => color && color[3] > 0);
+            if (stops.length) backgrounds = backgrounds.flatMap(bg => stops.map(color => blend(bg, color)));
+          }
+          const color = parse(st.backgroundColor);
+          if (color && color[3] > 0) backgrounds = backgrounds.map(bg => blend(bg, color));
+          const nodeOpacity = parseFloat(st.opacity); if (Number.isFinite(nodeOpacity)) opacity *= nodeOpacity;
+        }
+        // Range inputs are non-text UI controls: evaluate their accent colour
+        // against the control surface at the WCAG 3:1 non-text threshold, rather
+        // than treating the input's accessible name as rendered text at 4.5:1.
+        const isRange = el instanceof HTMLInputElement && el.type === 'range';
+        const fg = parse(isRange ? cs.accentColor : cs.color);
+        if (!fg) continue;
+        const alpha = fg[3] * opacity;
+        const ratios = backgrounds.map(bg => {
+          const visibleFg = fg.slice(0, 3).map((v, i) => v * alpha + bg[i] * (1 - alpha));
+          return (Math.max(luminance(visibleFg), luminance(bg)) + .05) / (Math.min(luminance(visibleFg), luminance(bg)) + .05);
+        });
+        const ratio = Math.min(...ratios);
+        const size = parseFloat(cs.fontSize) || 16, weight = parseInt(cs.fontWeight, 10) || 400;
+        const threshold = isRange ? 3 : ((size >= 24 || (size >= 18.66 && weight >= 700)) ? 3 : 4.5);
+        results.push({selector, text:label.slice(0,32), ratio:Number(ratio.toFixed(2)), threshold, foreground:isRange ? cs.accentColor : cs.color, controlType:isRange ? 'range' : 'text', backgrounds:backgrounds.map(bg=>bg.map(v=>Math.round(v)))});
+      }
+      return results;
+    }""", selectors)
+    assert report, f"No visible text controls found for {label}"
+    failures = [item for item in report if item["ratio"] + 0.01 < item["threshold"]]
+    assert not failures, f"Computed WCAG contrast failed for {label}: {failures}"
+    print(f"PASS: computed WCAG contrast for {label} ({len(report)} rendered text controls)")
+
+
+
+def assert_range_accent_contrast(page, selector, label):
+    report = page.evaluate("""selector => {
+      const parse = value => {
+        const m = String(value).match(/rgba?\\(\\s*([\\d.]+)[,\\s]+([\\d.]+)[,\\s]+([\\d.]+)(?:\\s*[,/]\\s*([\\d.]+))?\\s*\\)/i);
+        return m ? [Number(m[1]), Number(m[2]), Number(m[3]), m[4] === undefined ? 1 : Number(m[4])] : null;
+      };
+      const lum = rgb => { const c = rgb.map(v => { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; }); return .2126*c[0]+.7152*c[1]+.0722*c[2]; };
+      return [...document.querySelectorAll(selector)].filter(el => el.getClientRects().length).map(el => {
+        const accent = parse(getComputedStyle(el).accentColor);
+        let node = el.parentElement, background = null;
+        while (node && !background) { const color = parse(getComputedStyle(node).backgroundColor); if (color && color[3] > 0) background = color; node = node.parentElement; }
+        if (!accent || !background) return { id:el.id, ratio:0 };
+        const a = lum(accent.slice(0,3)), b = lum(background.slice(0,3));
+        return { id:el.id, ratio:Number(((Math.max(a,b)+.05)/(Math.min(a,b)+.05)).toFixed(2)), accent:accent.slice(0,3), background:background.slice(0,3) };
+      });
+    }""", selector)
+    assert report, f"No visible range controls found for {label}"
+    failures = [item for item in report if item["ratio"] < 3.0]
+    assert not failures, f"Range-control accent contrast failed for {label}: {failures}"
+    print(f"PASS: range-control accent contrast for {label} ({len(report)} sliders)")
+
 root=Path(__file__).resolve().parent
 html=(root/'index.html').read_text()
 # FFmpeg is covered by a real-origin integration test; stub the vendored script in this DOM-only smoke test.
 html=html.replace('<script src="./vendor/ffmpeg/ffmpeg.js"></script>', '<script>window.FFmpegWASM={};</script>')
 style=(root/'style.css').read_text()
 setup_style=(root/'setup.css').read_text()
+icons=(root/'mediay-icons.js').read_text()
+core=(root/'mediay-core.js').read_text()
 app=(root/'app.js').read_text()
 setup=(root/'setup.js').read_text()
 FABRIC_STUB = r'''window.fabric = (function(){
@@ -28,7 +114,7 @@ DEXIE_STUB = r'''window.Dexie = class Dexie {
  constructor(){ const maps={projects:new Map(),media:new Map()}; this.projects={get:async k=>maps.projects.get(k)||null,put:async v=>{maps.projects.set(v.id,structuredClone(v));return v.id},toArray:async()=>Array.from(maps.projects.values()).map(x=>structuredClone(x)),delete:async k=>maps.projects.delete(k)}; this.media={get:async k=>maps.media.get(k)||null,put:async v=>{maps.media.set(v.id,v);return v.id}}; }
  version(){return {stores:()=>this};}
 };'''
-LUCIDE_STUB = r'''window.lucide={createIcons:function(){}};'''
+
 # Build an all-inline version; no network or local file URL is needed for the smoke test.
 html=html.replace('<link rel="manifest" href="./manifest.json">','')
 html=html.replace('<link rel="icon" href="./favicon.svg" type="image/svg+xml">','')
@@ -37,10 +123,12 @@ html=html.replace('<link rel="stylesheet" href="./style.css">', '<style>'+style+
 html=html.replace('<link rel="stylesheet" href="./setup.css">', '<style>'+setup_style+'</style>')
 for x in ['<link rel="preconnect" href="https://fonts.googleapis.com">','<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">']:
     html=html.replace(x,'')
-html=html.replace('<script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>', '<script>'+FABRIC_STUB+'</script>')
-html=html.replace('<script src="https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.2/anime.min.js"></script>', '<script>'+ANIME_STUB+'</script>')
-html=html.replace('<script src="https://unpkg.com/dexie@3.2.7/dist/dexie.min.js"></script>', '<script>'+DEXIE_STUB+'</script>')
-html=html.replace('<script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>', '<script>'+LUCIDE_STUB+'</script>')
+html=html.replace('<script src="./vendor/media-libraries/fabric.min.js" integrity="sha256-uwRC1ppNRnMyD2ibxuFsBaDj8WzPv1UfOU2Qp+fPx3I=" crossorigin="anonymous"></script>', '<script>'+FABRIC_STUB+'</script>')
+html=html.replace('<script src="./vendor/media-libraries/anime.min.js" integrity="sha256-tc4b48P1MPGS4PJXHRlChGCW1mEZy62jS/3JEsSHPzU=" crossorigin="anonymous"></script>', '<script>'+ANIME_STUB+'</script>')
+html=html.replace('<script src="./vendor/media-libraries/dexie.min.js" integrity="sha256-2JhqFVK0mn2MsIWpLGaYWuvzuzO2Stb3uu0kYdm2R/8=" crossorigin="anonymous"></script>', '<script>'+DEXIE_STUB+'</script>')
+
+html=html.replace('<script src="./mediay-icons.js"></script>', '<script>'+icons+'</script>')
+html=html.replace('<script src="./mediay-core.js"></script>', '<script>'+core+'</script>')
 html=html.replace('<script src="./app.js"></script>', '<script>'+app+'</script>')
 html=html.replace('<script src="./setup.js"></script>', '<script>'+setup+'</script>')
 html=html.replace('<script>'+app+'</script>', '<script>try{localStorage.setItem("pmy-consent-v1","yes")}catch(e){}</script><script>'+app+'</script>')
@@ -57,11 +145,21 @@ with sync_playwright() as p:
     assert "await endNativeExportService()" in app, 'native export service is not stopped during export cleanup'
     assert "foreground-service notification" in html, 'background export guidance is missing'
     print('PASS: Android export service hooks and foreground-export guidance are present')
+    assert page.locator('.dock svg[data-mediay-svg]').count() >= 10, 'custom MediaY toolbar SVG icons did not render'
+    assert page.locator('#homeScreen svg[data-mediay-svg]').count() >= 4, 'custom MediaY home SVG icons did not render'
+    assert 'lucide.min.js' not in html and 'fonts.googleapis.com' not in html, 'remote icon/font dependencies remain'
     print('PASS: home screen appears on startup')
+    print('PASS: original local SVG icons render in home and editor toolbar')
     page.locator('#hmNew').click(); page.wait_for_selector('#setup:not([hidden])')
     print('PASS: New project opens setup screen')
     page.locator('#suStart').click(); page.wait_for_function("document.querySelector('#homeScreen').hidden === true")
     print('PASS: Start editing closes home/setup and opens editor')
+    page.evaluate("""() => {
+      S.main.push({id:'contrast-clip', mediaId:'missing-contrast', name:'Contrast clip.mp4', in:0, out:5, src:5});
+      select('contrast-clip','main'); t=1; drawTimeline(); refresh(t);
+    }""")
+    assert_computed_contrast(page, ['#status', '#timeDisplay', '.timeline-tools-title', '#tlZoomLabel', '#copyTillBtn', '.dock button', '.track-name', '.timeline-ruler'], 'editor and timeline controls')
+    page.evaluate("S.main=[]; select(null); drawTimeline(); refresh(0);")
     assert page.locator('#tlZoom').count() == 1, 'timeline zoom slider is missing'
     assert page.locator('#copyTillBtn').count() == 1, 'Copy till here control is missing'
     assert page.locator('#adjustBtn').count() == 1, 'Adjust control is missing'
@@ -99,6 +197,26 @@ with sync_playwright() as p:
       select('adjust-test-a','main');
     }""")
     page.locator('#adjustBtn').click()
+    page.wait_for_timeout(250)
+    assert_computed_contrast(page, ['.adjust-control > span', '.adjust-control output'], 'adjustment labels and values')
+    page.evaluate("""() => {
+      document.querySelector('#sheet').hidden = false;
+      document.querySelectorAll('#sheet [data-pane]').forEach(el => { el.dataset.smokeWasHidden = el.hidden ? '1' : '0'; el.hidden = false; });
+      const report = document.querySelector('#perfReport');
+      if (report && report.closest('details')) { report.closest('details').dataset.smokeWasOpen = report.closest('details').open ? '1' : '0'; report.closest('details').open = true; }
+    }""")
+    assert_computed_contrast(page, ['#sheet button', '#sheet label', '#sheet input:not([type=range]):not([type=color]):not([type=checkbox])', '#sheet select',
+      '#sheet textarea', '#sheet output', '#sheet p.lbl', '.perf-tools summary', '#perfReport'],
+      'all inspector panes, text form controls and performance diagnostics')
+    assert_range_accent_contrast(page, '#sheet input[type=range]', 'inspector sliders')
+    page.evaluate("""() => {
+      document.querySelectorAll('#sheet [data-pane]').forEach(el => {
+        el.hidden = el.dataset.smokeWasHidden === '1';
+        delete el.dataset.smokeWasHidden;
+      });
+      const details = document.querySelector('#perfReport')?.closest('details');
+      if (details) { details.open = details.dataset.smokeWasOpen === '1'; delete details.dataset.smokeWasOpen; }
+    }""")
     page.locator('[data-adjust="brightness"]').evaluate("(e)=>{e.value='24';e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}")
     page.locator('#adjustApplyAll').click()
     adjust_result = page.evaluate("({a:S.main[0].adjust,b:S.main[1].adjust,filter:adjustmentFilter(S.main[0])})")
@@ -319,21 +437,19 @@ with sync_playwright() as p:
     }""")
     assert caption_chunks['sizes'] == [30*16000,30*16000,16000], caption_chunks
     assert caption_chunks['count'] == 3, caption_chunks
-    assert all(abs(a-b) < 0.001 for a,b in zip(caption_chunks['starts'],[5,20,35])), caption_chunks
-    assert all(abs(d-.5) < 0.001 for d in caption_chunks['durations']), caption_chunks
+    # Captions lead their speech by 0.04 s and are held 0.14 s after it (mediay-core.js CAPTION), at 2x speed.
+    assert all(abs(a-b) < 0.03 for a,b in zip(caption_chunks['starts'],[5,20,35])), caption_chunks
+    assert all(0.45 < d < 0.65 for d in caption_chunks['durations']), caption_chunks
     assert caption_chunks['progress'] == [1/3,2/3,1], caption_chunks
-    assert caption_chunks['timestampModes'] == ['word','word','word'], caption_chunks
-    print('PASS: auto captions stream 30-second inference chunks, request word timestamps, and retain source-time offsets')
+    assert caption_chunks['timestampModes'] == [True,True,True], caption_chunks
+    print('PASS: auto captions stream 30-second inference chunks, use native segment timestamps, and retain source-time offsets')
 
     word_aligned = page.evaluate("""async () => {
       const oldAsr = asr, oldCancel = captionCancelRequested;
       asr = async (_pcm, options) => {
-        if (options.return_timestamps !== 'word') throw new Error('word timestamps were not requested');
+        if (options.return_timestamps !== true) throw new Error('native segment timestamps were not requested');
         return {chunks:[
-          {text:'Hello', timestamp:[1.0,1.1]},
-          {text:'there,', timestamp:[1.3,1.55]},
-          {text:'this', timestamp:[2.0,2.2]},
-          {text:'works.', timestamp:[2.25,2.5]},
+          {text:'Hello there, this works.', timestamp:[1.0,2.5]},
           {text:'Again', timestamp:[4.0,4.3]}
         ]};
       };
@@ -346,11 +462,11 @@ with sync_playwright() as p:
     }""")
     assert len(word_aligned) == 2, word_aligned
     assert word_aligned[0]['text'] == 'Hello there, this works.', word_aligned
-    assert abs(word_aligned[0]['start'] - 10.5) < 0.001, word_aligned
-    assert abs(word_aligned[0]['dur'] - .75) < 0.001, word_aligned
+    assert abs(word_aligned[0]['start'] - 10.5) < 0.03, word_aligned
+    assert 0.7 < word_aligned[0]['dur'] < 0.95, word_aligned
     assert word_aligned[1]['text'] == 'Again', word_aligned
-    assert abs(word_aligned[1]['start'] - 12) < 0.001 and abs(word_aligned[1]['dur'] - .15) < 0.001, word_aligned
-    print('PASS: word-level subtitle grouping preserves real speech boundaries and clip-speed mapping')
+    assert abs(word_aligned[1]['start'] - 12) < 0.03 and 0.15 < word_aligned[1]['dur'] < 0.3, word_aligned
+    print('PASS: segment-level subtitle timing preserves speech boundaries and clip-speed mapping')
 
     caption_persistence = page.evaluate("""async () => {
       const draft = {id:'persist-caption-check',layer:S.nextLayer,type:'text',text:'Saved caption',style:0,start:1.25,dur:.75,top:250};
@@ -441,6 +557,115 @@ with sync_playwright() as p:
       document.body.removeAttribute('aria-busy');
     }""")
     print('PASS: caption cancellation remains clickable above the blocking progress overlay')
+    # ---- background service bookkeeping: one start, one stop, never leaked ----
+    service_calls = page.evaluate("""async () => {
+      const calls = [];
+      const old = window.Capacitor;
+      window.Capacitor = { isNativePlatform: () => true, Plugins: { MediaYExportService: {
+        start: async () => { calls.push('start'); }, stop: async () => { calls.push('stop'); } } } };
+      try {
+        const both = await Promise.all([Background.begin(), Background.begin()]);   // export + captions overlap
+        await Background.end(); const afterFirstEnd = calls.slice();
+        await Background.end(); const afterSecondEnd = calls.slice();
+        await Background.end();                                                      // extra end must be harmless
+        window.Capacitor.Plugins.MediaYExportService.start = async () => { throw new Error('denied'); };
+        const failed = await Background.begin(); await Background.end();
+        return { both, afterFirstEnd, afterSecondEnd, final: calls, failed, active: Background.active };
+      } finally { window.Capacitor = old; }
+    }""")
+    assert service_calls['both'] == [True, True], service_calls
+    assert service_calls['afterFirstEnd'] == ['start'], service_calls          # still held by the second job
+    assert service_calls['afterSecondEnd'] == ['start', 'stop'], service_calls
+    assert service_calls['final'] == ['start', 'stop'], service_calls          # unbalanced end() never stops anything twice
+    assert service_calls['failed'] is False and service_calls['active'] is False, service_calls
+    print('PASS: native background service is started once, stopped once, and survives overlapping jobs and start failures')
+
+    # ---- in-place project refresh (replaces "close and reopen the app and the project") ----
+    refresh_result = page.evaluate("""async () => {
+      const cap = {id:'refresh-check',layer:S.nextLayer,type:'text',caption:true,text:'Refresh me',style:0,start:0.5,dur:1,top:250};
+      await commitCaptionDrafts([cap]);
+      const before = snap();
+      let disposed = 0;
+      asr = async () => ({chunks:[]}); asr.dispose = async () => { disposed++; };
+      const outcome = await reopenProjectInPlace('smoke test');
+      const objects = canvas.getObjects().filter(o => o.text === 'Refresh me').length;
+      return { ok: outcome.ok, same: snap() === before, objects, asrReleased: asr === null, disposed,
+               ffReleased: !ff, overlays: S.overlays.filter(o => o.id === 'refresh-check').length };
+    }""")
+    assert refresh_result['ok'] and refresh_result['same'] and refresh_result['objects'] == 1, refresh_result
+    assert refresh_result['asrReleased'] and refresh_result['disposed'] == 1 and refresh_result['ffReleased'], refresh_result
+    assert refresh_result['overlays'] == 1, refresh_result
+    print('PASS: in-place refresh keeps the project identical, rebuilds the preview, and releases the speech model and video engine')
+
+    guards = page.evaluate("""async () => {
+      const out = {};
+      captionRunning = true; exportInProgress = 0;
+      const before = S.overlays.length;
+      await $('goExport').onclick(null, 0);                      // export must refuse while captions run
+      out.exportBlockedDuringCaptions = !$('busyOverlay') || $('busyOverlay').hidden === true;
+      captionRunning = false;
+      exportInProgress = 1;
+      await $('capGo').onclick();                                // captions must refuse while an export runs
+      out.captionsBlockedDuringExport = !captionRunning;
+      exportInProgress = 0;
+      out.untouched = S.overlays.length === before;
+      return out;
+    }""")
+    assert guards['exportBlockedDuringCaptions'] and guards['captionsBlockedDuringExport'] and guards['untouched'], guards
+    print('PASS: exports and caption generation never run at the same time')
+
+    # ---- speech engine loading: retry, corrupt-cache recovery, honest offline errors, cancellation ----
+    speech = page.evaluate("""async () => {
+      speechRetryDelayMs = 0;
+      const out = {}; const events = [];
+      const realUpdate = updateBusy;
+      const seed = pipelineImpl => speechModules.set('cpu', { env: { backends: { onnx: { wasm: {} } } }, pipeline: pipelineImpl });
+      // (a) two network failures, then success
+      let calls = 0; seed(async () => { calls++; if (calls < 3) throw new Error('Failed to fetch'); return { fake: 'model' }; });
+      captionCancelRequested = false;
+      const model = await createSpeechPipeline(false);
+      out.retry = { calls, ok: model.fake === 'model', backend: asrBackend };
+      // (b) a damaged cached file is deleted once, then the download is retried
+      const deleted = []; const realCaches = window.caches;
+      Object.defineProperty(window, 'caches', { configurable: true, value: { delete: async name => { deleted.push(name); return true; } } });
+      let corruptCalls = 0; seed(async () => { corruptCalls++; if (corruptCalls === 1) throw new Error('protobuf parsing failed'); return { fake: 'model2' }; });
+      const model2 = await createSpeechPipeline(false);
+      out.corrupt = { calls: corruptCalls, deleted, ok: model2.fake === 'model2' };
+      Object.defineProperty(window, 'caches', { configurable: true, value: realCaches });
+      // (c) never reachable: the message must say offline + how big + that it works offline afterwards
+      const onlineDesc = Object.getOwnPropertyDescriptor(Navigator.prototype, 'onLine');
+      Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => false });
+      seed(async () => { throw new Error('Failed to fetch'); });
+      try { await createSpeechPipeline(false); out.offline = 'no error'; } catch (e) { out.offline = e.message; }
+      delete navigator.onLine;
+      // (d) cancellation is honoured before any download is attempted
+      let cancelCalls = 0; seed(async () => { cancelCalls++; return {}; });
+      captionCancelRequested = true;
+      try { await createSpeechPipeline(false); out.cancel = 'no error'; } catch (e) { out.cancel = e.name; }
+      out.cancelCalls = cancelCalls; captionCancelRequested = false;
+      // (e) progress across several files is one overall percentage that never goes backwards
+      const percents = [];
+      updateBusy = (title, detail, pct) => { if (typeof pct === 'number') percents.push(pct); };
+      seed(async (task, id, options) => {
+        const cb = options.progress_callback;
+        cb({ status: 'progress', file: 'a.onnx', loaded: 10, total: 100 }); cb({ status: 'progress', file: 'b.onnx', loaded: 0, total: 100 });
+        cb({ status: 'progress', file: 'a.onnx', loaded: 100, total: 100 }); cb({ status: 'progress', file: 'b.onnx', loaded: 100, total: 100 });
+        return {};
+      });
+      await createSpeechPipeline(false);
+      updateBusy = realUpdate;
+      out.percents = percents.filter(x => x !== 0);
+      speechModules.clear();
+      hideBusy();
+      return out;
+    }""")
+    assert speech['retry'] == {'calls': 3, 'ok': True, 'backend': 'wasm'}, speech
+    assert speech['corrupt']['calls'] == 2 and speech['corrupt']['deleted'] == ['transformers-cache'] and speech['corrupt']['ok'], speech
+    assert 'offline' in speech['offline'] and '40 MB' in speech['offline'], speech
+    assert speech['cancel'] == 'AbortError' and speech['cancelCalls'] == 0, speech
+    assert speech['percents'] == sorted(speech['percents']) and speech['percents'][-1] == 100, speech
+    print('PASS: speech engine loading retries, repairs a damaged cache, reports offline honestly, honours cancel and reports one overall percentage')
+
     def handle_dialog(d): d.accept('Smoke test project')
     page.on('dialog',handle_dialog)
     page.locator('#saveBtn').click(); page.wait_for_timeout(100)

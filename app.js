@@ -74,7 +74,16 @@ const MIN_TIMELINE_FRAME = 1 / TIMELINE_FPS;
 const say = m => ($('status').textContent = m);
 
 // Shared blocking progress UI for long-running media tasks.
+let nativeExportServiceActive = false, lastNativeServiceRenewAt = 0;
+function renewNativeExportServiceIfNeeded() {
+  if (!nativeExportServiceActive || Date.now() - lastNativeServiceRenewAt < 60_000) return;
+  const plugin = window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.MediaYExportService;
+  if (!plugin || typeof plugin.renew !== 'function') return;
+  lastNativeServiceRenewAt = Date.now();
+  Promise.resolve(plugin.renew()).catch(error => console.warn('Could not renew native export protection:', error));
+}
 function updateBusy(title, detail, progress = null, stage = 'Working') {
+  renewNativeExportServiceIfNeeded();
   const overlay = $('busyOverlay');
   if (!overlay) return;
   overlay.hidden = false;
@@ -98,14 +107,34 @@ function showBusyError(title, detail) {
   updateBusy(title, detail, null, 'Needs attention');
   const overlay = $('busyOverlay');
   if (overlay) overlay.dataset.state = 'error';
-  $('busyDismiss').hidden = false;
+  const dismiss = $('busyDismiss');
+  dismiss.hidden = false;
+  dismiss.disabled = false;
+  dismiss.textContent = 'Close';
+  dismiss.onclick = hideBusy;
 }
 function hideBusy() {
   const overlay = $('busyOverlay');
   if (overlay) { overlay.hidden = true; delete overlay.dataset.state; }
+  const dismiss = $('busyDismiss');
+  if (dismiss) { dismiss.textContent = 'Close'; dismiss.disabled = false; dismiss.onclick = hideBusy; }
+  const discard = $('busyDiscard');
+  if (discard) discard.hidden = true;
   document.body.removeAttribute('aria-busy');
 }
 $('busyDismiss').onclick = hideBusy;
+$('busyDiscard').onclick = async () => {
+  const pending = pendingExportSave;
+  if (!pending) return;
+  if (!window.confirm('Discard the completed render? Your editing project will remain unchanged, but this exported MP4 will be lost.')) return;
+  pendingExportSave = null;
+  if (pending.engine && pending.path) {
+    try { await pending.engine.deleteFile(pending.path); } catch (_) {}
+  }
+  await releaseHeavyResources();
+  hideBusy();
+  say('Completed render discarded. Your editing project is unchanged.');
+};
 
 /* ---------- Database (Dexie): media blobs + project state ---------- */
 const db = new Dexie('projectmedia-y');
@@ -227,11 +256,17 @@ const canvas = new fabric.Canvas('overlayCanvas', { enableRetinaScaling: false, 
 // high-resolution logical canvas scaled down to the responsive preview.
 const OVERLAY_HANDLE_CSS_PX = 44;
 function syncOverlayControls() {
+  // Caption persistence and other non-browser tests may provide a canvas-compatible
+  // stub that does not implement Fabric's sizing/selection APIs. Overlay handles are
+  // optional in those contexts; never let UI sizing break the underlying edit action.
+  if (!canvas || typeof canvas.getWidth !== 'function' ||
+      typeof canvas.getObjects !== 'function' || typeof canvas.requestRenderAll !== 'function') return;
   const displayWidth = canvas.upperCanvasEl && canvas.upperCanvasEl.getBoundingClientRect().width;
   const logicalWidth = canvas.getWidth();
   if (!displayWidth || !logicalWidth) return;
   const handleSize = Math.max(22, Math.min(180, OVERLAY_HANDLE_CSS_PX * logicalWidth / displayWidth));
   for (const obj of canvas.getObjects()) {
+    if (!obj || typeof obj.set !== 'function') continue;
     obj.set({ cornerSize: handleSize, touchCornerSize: handleSize, padding: Math.max(8, handleSize * 0.12),
       transparentCorners: false, cornerColor: '#ff4b55', cornerStrokeColor: '#ffffff', borderColor: '#ff4b55',
       borderScaleFactor: Math.max(1.5, handleSize / 22) });
@@ -277,7 +312,8 @@ async function buildObject(o, { restackAfter = true } = {}) {
   const [w, h] = RATIOS[S.ratio];
   let obj;
   if (o.type === 'text') {
-    obj = new fabric.Textbox(o.text, { width: w * 0.8, fontFamily: 'DM Sans', fontWeight: 700, fontSize: 56, textAlign: 'center', ...TS[o.style || 0]() });
+    await ensureFontsReady();
+    obj = new fabric.Textbox(o.text, { width: w * 0.8, fontFamily: 'Avenir Next, Avenir, Segoe UI, system-ui, sans-serif', fontWeight: 700, fontSize: 56, textAlign: 'center', ...TS[o.style || 0]() });
   } else {
     const url = await loadMedia(o.mediaId); if (!url) return;
     let el;
@@ -302,18 +338,61 @@ async function buildObject(o, { restackAfter = true } = {}) {
   if (o.key && obj.applyFilters) { obj.filters = [keyFilter(o.key)]; obj.applyFilters(); }
   canvas.add(obj); syncOverlayControls(); if (restackAfter) restack(); return obj;
 }
+function releaseOverlayMediaElement(element) {
+  if (!element || String(element.tagName || '').toUpperCase() !== 'VIDEO') return;
+  try { element.pause(); } catch (_) {}
+  try { element.removeAttribute('src'); element.load(); } catch (_) {}
+}
+function disposeOverlayObject(object, overlay) {
+  if (object) {
+    // After restore(), S already points at snapshot objects without .el. The live
+    // video element must therefore be released through the Fabric object itself.
+    try { if (typeof object.getElement === 'function') releaseOverlayMediaElement(object.getElement()); } catch (_) {}
+    try { canvas.remove(object); } catch (_) { /* already detached */ }
+    try { if (typeof object.dispose === 'function') object.dispose(); } catch (_) { /* release best-effort */ }
+  }
+  const element = overlay && overlay.el;
+  if (element) {
+    releaseOverlayMediaElement(element);
+    delete overlay.el;
+  }
+}
+let rebuildGeneration = 0;
 async function rebuildCanvas() {
+  // Prevent overlapping Undo/Redo rebuilds from leaving stale Fabric objects.
+  const generation = ++rebuildGeneration;
+  for (const object of canvas.getObjects().slice()) {
+    const overlay = S.overlays.find(item => item.id === object.pmId);
+    disposeOverlayObject(object, overlay);
+  }
   canvas.clear(); sizeCanvas();
-  for (const o of [...S.overlays].sort((a, b) => a.layer - b.layer)) await buildObject(o);
-  refresh(t);
+  for (const o of [...S.overlays].sort((a, b) => a.layer - b.layer)) {
+    if (generation !== rebuildGeneration) return;
+    const built = await buildObject(o);
+    if (generation !== rebuildGeneration) {
+      if (built) disposeOverlayObject(built, o);
+      return;
+    }
+  }
+  if (generation === rebuildGeneration) refresh(t);
 }
 const objOf = id => canvas.getObjects().find(x => x.pmId === id);
 
 /* ---------- Undo / save ---------- */
 const snap = () => JSON.stringify(S, (k, v) => (k === 'el' ? undefined : v));
+function scheduleProjectSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => saveProject().catch(err => {
+    console.warn('Auto-save failed:', err);
+    say('Auto-save failed. Check available storage on this device.');
+  }), 800);
+}
 function commit() {
+  const historyWillReleaseMedia = undoStack.length >= 50 || redoStack.length > 0;
   undoStack.push(snap()); if (undoStack.length > 50) undoStack.shift(); redoStack = [];
-  drawTimeline(); clearTimeout(saveTimer); saveTimer = setTimeout(() => saveProject().catch(err => { console.warn('Auto-save failed:', err); say('Auto-save failed. Check available storage on this device.'); }), 800);
+  drawTimeline();
+  scheduleProjectSave();
+  if (historyWillReleaseMedia && typeof window.scheduleMediaGc === 'function') window.scheduleMediaGc();
 }
 function normalizeState(value) {
   const raw = typeof value === 'string' ? JSON.parse(value) : value;
@@ -327,8 +406,19 @@ function normalizeState(value) {
   };
 }
 async function restore(json) { S = normalizeState(json); sel = null; await rebuildCanvas(); drawTimeline(); }
-$('undoBtn').onclick = async () => { if (undoStack.length < 2) return; redoStack.push(undoStack.pop()); await restore(undoStack[undoStack.length - 1]); };
-$('redoBtn').onclick = async () => { if (!redoStack.length) return; const s = redoStack.pop(); undoStack.push(s); await restore(s); };
+$('undoBtn').onclick = async () => {
+  if (undoStack.length < 2) return;
+  redoStack.push(undoStack.pop());
+  await restore(undoStack[undoStack.length - 1]);
+  scheduleProjectSave();
+};
+$('redoBtn').onclick = async () => {
+  if (!redoStack.length) return;
+  const s = redoStack.pop();
+  undoStack.push(s);
+  await restore(s);
+  scheduleProjectSave();
+};
 async function saveProject() {
   const state = snap(), updated = Date.now();
   // Keep one always-up-to-date resume checkpoint, even when editing a named project.
@@ -349,8 +439,252 @@ $('saveBtn').onclick = async () => {
   try { await saveProject(); } catch (err) { console.error(err); say('Could not save this project: ' + (err.message || err)); }
 };
 
-/* ---------- Import ---------- */
-$('importBtn').onclick = () => { $('mediaInput').accept = 'video/*,image/*,audio/*'; $('mediaInput').click(); };
+/* ---------- Runtime guard: heavy-job safety, background keep-alive, in-place project refresh ---------- */
+let exportInProgress = 0, exportCancelRequested = false;
+let fontsReadyPromise = null;
+// Canvas text is measured the moment it is created. Use the same local system-font stack as the editor,
+// and wait only for fonts already used by the document; never depend on an unbundled web font.
+function ensureFontsReady() {
+  if (fontsReadyPromise) return fontsReadyPromise;
+  fontsReadyPromise = (async () => {
+    if (!document.fonts || !document.fonts.ready) return;
+    try {
+      await Promise.race([
+        document.fonts.ready,
+        new Promise(resolve => setTimeout(resolve, 800))
+      ]);
+    } catch (_) { /* system-font fallback remains available */ }
+  })();
+  return fontsReadyPromise;
+}
+
+// Reference-counted wrapper around the native Android foreground service (MediaYExportService), so that
+// export and caption jobs share one service, start/stop calls never overlap, and the last job stops it.
+const Background = (() => {
+  let holders = 0, running = false;
+  let chain = Promise.resolve();
+  const queue = job => (chain = chain.then(job, job));
+  return {
+    begin() {
+      holders++;
+      return queue(async () => {
+        if (running) return true;
+        if (holders <= 0) return false; // the job already ended while an earlier call was in flight
+        running = await beginNativeExportService();
+        return running;
+      });
+    },
+    end() {
+      holders = Math.max(0, holders - 1);
+      return queue(async () => {
+        if (holders > 0 || !running) return;
+        running = false;
+        await endNativeExportService();
+      });
+    },
+    get active() { return running; }
+  };
+})();
+
+// Frees the two big memory users once a job is finished. Both reload automatically on next use.
+async function releaseHeavyResources({ includeSpeech = true } = {}) {
+  const released = [];
+  if (asr && includeSpeech) {
+    const model = asr; asr = null;
+    try { if (typeof model.dispose === 'function') await model.dispose(); } catch (_) { /* already gone */ }
+    released.push('speech model');
+  }
+  if (ff && !ffLoading && !exportInProgress && !(pendingExportSave && pendingExportSave.engine === ff)) { disposeFFmpeg(); released.push('video engine'); }
+  return released;
+}
+function dropMediaCaches() {
+  Object.values(audios).forEach(el => { try { el.pause(); el.removeAttribute('src'); el.load(); } catch (_) {} });
+  Object.keys(audios).forEach(k => delete audios[k]);
+  Object.keys(audioLoads).forEach(k => delete audioLoads[k]);
+  try { video.pause(); } catch (_) {}
+  delete video.dataset.mid; video.removeAttribute('src'); try { video.load(); } catch (_) {}
+  for (const id of Object.keys(urls)) { try { URL.revokeObjectURL(urls[id]); } catch (_) {} delete urls[id]; }
+  for (const id of Object.keys(files)) delete files[id];
+  for (const id of Object.keys(decoded)) delete decoded[id];
+  for (const id of Object.keys(thumbs)) delete thumbs[id];
+}
+// Does by itself what closing and reopening the app and the project used to do: saves the project, frees the
+// heavy engines, forgets cached media handles, then rebuilds preview and timeline from the saved copy.
+let reopenInFlight = null;
+function reopenProjectInPlace(reason = 'generation') {
+  if (reopenInFlight) return reopenInFlight;
+  reopenInFlight = (async () => {
+    try {
+      if (playing) stop();
+      const keepTime = Math.min(t, total());
+      clearTimeout(saveTimer);
+      await saveProject();
+      const row = await db.projects.get('current');
+      if (!row || typeof row.state !== 'string') throw new Error('The saved copy could not be read back.');
+      const next = normalizeState(row.state); // parsed before anything live is touched
+      if (next.main.length !== S.main.length || next.audio.length !== S.audio.length || next.overlays.length !== S.overlays.length) {
+        throw new Error('The saved copy does not match the project on screen.');
+      }
+      await releaseHeavyResources();
+      dropMediaCaches();
+      S = next; sel = null;
+      await rebuildCanvas();
+      drawTimeline();
+      if (S.main.length) await seek(keepTime);
+      refresh(keepTime);
+      if (S.main.length) setTimeout(preloadEngine, 4000);
+      return { ok: true, reason };
+    } catch (error) {
+      console.warn('In-place project refresh skipped:', error);
+      return { ok: false, reason, error };
+    } finally {
+      reopenInFlight = null;
+    }
+  })();
+  return reopenInFlight;
+}
+
+/* ---------- Import and native Android media library ---------- */
+let mediaLibraryKind = 'all', mediaLibraryOffset = 0, mediaLibraryBusy = false;
+const mediaLibraryPlugin = () => window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.MediaYMediaStore;
+function mediaDurationLabel(item) {
+  const seconds = Math.max(0, Number(item.duration) || 0) / 1000;
+  return item.kind === 'video' ? fmt(seconds) : 'Photo';
+}
+async function loadMediaLibrary(reset = false) {
+  const plugin = mediaLibraryPlugin();
+  if (!plugin || mediaLibraryBusy) return;
+  if (reset) {
+    mediaLibraryOffset = 0;
+    $('mediaLibraryGrid').textContent = '';
+  }
+  mediaLibraryBusy = true;
+  $('mediaLibraryLoadMore').disabled = true;
+  $('mediaLibraryStatus').textContent = 'Loading your media…';
+  try {
+    const result = await plugin.listMedia({ kind: mediaLibraryKind, offset: mediaLibraryOffset, limit: 36 });
+    const items = result.items || [];
+    for (const item of items) {
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'media-library-item';
+      card.setAttribute('aria-label', 'Import ' + (item.name || item.kind));
+      if (item.thumbnail) {
+        const image = document.createElement('img');
+        image.loading = 'lazy';
+        image.alt = '';
+        image.src = 'data:image/jpeg;base64,' + item.thumbnail;
+        card.appendChild(image);
+      } else {
+        const placeholder = document.createElement('span');
+        placeholder.className = 'media-library-placeholder';
+        placeholder.textContent = item.kind === 'video' ? '▶' : '▧';
+        card.appendChild(placeholder);
+      }
+      const name = document.createElement('strong');
+      name.textContent = item.name || 'Media file';
+      const meta = document.createElement('small');
+      const album = item.album ? ' · ' + item.album : '';
+      meta.textContent = mediaDurationLabel(item) + album;
+      card.append(name, meta);
+      card.onclick = () => importNativeMedia(item);
+      $('mediaLibraryGrid').appendChild(card);
+    }
+    mediaLibraryOffset += items.length;
+    $('mediaLibraryLoadMore').hidden = items.length < 36;
+    const access = result.access || {};
+    const partial = access.partial ? ' Showing only the photos/videos Android currently allows MediaY to access.' : '';
+    $('mediaLibraryStatus').textContent = items.length
+      ? `Showing ${mediaLibraryOffset} items.${partial} Tap one to import it.`
+      : (mediaLibraryOffset ? 'No more media found.' : 'No photos or videos are available with the current permission.');
+  } catch (error) {
+    $('mediaLibraryStatus').textContent = 'Could not load media: ' + (error && error.message || error);
+  } finally {
+    mediaLibraryBusy = false;
+    $('mediaLibraryLoadMore').disabled = false;
+  }
+}
+async function importNativeMedia(item) {
+  const plugin = mediaLibraryPlugin();
+  if (!plugin || typeof plugin.stageMedia !== 'function') return;
+  let staged = null;
+  try {
+    $('mediaLibraryStatus').textContent = 'Preparing ' + (item.name || 'media') + ' for editing…';
+    staged = await plugin.stageMedia({ uri: item.uri, name: item.name, mimeType: item.mimeType });
+    const localUrl = window.Capacitor.convertFileSrc(staged.path);
+    const response = await fetch(localUrl);
+    if (!response.ok) throw new Error('Android could not read the staged media file.');
+    const blob = await response.blob();
+    const file = new File([blob], staged.name || item.name || 'mediay-media', {
+      type: staged.mimeType || item.mimeType || blob.type || 'application/octet-stream',
+      lastModified: Date.now()
+    });
+    $('mediaLibraryDialog').close();
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    $('mediaInput').accept = 'video/*,image/*,audio/*';
+    $('mediaInput').files = transfer.files;
+    $('mediaInput').dispatchEvent(new Event('change'));
+  } catch (error) {
+    $('mediaLibraryStatus').textContent = 'Could not import this item: ' + (error && error.message || error);
+  } finally {
+    if (staged && plugin && typeof plugin.deleteStagedMedia === 'function') {
+      await plugin.deleteStagedMedia({ path: staged.path }).catch(() => {});
+    }
+  }
+}
+async function openMediaLibrary(kind = 'all') {
+  const plugin = mediaLibraryPlugin();
+  if (!plugin || typeof plugin.requestMediaAccess !== 'function') {
+    $('mediaInput').accept = 'video/*,image/*,audio/*';
+    $('mediaInput').click();
+    return;
+  }
+  mediaLibraryKind = kind;
+  document.querySelectorAll('[data-media-kind]').forEach(button =>
+    button.classList.toggle('active', button.dataset.mediaKind === kind));
+  $('mediaLibraryDialog').showModal();
+  $('mediaLibraryStatus').textContent = 'Requesting photo and video access…';
+  $('mediaLibraryGrid').textContent = '';
+  try {
+    const access = await plugin.requestMediaAccess({ kind });
+    if (!access || !access.allowed) {
+      $('mediaLibraryStatus').textContent = 'Media access was not granted. You can still choose individual files from Android.';
+      return;
+    }
+    await loadMediaLibrary(true);
+  } catch (error) {
+    $('mediaLibraryStatus').textContent = 'Media library unavailable: ' + (error && error.message || error);
+  }
+}
+$('importBtn').onclick = () => openMediaLibrary('all');
+$('emptyImportBtn').onclick = () => $('importBtn').click();
+$('mediaLibraryClose').onclick = () => $('mediaLibraryDialog').close();
+$('mediaLibrarySystemPicker').onclick = () => {
+  $('mediaLibraryDialog').close();
+  $('mediaInput').accept = 'video/*,image/*,audio/*';
+  $('mediaInput').click();
+};
+$('mediaLibraryLoadMore').onclick = () => loadMediaLibrary(false);
+document.querySelectorAll('[data-media-kind]').forEach(button => {
+  button.onclick = async () => {
+    mediaLibraryKind = button.dataset.mediaKind;
+    document.querySelectorAll('[data-media-kind]').forEach(tab => tab.classList.toggle('active', tab === button));
+    const plugin = mediaLibraryPlugin();
+    try {
+      const access = plugin && typeof plugin.requestMediaAccess === 'function'
+        ? await plugin.requestMediaAccess({ kind: mediaLibraryKind }) : { allowed: true };
+      if (!access || !access.allowed) {
+        $('mediaLibraryGrid').textContent = '';
+        $('mediaLibraryStatus').textContent = 'Access to this media type was not granted. Use Choose from device to import individual files.';
+        return;
+      }
+      await loadMediaLibrary(true);
+    } catch (error) {
+      $('mediaLibraryStatus').textContent = 'Could not request media access: ' + (error && error.message || error);
+    }
+  };
+});
 $('audioBtn').onclick = () => { $('mediaInput').accept = 'audio/*'; $('mediaInput').click(); };
 $('mediaInput').onchange = async e => {
   const selected = [...(e.target.files || [])]; e.target.value = '';
@@ -413,7 +747,7 @@ pipInput.onchange = async () => {
       if (type === 'video' && (!Number.isFinite(replacementDuration) || replacementDuration <= 0)) {
         throw new Error('Could not read this replacement overlay video. Try converting it to MP4.');
       }
-      const old = objOf(rid); if (old) canvas.remove(old);
+      const old = objOf(rid); disposeOverlayObject(old, o);
       Object.assign(o, { mediaId, type, name: f.name }); delete o.el; delete o.scaleX; delete o.scaleY;
       if (type === 'video') {
         o.sourceIn = 0;
@@ -805,7 +1139,7 @@ function refresh(time) {
   S.overlays.forEach(o => {
     const ob = objOf(o.id); if (!ob) return;
     const on = t >= o.start && t <= o.start + o.dur;
-    if (on && !ob.visible && o.type === 'text') anime({ targets: ob, opacity: [0, 1], duration: 400, easing: 'easeOutCubic', update: () => canvas.requestRenderAll() });
+    if (on && !ob.visible && o.type === 'text' && !o.caption) anime({ targets: ob, opacity: [0, 1], duration: 400, easing: 'easeOutCubic', update: () => canvas.requestRenderAll() });
     ob.visible = on; if (o.key && on && ob.applyFilters) ob.applyFilters();
     if (o.el && on) { const want = overlaySourceAt(o, t); if (playing && o.el.paused) o.el.play().catch(() => {}); if (!playing && Math.abs(o.el.currentTime - want) > 0.1) o.el.currentTime = want; }
     else if (o.el && !o.el.paused) o.el.pause();
@@ -861,9 +1195,10 @@ $('trimStartBtn').onclick = () => trimSelectionAtPlayhead('start');
 $('trimEndBtn').onclick = () => trimSelectionAtPlayhead('end');
 $('deleteBtn').onclick = () => {
   if (!sel) return say('Tap a clip first.');
-  if (sel.lane === 'overlay') { const ob = objOf(sel.id); if (ob) canvas.remove(ob); }
+  if (sel.lane === 'overlay') { const overlay = S.overlays.find(x => x.id === sel.id); disposeOverlayObject(objOf(sel.id), overlay); }
   S[sel.lane === 'main' ? 'main' : sel.lane === 'audio' ? 'audio' : 'overlays'] = S[sel.lane === 'main' ? 'main' : sel.lane === 'audio' ? 'audio' : 'overlays'].filter(x => x.id !== sel.id);
   sel = null; commit(); refresh(Math.min(t, total()));
+  if (typeof window.scheduleMediaGc === 'function') window.scheduleMediaGc();
 };
 $('aspectRatio').onchange = async e => {
   const [ow, oh] = RATIOS[S.ratio]; S.ratio = e.target.value; const [nw, nh] = RATIOS[S.ratio];
@@ -874,7 +1209,8 @@ $('aspectRatio').onchange = async e => {
 /* ---------- Export: FFmpeg.wasm, one clip at a time (chunked) ---------- */
 // FFmpeg's small wrapper and class-worker chunk are hosted in this app's origin.
 // This avoids the cross-origin Worker path that produced "ffmpeg is not loaded" in WebView.
-let ff, ffLogs = [], exportProgressHandler = null, exportClipIndex = 0, exportGroupIndex = 0, ffAssetURLs = [], ffLoading = null, ffQuiet = false;
+let ff, ffLogs = [], exportProgressHandler = null, exportClipIndex = 0, exportGroupIndex = 0, ffAssetURLs = [], ffLoading = null, ffQuiet = false, ffLastActivityAt = 0;
+let pendingExportSave = null;
 const CDN = 'https://cdn.jsdelivr.net/npm/';
 // The engine (~31 MB) is kept in Cache Storage so it is downloaded once, not on every app launch.
 // The cache name deliberately does not start with "pmy-", so sw.js cleanup never deletes it.
@@ -929,14 +1265,16 @@ async function loadFFmpegEngine() {
   }
   const core = CDN + '@ffmpeg/core@0.12.10/dist/umd/';
   ff = new FFmpegWASM.FFmpeg();
+  ffLastActivityAt = Date.now();
   ff.on('log', ({ message }) => {
+    ffLastActivityAt = Date.now();
     const line = String(message || '');
-    if (/error|invalid|failed|not found|unsupported|could not|unable|aborted/i.test(line)) {
+    if (/error|invalid|failed|not found|unsupported|could not|unable|aborted|matches no streams|does not contain any stream/i.test(line)) {
       ffLogs.push(line);
       if (ffLogs.length > 30) ffLogs.shift();
     }
   });
-  ff.on('progress', event => { if (exportProgressHandler) exportProgressHandler(event || {}); });
+  ff.on('progress', event => { ffLastActivityAt = Date.now(); if (exportProgressHandler) exportProgressHandler(event || {}); });
   try {
     engineBusy('Starting video engine…', 'The core files are ready. Initializing FFmpeg in its local worker.', null, 'Engine startup');
     // Do not pass classWorkerURL: the vendored UMD wrapper automatically resolves
@@ -949,9 +1287,18 @@ async function loadFFmpegEngine() {
     return ff;
   } catch (error) {
     disposeFFmpeg();
-    if (window.caches) caches.delete(ENGINE_CACHE).catch(() => {}); // a damaged cached copy must not fail forever
+    if (isFFmpegCacheIntegrityError(error) && window.caches) {
+      caches.delete(ENGINE_CACHE).catch(() => {}); // purge only a cached binary that failed integrity/instantiation
+    }
     throw error;
   }
+}
+function isFFmpegCacheIntegrityError(error) {
+  const message = String(error && error.message || error || '');
+  const wasmCompileFailure = typeof WebAssembly !== 'undefined' &&
+    ((WebAssembly.CompileError && error instanceof WebAssembly.CompileError) ||
+     (WebAssembly.LinkError && error instanceof WebAssembly.LinkError));
+  return !!wasmCompileFailure || /integrity|checksum|digest mismatch|WebAssembly\.(?:instantiate|compile)|failed to asynchronously prepare wasm|expected magic word|wasm magic (?:header|number)/i.test(message);
 }
 // One shared load: a background preload and an Export tap can never start two engines.
 function getFFmpeg() {
@@ -989,6 +1336,7 @@ function createMediaYMetric(kind, metadata = {}) {
     return 'other FFmpeg commands';
   };
   return {
+    note(key, value) { if (!finished) metadata[key] = value; }, // extra facts for the report, e.g. which video engine was used
     stage(name) {
       if (finished) return;
       const now = performance.now();
@@ -1076,57 +1424,303 @@ $('copyPerfReport').onclick = async () => {
 renderMediaYPerformanceReport();
 window.MediaYDiagnostics = recentMediaYMetrics;
 const run = async args => {
+  if (exportCancelRequested) throw new Error('Export cancelled');
+  const engine = ff;
+  if (!engine || !engine.loaded) throw new Error('The FFmpeg engine is not ready. Please retry the export.');
   const started = performance.now();
   let success = false;
+  let watchdogTimer = null;
   const output = String(args && args.length ? args[args.length - 1] : '');
+  // FFmpeg can legitimately run for a long time. Use an inactivity watchdog rather
+  // than a fixed command deadline, resetting it whenever the worker emits logs/progress.
+  const watchdog = new Promise((_, reject) => {
+    const checkActivity = () => {
+      if (exportCancelRequested) return reject(new Error('Export cancelled'));
+      const idleMs = Date.now() - ffLastActivityAt;
+      const idleLimitMs = 15 * 60 * 1000;
+      if (idleMs >= idleLimitMs) {
+        if (ff === engine) disposeFFmpeg();
+        return reject(new Error('FFmpeg stopped reporting activity for 15 minutes. The export was stopped to prevent an indefinite hang. Your project was not changed; please retry.'));
+      }
+      watchdogTimer = window.setTimeout(checkActivity, Math.min(30_000, idleLimitMs - idleMs));
+    };
+    watchdogTimer = window.setTimeout(checkActivity, 30_000);
+  });
   try {
-    const code = await ff.exec(args);
+    const code = await Promise.race([engine.exec(args), watchdog]);
     if (code !== 0) throw new Error('FFmpeg failed (code ' + code + ')');
     success = true;
     return code;
   } finally {
+    if (watchdogTimer !== null) window.clearTimeout(watchdogTimer);
     if (activeExportMetric) activeExportMetric.command(output, performance.now() - started, success);
   }
 };
-async function overlayPNG(o) { // render one overlay alone, full canvas size, transparent
+async function overlayPNG(o, outputWidth = canvas.getWidth()) { // render one overlay alone, full canvas size, transparent
   const obj = objOf(o.id), keep = canvas.getObjects().map(x => x.visible);
   canvas.discardActiveObject(); canvas.getObjects().forEach(x => (x.visible = x === obj));
   const previousComposite = obj && obj.globalCompositeOperation;
   if (obj) obj.globalCompositeOperation = 'source-over'; // render raw pixels and alpha; FFmpeg composites the chosen blend mode per frame
-  const url = canvas.toDataURL({ format: 'png' });
+  const multiplier = Math.max(1, Number(outputWidth) / Math.max(1, canvas.getWidth()));
+  const url = canvas.toDataURL({ format: 'png', multiplier });
   if (obj) obj.globalCompositeOperation = previousComposite || 'source-over';
   canvas.getObjects().forEach((x, i) => (x.visible = keep[i])); canvas.requestRenderAll();
   return new Uint8Array(await (await fetch(url)).arrayBuffer());
 }
 
-/* ---------- Saving the finished video (browser download, or Android share sheet in the APK) ---------- */
+/* ---------- Saving the finished video (Movies/MediaY on Android, browser download on web) ---------- */
 const isNative = () => !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform());
+
 async function saveVideo(data) {
-  const name = `ProjectMedia-Y-${Date.now()}.mp4`;
-  if (isNative() && Capacitor.Plugins.Filesystem && Capacitor.Plugins.Share) {
-    const { Filesystem, Share } = Capacitor.Plugins, CHUNK = 3 * 1024 * 1024; // multiple of 3 keeps base64 pieces valid
-    for (let i = 0; i < data.length; i += CHUNK) {
-      let bin = ''; const part = data.subarray(i, i + CHUNK);
-      for (let j = 0; j < part.length; j += 0x8000) bin += String.fromCharCode.apply(null, part.subarray(j, j + 0x8000));
-      const opts = { path: name, directory: 'CACHE', data: btoa(bin) };
-      if (i === 0) await Filesystem.writeFile(opts); else await Filesystem.appendFile(opts);
-    }
-    const { uri } = await Filesystem.getUri({ path: name, directory: 'CACHE' });
-    await Share.share({ title: 'ProjectMedia Y video', url: uri, dialogTitle: 'Save or share your video' });
-    return;
+  if (!data || !Number.isFinite(data.byteLength) || data.byteLength <= 0) {
+    throw new Error('The encoder returned an empty MP4. Nothing was saved.');
   }
+  const name = `ProjectMedia-Y-${Date.now()}.mp4`;
+
+  if (isNative()) {
+    const plugins = (window.Capacitor && window.Capacitor.Plugins) || {};
+    const Filesystem = plugins.Filesystem;
+    const Share = plugins.Share;
+    const MediaYMediaStore = plugins.MediaYMediaStore;
+    if (!Filesystem) {
+      throw new Error('Android file storage is unavailable in this build. Install the latest MediaY APK and try again.');
+    }
+
+    const CHUNK = 3 * 1024 * 1024; // multiple of 3 keeps base64 pieces valid
+    let cacheFileCreated = false;
+    try {
+      for (let i = 0; i < data.length; i += CHUNK) {
+        let bin = '';
+        const part = data.subarray(i, i + CHUNK);
+        for (let j = 0; j < part.length; j += 0x8000) {
+          bin += String.fromCharCode.apply(null, part.subarray(j, j + 0x8000));
+        }
+        const options = { path: name, directory: 'CACHE', data: btoa(bin) };
+        if (i === 0) {
+          await Filesystem.writeFile(options);
+          // Mark the partial file immediately: a later append can fail (for example,
+          // when the device runs out of storage) and must not leave a cache orphan.
+          cacheFileCreated = true;
+        } else await Filesystem.appendFile(options);
+      }
+
+      if (MediaYMediaStore && typeof MediaYMediaStore.saveVideo === 'function') {
+        try {
+          const saved = await MediaYMediaStore.saveVideo({ fileName: name });
+          await Filesystem.deleteFile({ path: name, directory: 'CACHE' }).catch(() => {});
+          return {
+            method: 'device',
+            filename: (saved && saved.fileName) || name,
+            location: (saved && saved.location) || 'Movies/MediaY'
+          };
+        } catch (saveError) {
+          // Preserve the completed export: offer the Android chooser only when direct saving fails.
+          if (!Share || typeof Share.share !== 'function' || document.visibilityState === 'hidden') {
+            throw new Error('Could not save the MP4 to Movies/MediaY: ' + (saveError && saveError.message || saveError));
+          }
+          const { uri } = await Filesystem.getUri({ path: name, directory: 'CACHE' });
+          say('Direct save to Movies failed. Choose a device-save option in the Android share sheet.');
+          await Share.share({ title: name, url: uri, dialogTitle: 'Save or share your video' });
+          await Filesystem.deleteFile({ path: name, directory: 'CACHE' }).catch(() => {});
+          return { method: 'share-fallback', filename: name, location: 'Android share sheet' };
+        }
+      }
+
+      // Compatibility for older APKs that predate the MediaStore plugin.
+      // The new APK saves directly to Movies/MediaY and does not open the share sheet.
+      if (Share && typeof Share.share === 'function' && document.visibilityState !== 'hidden') {
+        const { uri } = await Filesystem.getUri({ path: name, directory: 'CACHE' });
+        say('This APK cannot save directly to Movies. Choose a device-save option in the Android share sheet.');
+        await Share.share({ title: name, url: uri, dialogTitle: 'Save or share your video' });
+        await Filesystem.deleteFile({ path: name, directory: 'CACHE' }).catch(() => {});
+        return { method: 'share-fallback', filename: name, location: 'Android share sheet' };
+      }
+      throw new Error('This APK cannot save directly to Movies/MediaY. Install the latest MediaY build to enable direct device saving.');
+    } catch (error) {
+      if (cacheFileCreated) await Filesystem.deleteFile({ path: name, directory: 'CACHE' }).catch(() => {});
+      throw error;
+    }
+  }
+
   const url = URL.createObjectURL(new Blob([data], { type: 'video/mp4' }));
-  Object.assign(document.createElement('a'), { href: url, download: name }).click();
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = name;
+  anchor.style.display = 'none';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  // Keep the blob alive long enough for mobile browsers to begin the file download.
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  return { method: 'browser-download', filename: name, location: 'Downloads' };
+}
+
+/* Stream a completed FFmpeg file through Capacitor's cache on legacy Android builds.
+   This keeps multi-gigabyte exports out of the WebView heap even when MediaStore streaming
+   is unavailable (Android 9 and earlier). */
+async function saveFFmpegLegacyNative(engine, outputPath, nativeStore) {
+  const plugins = (window.Capacitor && window.Capacitor.Plugins) || {};
+  const Filesystem = plugins.Filesystem;
+  if (!nativeStore || typeof nativeStore.saveVideo !== 'function' || !Filesystem ||
+      typeof Filesystem.writeFile !== 'function' || typeof Filesystem.appendFile !== 'function' ||
+      typeof engine.readFileChunk !== 'function') return null;
+
+  const name = `ProjectMedia-Y-${Date.now()}.mp4`;
+  const CHUNK_BYTES = 1024 * 1024;
+  let offset = 0, totalBytes = null, cacheFileCreated = false;
+  try {
+    while (totalBytes == null || offset < totalBytes) {
+      if (exportCancelRequested) throw new Error('Export cancelled');
+      const part = await engine.readFileChunk(outputPath, offset, CHUNK_BYTES);
+      if (!part || !part.bytesRead || !(part.data instanceof Uint8Array)) {
+        throw new Error('The video engine returned an incomplete MP4 chunk.');
+      }
+      totalBytes = Number(part.fileSize) || totalBytes;
+      let binary = '';
+      for (let i = 0; i < part.data.length; i += 0x8000) {
+        binary += String.fromCharCode.apply(null, part.data.subarray(i, i + 0x8000));
+      }
+      const options = { path: name, directory: 'CACHE', data: btoa(binary) };
+      if (offset === 0) {
+        await Filesystem.writeFile(options);
+        cacheFileCreated = true;
+      } else {
+        await Filesystem.appendFile(options);
+      }
+      offset += part.bytesRead;
+      updateBusy('Saving your MP4…', `Writing ${(offset / 1048576).toFixed(1)} MB of ${(totalBytes / 1048576).toFixed(1)} MB to Movies/MediaY.`,
+        totalBytes ? Math.min(99, 97 + offset / totalBytes * 2) : null, 'Saving video');
+      if (part.eof) break;
+    }
+    if (!totalBytes || offset !== totalBytes) throw new Error('The completed MP4 could not be read in full.');
+    const saved = await nativeStore.saveVideo({ fileName: name });
+    return { method: 'device', filename: (saved && saved.fileName) || name,
+      location: (saved && saved.location) || 'Movies/MediaY' };
+  } finally {
+    if (cacheFileCreated) await Filesystem.deleteFile({ path: name, directory: 'CACHE' }).catch(() => {});
+  }
+}
+
+/* Stream a completed FFmpeg file to Android without materializing the entire MP4 in WebView memory. */
+async function saveFFmpegOutput(engine, outputPath) {
+  const plugins = (window.Capacitor && window.Capacitor.Plugins) || {};
+  const nativeStore = isNative() && plugins.MediaYMediaStore;
+  if (nativeStore && typeof engine.readFileChunk === 'function' &&
+      (typeof nativeStore.beginStreamingSave !== 'function' || !nativeStore.beginStreamingSave)) {
+    const legacyDelivery = await saveFFmpegLegacyNative(engine, outputPath, nativeStore);
+    if (legacyDelivery) return legacyDelivery;
+  }
+  // Never materialize a multi-gigabyte Android render in the WebView heap. A native
+  // build without the chunked MediaStore or legacy cache path must fail safely and
+  // leave the FFmpeg file available for retry/discard instead of risking an OOM.
+  if (isNative() && (!nativeStore || typeof engine.readFileChunk !== 'function' ||
+      (typeof nativeStore.beginStreamingSave !== 'function' &&
+       typeof nativeStore.saveVideo !== 'function'))) {
+    throw new Error('Safe Android saving is unavailable in this build because chunked media delivery is missing. Keep this render open and install a build with the native streaming saver.');
+  }
+  if (!nativeStore || typeof nativeStore.beginStreamingSave !== 'function' ||
+      typeof engine.readFileChunk !== 'function') {
+    // Browser delivery (or a very old FFmpeg wrapper without chunk reads) still needs
+    // a byte buffer. Android builds with chunk reads use the bounded native paths above.
+    const data = await engine.readFile(outputPath);
+    // Keep the authoritative render in FFmpeg storage until delivery succeeds. If
+    // browser saving fails, the retry path can reread it instead of retaining a
+    // second full-size Uint8Array in pendingExportSave for an unbounded time.
+    const delivery = await saveVideo(data);
+    try { await engine.deleteFile(outputPath); } catch (_) { /* delivered file is already safe */ }
+    return delivery;
+  }
+  const name = `ProjectMedia-Y-${Date.now()}.mp4`;
+  const CHUNK_BYTES = 1024 * 1024;
+  let started = false;
+  let offset = 0;
+  let totalBytes = null;
+  try {
+    await nativeStore.beginStreamingSave({ fileName: name });
+    started = true;
+    while (totalBytes == null || offset < totalBytes) {
+      if (exportCancelRequested) throw new Error('Export cancelled');
+      const part = await engine.readFileChunk(outputPath, offset, CHUNK_BYTES);
+      if (!part || !part.bytesRead || !(part.data instanceof Uint8Array)) {
+        throw new Error('The video engine returned an incomplete MP4 chunk.');
+      }
+      totalBytes = Number(part.fileSize) || totalBytes;
+      let binary = '';
+      for (let i = 0; i < part.data.length; i += 0x8000) {
+        binary += String.fromCharCode.apply(null, part.data.subarray(i, i + 0x8000));
+      }
+      await nativeStore.appendStreamingChunk({ data: btoa(binary) });
+      offset += part.bytesRead;
+      const progress = totalBytes ? Math.min(99, 97 + offset / totalBytes * 2) : null;
+      updateBusy('Saving your MP4…', `Writing ${(offset / 1048576).toFixed(1)} MB of ${(totalBytes / 1048576).toFixed(1)} MB to Movies/MediaY.`, progress, 'Saving video');
+      if (part.eof) break;
+    }
+    if (!totalBytes || offset !== totalBytes) {
+      throw new Error('The completed MP4 could not be read in full.');
+    }
+    if (exportCancelRequested) throw new Error('Export cancelled');
+    const cancelButton = $('busyCancel');
+    if (cancelButton) {
+      cancelButton.disabled = true;
+      cancelButton.textContent = 'Finishing save…';
+    }
+    const saved = await nativeStore.finishStreamingSave();
+    started = false;
+    return { method: 'device', filename: (saved && saved.fileName) || name,
+      location: (saved && saved.location) || 'Movies/MediaY' };
+  } catch (error) {
+    if (started && typeof nativeStore.abortStreamingSave === 'function') {
+      await nativeStore.abortStreamingSave().catch(() => {});
+    }
+    // Android 9 and earlier retain the established legacy-storage path.
+    if (/Android 10 or newer/.test(String(error && error.message || error))) {
+      const legacyDelivery = await saveFFmpegLegacyNative(engine, outputPath, nativeStore);
+      if (legacyDelivery) return legacyDelivery;
+      throw new Error('This Android version needs chunked legacy saving, but this build cannot read FFmpeg output in chunks.');
+    }
+    throw error;
+  }
 }
 
 // Native Android builds register this plugin during the APK workflow. A foreground
 // service helps keep the app process alive during export when the user switches apps.
+async function retryPendingExportSave() {
+  const pending = pendingExportSave;
+  if (!pending || !pending.engine) return hideBusy();
+  const button = $('busyDismiss');
+  button.disabled = true;
+  updateBusy('Saving completed video…', 'The render is preserved in MediaY. Retrying the device save.', 97, 'Saving video');
+  try {
+    const delivery = await saveFFmpegOutput(pending.engine, pending.path);
+    pendingExportSave = null;
+    if (pending.engine) { try { await pending.engine.deleteFile(pending.path); } catch (_) {} }
+    if (delivery.method === 'device') {
+      say(`Export complete — saved to ${delivery.location}/${delivery.filename}. Open Gallery or Files to find it.`);
+    } else if (delivery.method === 'browser-download') {
+      say(`Export complete — download started for ${delivery.filename}. Check your Downloads folder.`);
+    } else {
+      say('Export rendered, but direct saving was unavailable. Check the Android share sheet to choose a save destination.');
+    }
+    await releaseHeavyResources();
+    hideBusy();
+  } catch (error) {
+    console.warn('Could not save the retained MediaY render:', error);
+    showBusyError('Save still unavailable', 'Your completed render is still preserved in temporary export storage. Check free storage or Android save permissions, then tap Retry save again. Keep MediaY open.');
+    const retry = $('busyDismiss');
+    retry.textContent = 'Retry save';
+    retry.disabled = false;
+    retry.onclick = retryPendingExportSave;
+  }
+}
+
 async function beginNativeExportService() {
   const plugin = isNative() && window.Capacitor && window.Capacitor.Plugins &&
     window.Capacitor.Plugins.MediaYExportService;
   if (!plugin || typeof plugin.start !== 'function') return false;
   try {
     await plugin.start();
+    nativeExportServiceActive = true;
+    lastNativeServiceRenewAt = Date.now();
     return true;
   } catch (error) {
     console.warn('Could not start native export foreground service:', error);
@@ -1134,6 +1728,7 @@ async function beginNativeExportService() {
   }
 }
 async function endNativeExportService() {
+  nativeExportServiceActive = false;
   const plugin = isNative() && window.Capacitor && window.Capacitor.Plugins &&
     window.Capacitor.Plugins.MediaYExportService;
   if (!plugin || typeof plugin.stop !== 'function') return;
@@ -1141,9 +1736,12 @@ async function endNativeExportService() {
   catch (error) { console.warn('Could not stop native export foreground service:', error); }
 }
 
-const EXP = { res: 720, fps: TIMELINE_FPS };
-$('goExport').onclick = async (_event, recoveryAttempt = 0) => {
+const EXP = { res: 720, fps: TIMELINE_FPS, fastDraft: false };
+const runExport = async (_event, recoveryAttempt = 0) => {
+  if (pendingExportSave) return say('A completed render is waiting to be saved. Tap Retry save before starting another export.');
+  exportCancelRequested = false;
   if (!S.main.length) return say('Nothing to export yet.');
+  if (captionRunning) return say('Captions are still being generated. Wait for them to finish, then export.');
   const exportMetric = createMediaYMetric('Export', {
     resolution: EXP.res, fps: EXP.fps,
     mainClips: S.main.length, audioTracks: S.audio.length, overlays: S.overlays.length
@@ -1153,17 +1751,45 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
   exportMetric.stage('Validate project and media');
   if (playing) stop();
   closeSheet(); const btn = $('goExport'); btn.disabled = true;
-  let exportFailed = false;
+  const busyCancelButton = $('busyCancel');
+  busyCancelButton.hidden = false;
+  busyCancelButton.disabled = false;
+  busyCancelButton.textContent = 'Cancel export';
+  let exportFailed = false, delivered = null, retryAfterCleanup = false, retryAttempt = recoveryAttempt;
+  let preserveOutputPath = null, saveFailurePending = false;
   ffLogs = [];
   const exportWorkspaceFiles = new Set();
+  const exportSourceMounts = new Map(); // mounted WORKERFS file path -> mount directory
   const exportSourceCache = new Map();
   const exportOverlayPngCache = new Map();
   let exportSourceCacheBytes = 0, exportOverlayPngCacheBytes = 0;
   const EXPORT_SOURCE_CACHE_LIMIT = 96 * 1024 * 1024;
   const EXPORT_OVERLAY_PNG_CACHE_LIMIT = 12 * 1024 * 1024;
   const removeExportFile = async name => {
-    try { if (ff) await ff.deleteFile(name); } catch (_) {}
+    const mountDir = exportSourceMounts.get(name);
+    if (ff && mountDir) {
+      try { await ff.unmount(mountDir); } catch (_) {}
+      try { await ff.deleteDir(mountDir); } catch (_) {}
+      exportSourceMounts.delete(name);
+    } else {
+      try { if (ff) await ff.deleteFile(name); } catch (_) {}
+    }
     exportWorkspaceFiles.delete(name);
+  };
+  const mountExportFile = async (file, name) => {
+    const mountDir = '/mediay_src_' + uid();
+    await ff.createDir(mountDir);
+    try {
+      const mounted = await ff.mount('WORKERFS', { blobs: [{ name, data: file }] }, mountDir);
+      if (!mounted) throw new Error('FFmpeg WORKERFS is unavailable for source streaming.');
+    } catch (error) {
+      try { await ff.deleteDir(mountDir); } catch (_) {}
+      throw error;
+    }
+    const mountedPath = mountDir + '/' + name;
+    exportWorkspaceFiles.add(mountedPath);
+    exportSourceMounts.set(mountedPath, mountDir);
+    return mountedPath;
   };
   updateBusy('Preparing your export…', 'Rendering runs in MediaY. Keep the app open and in the foreground until the MP4 is saved.', 1, 'Preparing');
   let exportWakeLock = null;
@@ -1190,7 +1816,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       }
     };
     document.addEventListener('visibilitychange', exportVisibilityHandler);
-    nativeExportServiceStarted = await beginNativeExportService();
+    nativeExportServiceStarted = await Background.begin();
     if (nativeExportServiceStarted) {
       updateBusy('Preparing your export…', 'An Android export notification is active. You can switch apps while rendering runs; return to MediaY if progress pauses.', 1, 'Preparing');
     } else {
@@ -1228,6 +1854,20 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
     };
     const [bw, bh] = RATIOS[S.ratio], kk = EXP.res / Math.min(bw, bh), W = Math.round(bw * kk / 2) * 2, H = Math.round(bh * kk / 2) * 2, segs = []; let offset = 0;
     const touchLru = (map, key, value) => { map.delete(key); map.set(key, value); };
+    const hasAudioStream = async name => {
+      const previousLogs = ffLogs;
+      ffLogs = [];
+      try {
+        await run(['-i', name, '-map', '0:a:0', '-t', '0.1', '-f', 'null', '-']);
+        return true;
+      } catch (error) {
+        const diagnostics = ffLogs.join(' ');
+        if (/matches no streams|does not contain any stream/i.test(diagnostics)) return false;
+        throw new Error('Could not inspect the audio stream in ' + name + ': ' + String(error && error.message || error));
+      } finally {
+        ffLogs = [...previousLogs, ...ffLogs].slice(-30);
+      }
+    };
     const ensureExportSource = async (mediaId, pinnedMediaIds, clipSources) => {
       if (clipSources.has(mediaId)) return clipSources.get(mediaId);
       const cached = exportSourceCache.get(mediaId);
@@ -1259,10 +1899,9 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
           exportSourceCacheBytes -= victimEntry.size;
         }
       }
-      updateBusy('Preparing source media…', `Loading ${file.name || 'media'} for the next encode pass.`, 5 + (segs.length / Math.max(1, S.main.length)) * 5, 'Source preparation');
-      await ff.writeFile(name, new Uint8Array(await file.arrayBuffer()));
-      exportWorkspaceFiles.add(name);
-      const entry = { name, size, cached: cacheable };
+      updateBusy('Preparing source media…', `Streaming ${file.name || 'media'} into the encoder without copying the whole file.`, 5 + (segs.length / Math.max(1, S.main.length)) * 5, 'Source preparation');
+      const mountedName = await mountExportFile(file, name);
+      const entry = { name: mountedName, size, cached: cacheable, mounted: true };
       if (cacheable) {
         exportSourceCache.set(mediaId, entry);
         exportSourceCacheBytes += size;
@@ -1278,7 +1917,7 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
         clipPngs.set(overlay.id, cached);
         return cached;
       }
-      const png = await overlayPNG(overlay);
+      const png = await overlayPNG(overlay, W);
       const size = png.byteLength;
       let cacheable = size <= EXPORT_OVERLAY_PNG_CACHE_LIMIT;
       while (cacheable && exportOverlayPngCacheBytes + size > EXPORT_OVERLAY_PNG_CACHE_LIMIT) {
@@ -1301,6 +1940,262 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       return entry;
     };
     const TD = S.main.map((c, i) => (i && c.tr ? Math.min(c.trDur || 0.5, dur(S.main[i - 1]) * 0.45, dur(c) * 0.45) : 0)); // overlap length at each clip's start
+    // ---- Device video encoder path (WebCodecs) -------------------------------------------------------------------
+    // Decoding and encoding video inside WebAssembly is what makes phone exports slow. When the device has its own H.264
+    // decoder/encoder and the project is simple (cuts, speed, fades, text/sticker overlays), the video is rendered with them and
+    // FFmpeg only does the sound and the final MP4. Returns the finished file name, or null to use the FFmpeg-only path below.
+    // ANY problem (unsupported file, slow or failing encoder, memory) cleans up and returns null: this path can never fail an export.
+    const tryDeviceEncoderExport = async () => {
+      const Fast = window.MediaYFast;
+      const note = (key, value) => { if (exportMetric.note) exportMetric.note(key, value); };
+      const decline = reason => {
+        note('deviceEncoder', 'not used: ' + reason);
+        console.info('MediaY: device video encoder not used:', reason);
+        return null;
+      };
+      const savedHandler = exportProgressHandler, mine = new Set(), overlayBitmaps = [];
+      try {
+        if (exportCancelRequested) throw new Error('Export cancelled');
+        if (!Fast) return decline('engine script not loaded');
+        const toggle = $('useDeviceEncoder');
+        if (toggle && !toggle.checked) return decline('turned off in the export settings');
+        const why = Fast.ineligibleReason({
+          clips: S.main.map((c, i) => ({ reverse: !!c.rev, effect: !!FX[c.fx || 0].f, adjust: !!adjustmentFilter(c), transition: TD[i] > 0 })),
+          overlays: S.overlays.map(o => ({ type: o.type, blend: o.blend }))
+        });
+        if (why) return decline(why);
+        if (S.main.some(c => (c.speed || 1) < 0.5 || (c.speed || 1) > 2)) return decline('unusual playback speed');
+        // Sources must be plain MP4/MOV files this device can decode. They are read in pieces, never loaded whole.
+        const sources = new Map();
+        for (const c of S.main) {
+          if (exportCancelRequested) throw new Error('Export cancelled');
+          if (sources.has(c.mediaId)) continue;
+          const info = await Fast.demux(files[c.mediaId]);
+          if (exportCancelRequested) throw new Error('Export cancelled');
+          if (!(await Fast.checkDecoder(info.video))) return decline('this device cannot decode ' + info.video.codec);
+          sources.set(c.mediaId, info);
+        }
+        const audioFlags = S.main.map(c => !!sources.get(c.mediaId).hasAudio);
+        const hasAudio = audioFlags.some(Boolean);
+
+        exportMetric.stage('Check device video encoder');
+        updateBusy('Checking this phone’s video encoder…', 'Looking for a hardware video encoder.', 7, 'Preparing');
+        // Keep each hardware-encoded piece below the existing memory budget. A short
+        // bounded render is muxed immediately, so JS never retains the entire video stream.
+        // The final MP4 is assembled from compatible MP4 pieces with stream copy.
+        const maxBufferedVideoBytes = 32 * 1024 * 1024;
+        const estimatedBitrate = Fast.targetBitrate(W, H, EXP.fps);
+        const maxChunkFrames = Math.max(1, Math.min(Math.round(30 * EXP.fps),
+          Math.floor((maxBufferedVideoBytes * 8 / Math.max(1, estimatedBitrate * 1.5)) * EXP.fps)));
+        const choice = await Fast.chooseEncoderConfig({ W, H, fps: EXP.fps });
+        const bench = await Fast.benchmarkEncoder(choice);
+        note('deviceEncoderSelfTest', `${choice.codec}, ${choice.acceleration}, ${Math.round(bench.fps)} fps`);
+        if (bench.fps < 2) return decline(`encoder self-test too slow (${bench.fps.toFixed(1)} fps)`);
+
+        exportMetric.stage('Render video on device');
+        say('Rendering with this phone’s video encoder…');
+        updateBusy('Preparing overlays…', 'Rendering captions and stickers.', 8, 'Rendering');
+        // Use the exact frame-aligned project duration for overlay clipping.
+        const totalFrames = S.main.reduce((sum, c) => sum + Fast.frameCount(dur(c), EXP.fps), 0);
+        const totalSeconds = totalFrames / EXP.fps;
+        const overlays = [];
+        for (const o of [...S.overlays].sort((x, y) => x.layer - y.layer)) {
+          if (!(o.start < totalSeconds && o.start + o.dur > 0)) continue;
+          const part = await Fast.overlayFromPng(await overlayPNG(o, W), W, H);
+          if (part) { overlayBitmaps.push(part.bitmap); overlays.push({ ...part, start: o.start, end: o.start + o.dur }); }
+        }
+
+        const videoSegments = [], clipFrames = [];
+        const minPieceFrames = Math.max(1, Math.round(EXP.fps));
+        let adaptiveChunkLimit = maxChunkFrames;
+        let renderedFrames = 0, segmentIndex = 0, timelineOffset = 0, lastDeviceProgress = 0;
+        const rate = String(EXP.fps);
+        exportProgressHandler = null;
+        for (let i = 0; i < S.main.length; i++) {
+          const c = S.main[i], speed = c.speed || 1;
+          const framesInClip = Fast.frameCount(dur(c), EXP.fps);
+          clipFrames[i] = framesInClip;
+          for (let frameOffset = 0; frameOffset < framesInClip;) {
+            let chunkFrames = Math.min(adaptiveChunkLimit, framesInClip - frameOffset);
+            const rawName = `fastvideo_${segmentIndex}.h264`;
+            const segmentName = `fastsegment_${segmentIndex}.mp4`;
+            exportWorkspaceFiles.add(rawName); exportWorkspaceFiles.add(segmentName);
+            mine.add(rawName); mine.add(segmentName);
+            let result, sink, encodedChunk;
+            for (;;) {
+              const chunkDuration = chunkFrames / EXP.fps;
+              const chunkStart = timelineOffset + frameOffset / EXP.fps;
+              const chunkEnd = chunkStart + chunkDuration;
+              const sourceIn = c.in + frameOffset / EXP.fps * speed;
+              const sourceOut = sourceIn + chunkDuration * speed;
+              const localOverlays = overlays
+                .filter(o => o.start < chunkEnd && o.end > chunkStart)
+                .map(o => ({ ...o, start: Math.max(0, o.start - chunkStart), end: Math.min(chunkDuration, o.end - chunkStart) }));
+              sink = new Fast.AnnexBSink(maxBufferedVideoBytes);
+              try {
+                result = await Fast.renderTimeline({
+                  clips: [{
+                    file: files[c.mediaId], track: sources.get(c.mediaId).video,
+                    in: sourceIn, out: sourceOut, speed,
+                    fadeIn: !!c.fade && frameOffset === 0,
+                    fadeOut: !!c.fade && frameOffset + chunkFrames === framesInClip
+                  }],
+                  overlays: localOverlays, W, H, fps: EXP.fps, choice, sink,
+                  isCancelled: () => exportCancelRequested,
+                  onProgress: f => {
+                    const progress = (renderedFrames + f * chunkFrames) / Math.max(1, totalFrames);
+                    lastDeviceProgress = Math.max(lastDeviceProgress, progress);
+                    updateBusy('Rendering video…', `Encoding with this phone’s video encoder: ${Math.round(lastDeviceProgress * 100)}%.`,
+                      8 + lastDeviceProgress * 50, 'Rendering');
+                  }
+                });
+              } catch (error) {
+                if (error && error.code === 'PIECE_BUDGET_EXCEEDED' && chunkFrames > minPieceFrames) {
+                  // Discard the failed partial chunk and retry at half the frame count.
+                  // Never shrink below one second; if that still exceeds the cap, fall back.
+                  sink.parts = []; sink.bytes = 0; sink.frameCount = 0;
+                  chunkFrames = Math.max(minPieceFrames, Math.floor(chunkFrames / 2));
+                  adaptiveChunkLimit = Math.min(adaptiveChunkLimit, chunkFrames);
+                  note('deviceEncoderBudgetRetry', `retrying with ${chunkFrames} frames per piece`);
+                  continue;
+                }
+                throw error;
+              }
+              if (sink.frameCount !== chunkFrames) {
+                throw new Error(`Device encoder emitted ${sink.frameCount} frames for ${chunkFrames} submitted frames; using the FFmpeg fallback.`);
+              }
+              encodedChunk = sink.finish();
+              break;
+            }
+            await ff.writeFile(rawName, encodedChunk);
+            // Drop the JS copy before the next chunk is rendered.
+            await run(['-f', 'h264', '-framerate', rate, '-i', rawName, '-c:v', 'copy', '-an', segmentName]);
+            await removeExportFile(rawName);
+            videoSegments.push(segmentName);
+            renderedFrames += result.frames;
+            frameOffset += chunkFrames;
+            segmentIndex++;
+          }
+          timelineOffset += dur(c);
+        }
+        overlayBitmaps.splice(0).forEach(b => { try { b.close(); } catch (_) { /* already closed */ } });
+
+        // Sound: one small FFmpeg command per original clip, padded to the exact
+        // accumulated video-frame duration. Chunk boundaries do not reset audio timing.
+        const audioNames = [];
+        if (hasAudio) {
+          exportMetric.stage('Prepare clip sound');
+          for (let i = 0; i < S.main.length; i++) {
+            const c = S.main[i], sp = c.speed || 1, td = (c.out - c.in) / sp, seconds = clipFrames[i] / EXP.fps;
+            updateBusy('Preparing sound…', `Clip ${i + 1} of ${S.main.length}.`, 58 + (i / S.main.length) * 8, 'Audio');
+            const name = `aseg${i}.wav`;
+            exportWorkspaceFiles.add(name); mine.add(name);
+            if (!audioFlags[i]) {
+              await run(['-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', '-t', seconds.toFixed(4),
+                '-ar', '44100', '-ac', '2', '-c:a', 'pcm_s16le', name]);
+              audioNames.push(name);
+              continue;
+            }
+            const entry = await ensureExportSource(c.mediaId, new Set([c.mediaId]), new Map());
+            const fd = Math.min(0.4, Math.max(0.05, td / 2));
+            const chain = [sp !== 1 && `atempo=${sp}`, (c.vol ?? 1) !== 1 && `volume=${c.vol}`,
+              c.fade && `afade=type=in:duration=${fd.toFixed(3)},afade=type=out:start_time=${Math.max(0, td - fd).toFixed(3)}:duration=${fd.toFixed(3)}`,
+              `apad=whole_dur=${seconds.toFixed(4)}`].filter(Boolean).join(',');
+            try {
+              await run(['-ss', String(c.in), '-t', String(c.out - c.in), '-i', entry.name, '-map', '0:a:0', '-vn', '-af', chain,
+                '-ar', '44100', '-ac', '2', '-c:a', 'pcm_s16le', '-t', seconds.toFixed(4), name]);
+            } finally {
+              if (!entry.cached) await removeExportFile(entry.name);
+            }
+            audioNames.push(name);
+          }
+        }
+
+        exportMetric.stage('Join rendered clips');
+        updateBusy('Assembling the video…', 'Joining the encoded pieces without re-encoding.', 67, 'Final assembly');
+        const videoList = 'vlist.txt';
+        await ff.writeFile(videoList, new TextEncoder().encode(videoSegments.map(n => `file '${n}'`).join('\n')));
+        exportWorkspaceFiles.add(videoList); mine.add(videoList);
+        exportWorkspaceFiles.add('joined.mp4'); mine.add('joined.mp4');
+        if (audioNames.length) {
+          await ff.writeFile('alist.txt', new TextEncoder().encode(audioNames.map(n => `file '${n}'`).join('\n')));
+          exportWorkspaceFiles.add('alist.txt'); mine.add('alist.txt');
+          await run(['-f', 'concat', '-safe', '0', '-i', videoList, '-f', 'concat', '-safe', '0', '-i', 'alist.txt',
+            '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-ar', '44100', '-ac', '2', 'joined.mp4']);
+        } else {
+          await run(['-f', 'concat', '-safe', '0', '-i', videoList, '-map', '0:v:0', '-c:v', 'copy', '-an', 'joined.mp4']);
+        }
+        for (const n of [...videoSegments, videoList, 'alist.txt', ...audioNames]) await removeExportFile(n);
+        for (const entry of exportSourceCache.values()) await removeExportFile(entry.name);
+        exportSourceCache.clear(); exportSourceCacheBytes = 0;
+        note('deviceEncoder', `used (${choice.codec}, ${choice.acceleration}): ${renderedFrames} frames in ${segmentIndex} bounded pieces`);
+        return 'joined.mp4';
+      } catch (error) {
+        console.warn('MediaY: device video encoder failed, using the standard encoder:', error);
+        for (const n of mine) await removeExportFile(n);
+        exportProgressHandler = savedHandler;
+        if (exportCancelRequested) throw error;
+        return decline((error && error.name === 'Unsupported' ? '' : 'failed: ') + String(error && error.message || error).slice(0, 160));
+      } finally {
+        overlayBitmaps.forEach(b => { try { b.close(); } catch (_) { /* already closed */ } });
+      }
+    };
+    // PiP audio is intentionally excluded: preview is muted and there is no overlay-volume control.
+
+    // Conservative fast lane: remux one untouched H.264 clip. Any uncertainty falls back.
+    const tryStreamCopyExport = async () => {
+      const Fast = window.MediaYFast;
+      const note = (key, value) => { if (exportMetric.note) exportMetric.note(key, value); };
+      const decline = reason => { note('streamCopy', 'not used: ' + reason); return null; };
+      try {
+        if (exportCancelRequested) throw new Error('Export cancelled');
+        if (!Fast || typeof Fast.demux !== 'function' || typeof Fast.streamCopyIneligibleReason !== 'function') {
+          return decline('stream-copy checks are unavailable');
+        }
+        if (S.main.length !== 1) return decline('requires exactly one main clip');
+        const clip = S.main[0], sourceFile = files[clip && clip.mediaId];
+        if (!sourceFile || !sourceFile.size) return decline('source media is missing');
+        if (S.overlays.length) return decline('visual overlays are present');
+        const info = await Fast.demux(sourceFile);
+        if (exportCancelRequested) throw new Error('Export cancelled');
+        const reason = Fast.streamCopyIneligibleReason({
+          clip, video: info && info.video, width: W, height: H, fps: EXP.fps,
+          fileSize: sourceFile.size, hasOverlays: S.overlays.length > 0,
+          hasTransition: Boolean(TD[0]), hasFilter: Boolean(FX[clip.fx || 0] && FX[clip.fx || 0].f),
+          hasAdjustment: Boolean(adjustmentFilter(clip)), maxFileBytes: 128 * 1024 * 1024
+        });
+        if (reason) return decline(reason);
+        const mounted = await ensureExportSource(clip.mediaId, new Set([clip.mediaId]), new Map());
+        if (exportCancelRequested) throw new Error('Export cancelled');
+        exportWorkspaceFiles.add('joined.mp4');
+        const args = ['-i', mounted.name, '-map', '0:v:0', '-map', '0:a:0?', '-c', 'copy'];
+        // If extra music/voice tracks follow, avoid an unnecessary faststart rewrite
+        // on this intermediate file. The final audio-mix output is the delivered MP4.
+        if (!S.audio.length) args.push('-movflags', '+faststart');
+        args.push('joined.mp4');
+        await run(args);
+        if (exportCancelRequested) throw new Error('Export cancelled');
+        note('streamCopy', 'used (single untouched H.264 clip; video packets copied)');
+        return 'joined.mp4';
+      } catch (error) {
+        if (exportCancelRequested || /Export cancelled/i.test(String(error && error.message || error))) throw error;
+        await removeExportFile('joined.mp4');
+        return decline('failed safely; standard encoder will be used: ' + String(error && error.message || error).slice(0, 120));
+      }
+    };
+
+    let out = await tryStreamCopyExport();
+    if (!out) out = await tryDeviceEncoderExport();
+    if (!out) { // ---- FFmpeg-only path: every clip, transition and join runs in WebAssembly ----
+    const mainAudioFlags = new Map();
+    for (const c of S.main) {
+      if (mainAudioFlags.has(c.mediaId)) continue;
+      const probeSources = new Map();
+      const entry = await ensureExportSource(c.mediaId, new Set([c.mediaId]), probeSources);
+      mainAudioFlags.set(c.mediaId, await hasAudioStream(entry.name));
+      if (!entry.cached) await removeExportFile(entry.name);
+    }
+    const hasMainAudio = [...mainAudioFlags.values()].some(Boolean);
     for (let i = 0; i < S.main.length; i++) {
       exportClipIndex = i;
       updateBusy(`Rendering clip ${i + 1} of ${S.main.length}…`, 'Encoding video, effects, and overlays.', 8 + (i / Math.max(1, S.main.length)) * 58, 'Rendering');
@@ -1353,16 +2248,22 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       if (tx) { g += `;[${last}]tpad=stop_mode=clone:stop_duration=${tx.toFixed(2)}[bt]`; last = 'bt'; }
       const seg = `seg${i}.mp4`;
       exportWorkspaceFiles.add(seg);
-      const af = [c.rev && 'areverse', sp !== 1 && `atempo=${sp}`, (c.vol ?? 1) !== 1 && `volume=${c.vol}`, c.fade && audioFadeFilter, tx > 0 && `apad=pad_dur=${tx.toFixed(2)}`].filter(Boolean).join(','), enc = (a, fast) => ['-ss', String(c.in), '-t', String(d), ...(fast ? ['-skip_loop_filter', 'all'] : []), '-i', src, ...inputs, '-filter_complex', g, '-map', `[${last}]`, '-map', '0:a:0?', ...a, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '44100', '-ac', '2', '-t', (td + tx).toFixed(3), seg]; // -t: a long overlay video must not stretch the clip
-      // Footage at 10+ Mbps is expensive to decode and its deblocking is invisible after downscaling, so skip it (~15% faster decode).
-      // If that attempt fails for any reason, fall back to the original behaviour: normal decode, then no audio.
-      const hiRate = (files[c.mediaId].size * 8) / Math.max(1, c.src || dur(c)) > 10e6, withAudio = af ? ['-af', af] : [], tries = [];
-      if (hiRate) tries.push([withAudio, true]);
-      tries.push([withAudio, false]);
-      if (af) tries.push([['-an'], false]);
+      const segDur = (td + tx).toFixed(3);
+      const af = [c.rev && 'areverse', sp !== 1 && `atempo=${sp}`, (c.vol ?? 1) !== 1 && `volume=${c.vol}`, c.fade && audioFadeFilter, `apad=whole_dur=${segDur}`].filter(Boolean).join(',');
+      const sourceHasAudio = !!mainAudioFlags.get(c.mediaId);
+      const addSilence = hasMainAudio && !sourceHasAudio;
+      const audioInput = addSilence ? ['-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo'] : [];
+      const audioMap = sourceHasAudio ? ['-map', '0:a:0', ...(af ? ['-af', af] : [])]
+        : addSilence ? ['-map', `${live.length + 1}:a:0`] : ['-an'];
+      const enc = fast => ['-ss', String(c.in), '-t', String(d), ...(fast ? ['-skip_loop_filter', 'all'] : []),
+        '-i', src, ...inputs, ...audioInput, '-filter_complex', g, '-map', `[${last}]`, ...audioMap,
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p',
+        ...(hasMainAudio ? ['-c:a', 'aac', '-ar', '44100', '-ac', '2'] : []), '-t', segDur, seg]; // -t bounds long overlays and synthetic silence to the segment duration
+      // High-bitrate sources can skip loop filtering for faster decode; retry with normal decode if needed.
+      const hiRate = (files[c.mediaId].size * 8) / Math.max(1, c.src || dur(c)) > 10e6, tries = hiRate && EXP.fastDraft ? [true, false] : [false];
       let encErr = null;
-      for (const [a, fast] of tries) {
-        try { await run(enc(a, fast)); encErr = null; break; } catch (e) { encErr = e; await ff.deleteFile(seg).catch(() => {}); }
+      for (const fast of tries) {
+        try { await run(enc(fast)); encErr = null; break; } catch (e) { encErr = e; await ff.deleteFile(seg).catch(() => {}); }
       }
       if (encErr) throw encErr;
       for (const n of names) await removeExportFile(n);
@@ -1395,53 +2296,128 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       grp.slice(1).forEach((i, j) => {
         const d = TD[i], k = j + 1;
         fv += `${pv}[${k}:v]xfade=transition=${S.main[i].tr}:duration=${d.toFixed(2)}:offset=${(cur - d).toFixed(2)}[v${k}];`;
-        fa += `${pa}[${k}:a]acrossfade=d=${d.toFixed(2)}[a${k}];`;
+        if (hasMainAudio) fa += `${pa}[${k}:a]acrossfade=d=${d.toFixed(2)}[a${k}];`;
         cur += dur(S.main[i]) + (TD[i + 1] || 0) - d; pv = `[v${k}]`; pa = `[a${k}]`;
       });
-      const enc2 = (fc, m) => run([...ins, '-filter_complex', fc, ...m, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '44100', '-ac', '2', name]);
-      try { await enc2(fv + fa.slice(0, -1), ['-map', pv, '-map', pa]); } catch (e) { await enc2(fv.slice(0, -1), ['-map', pv, '-an']); }
+      const enc2 = (fc, m) => run([...ins, '-filter_complex', fc, ...m, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28', '-pix_fmt', 'yuv420p',
+        ...(hasMainAudio ? ['-c:a', 'aac', '-ar', '44100', '-ac', '2'] : []), name]);
+      await enc2(hasMainAudio ? fv + fa.slice(0, -1) : fv.slice(0, -1), hasMainAudio ? ['-map', pv, '-map', pa] : ['-map', pv, '-an']);
       pieces.push(name);
     }
     exportProgressHandler = null;
-    exportMetric.stage('Join rendered clips');
-    updateBusy('Joining clips…', 'Combining the rendered clips into one MP4.', 84, 'Final assembly');
-    say('Joining clips…');
-    await ff.writeFile('list.txt', new TextEncoder().encode(pieces.map(s => `file '${s}'`).join('\n')));
-    exportWorkspaceFiles.add('list.txt');
-    exportWorkspaceFiles.add('joined.mp4');
-    await run(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', 'joined.mp4']);
-    for (const s of new Set([...segs, ...pieces])) await ff.deleteFile(s).catch(() => {});
-    let out = 'joined.mp4';
-    const ovA = S.overlays.filter(o => o.type === 'video');
-    if (S.audio.length || ovA.length) { // mix music, voice-over and overlay-video sound on top
-      exportMetric.stage('Mix audio tracks');
-      updateBusy('Mixing audio tracks…', 'Combining the original sound, music, and voice-over.', 90, 'Audio');
-      say('Mixing audio…');
-      const trk = [...S.audio.map(a => ({ m: a.mediaId, st: a.start, in: a.in, out: a.out, vol: a.vol, fade: a.fade, ov: false })), ...ovA.map(o => ({ m: o.mediaId, st: o.start, in: Number(o.sourceIn) || 0, out: (Number(o.sourceIn) || 0) + o.dur, ov: true }))], ins = [];
-      for (let k = 0; k < trk.length; k++) { const audioFile = `aud${k}`; exportWorkspaceFiles.add(audioFile); await ff.writeFile(audioFile, new Uint8Array(await files[trk[k].m].arrayBuffer())); ins.push('-i', audioFile); }
-      const tryMix = (idx, withOrig) => {
-        const parts = idx.map(k => { const a = trk[k], ms = Math.round(a.st * 1000); return `[${k + 1}:a]atrim=start=${a.in}:end=${a.out},asetpts=PTS-STARTPTS${(a.vol ?? 1) !== 1 ? `,volume=${a.vol}` : ''}${a.fade ? ',afade=type=in:duration=1,afade=type=out:start_time=' + Math.max(0, a.out - a.in - 1).toFixed(2) + ':duration=1' : ''},adelay=${ms}|${ms}[a${k}]`; });
-        exportWorkspaceFiles.add('final.mp4'); return run(['-i', 'joined.mp4', ...ins, '-filter_complex', `${parts.join(';')};${withOrig ? '[0:a]' : ''}${idx.map(k => `[a${k}]`).join('')}amix=inputs=${idx.length + (withOrig ? 1 : 0)}:duration=first:normalize=0[m]`, '-map', '0:v', '-map', '[m]', '-c:v', 'copy', '-c:a', 'aac', 'final.mp4']);
-      };
-      const all = trk.map((_, k) => k), music = all.filter(k => !trk[k].ov); let done = false;
-      for (const [idx, wo] of [[all, true], [all, false], [music, true], [music, false]]) { // a video with no sound falls back to the next combination
-        if (!idx.length || (idx === music && music.length === all.length)) continue;
-        try { await tryMix(idx, wo); done = true; break; } catch (e) { /* try the next one */ }
+    if (pieces.length === 1) {
+      // Avoid an unnecessary concat pass for a single rendered group. Audio mixing must
+      // read this actual file, not assume a joined.mp4 was created.
+      out = pieces[0];
+    } else {
+      exportMetric.stage('Join rendered clips');
+      updateBusy('Joining clips…', 'Combining the rendered clips into one MP4.', 84, 'Final assembly');
+      say('Joining clips…');
+      await ff.writeFile('list.txt', new TextEncoder().encode(pieces.map(s => `file '${s}'`).join('\n')));
+      exportWorkspaceFiles.add('list.txt');
+      exportWorkspaceFiles.add('joined.mp4');
+      await run(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', 'joined.mp4']);
+      for (const s of new Set([...segs, ...pieces])) await ff.deleteFile(s).catch(() => {});
+      out = 'joined.mp4';
+    }
+    } // end of the FFmpeg-only video path
+    // Picture-in-picture videos are muted in preview and have no overlay-volume control.
+    // Do not unexpectedly mix their hidden audio into the exported soundtrack.
+    const ovA = [];
+    if (S.audio.length || ovA.length) {
+      const trk = [
+        ...S.audio.map(a => ({ m: a.mediaId, st: a.start, in: a.in, out: a.out, vol: a.vol, fade: a.fade })),
+        ...ovA.map(o => ({ m: o.mediaId, st: o.start, in: Number(o.sourceIn) || 0, out: (Number(o.sourceIn) || 0) + o.dur }))
+      ];
+      const activeTracks = [], ins = [];
+      const audioSources = new Map();
+      const audioStreamCache = new Map();
+      for (const track of trk) {
+        // Reuse one file-backed mount and one stream probe for repeated media IDs.
+        const sourceEntry = await ensureExportSource(track.m, new Set([track.m]), audioSources);
+        const sourceName = sourceEntry.name;
+        let hasAudio = audioStreamCache.get(sourceName);
+        if (hasAudio === undefined) {
+          hasAudio = await hasAudioStream(sourceName);
+          audioStreamCache.set(sourceName, hasAudio);
+        }
+        if (!hasAudio) continue;
+        // Give every timeline track its own FFmpeg input index; filter graphs consume input pads once.
+        const inputIndex = activeTracks.length + 1; // FFmpeg input 0 is the rendered video.
+        ins.push('-i', sourceName);
+        activeTracks.push({ ...track, inputIndex });
       }
-      if (!done) throw new Error('Could not mix the audio tracks.');
-      out = 'final.mp4';
+      const originalHasAudio = await hasAudioStream(out);
+      if (activeTracks.length) {
+        exportMetric.stage('Mix audio tracks');
+        updateBusy('Mixing audio tracks…', 'Combining the original sound, music, and voice-over.', 90, 'Audio');
+        say('Mixing audio…');
+        const timelineDur = Math.max(0.05, total()).toFixed(3);
+        const parts = activeTracks.map((a, i) => {
+          const clipLen = Math.max(0.05, a.out - a.in);
+          const fd = Math.min(1, Math.max(0.05, clipLen / 2));
+          const ms = Math.max(0, Math.round(a.st * 1000));
+          return `[${a.inputIndex}:a]atrim=start=${a.in}:end=${a.out},asetpts=PTS-STARTPTS${(a.vol ?? 1) !== 1 ? `,volume=${a.vol}` : ''}${a.fade ? ',afade=type=in:duration=' + fd.toFixed(3) + ',afade=type=out:start_time=' + Math.max(0, clipLen - fd).toFixed(3) + ':duration=' + fd.toFixed(3) : ''},adelay=${ms}:all=1[a${i}]`;
+        });
+        const mixInputs = (originalHasAudio ? '[0:a]' : '') + activeTracks.map((_, i) => `[a${i}]`).join('');
+        const mixCount = activeTracks.length + (originalHasAudio ? 1 : 0);
+        const mix = mixCount === 1 ? `${mixInputs}anull[mixed]`
+          : `${mixInputs}amix=inputs=${mixCount}:duration=longest:normalize=0:dropout_transition=0[mixed]`;
+        const filter = `${parts.join(';')};${mix};[mixed]apad=whole_dur=${timelineDur}[m]`;
+        exportWorkspaceFiles.add('final.mp4');
+        await run(['-i', out, ...ins, '-filter_complex', filter, '-map', '0:v', '-map', '[m]',
+          '-c:v', 'copy', '-c:a', 'aac', '-t', timelineDur, 'final.mp4']);
+        out = 'final.mp4';
+      }
     }
     exportMetric.stage('Read and save final MP4');
     updateBusy('Preparing your MP4…', 'Writing the final video file.', 97, 'Finishing');
-    const data = await ff.readFile(out);
-    await saveVideo(data);
+    let delivery;
+    try {
+      delivery = await saveFFmpegOutput(ff, out);
+    } catch (saveError) {
+      if (ff && ff.loaded) {
+        // Keep the completed MP4 in FFmpeg storage; never pin a full render buffer
+        // in the WebView heap while the user decides whether to retry or discard.
+        pendingExportSave = { engine: ff, path: out };
+        preserveOutputPath = out;
+        saveFailurePending = true;
+      }
+      throw saveError;
+    }
+    delivered = delivery;
     ['joined.mp4', 'final.mp4', 'list.txt'].forEach(n => ff.deleteFile(n).catch(() => {}));
     exportOutcome = 'complete';
-    say('Export complete — your MP4 is ready.');
+    if (delivery.method === 'device') {
+      say(`Export complete — saved to ${delivery.location}/${delivery.filename}. Open Gallery or Files to find it.`);
+    } else if (delivery.method === 'browser-download') {
+      say(`Export complete — download started for ${delivery.filename}. Check your Downloads folder.`);
+    } else {
+      say('Export rendered, but direct saving was unavailable. Check the Android share sheet to choose a save destination.');
+    }
   } catch (err) {
     exportMetric.stage('Handle export error or recovery');
     console.error(err);
     const errText = String(err && err.message || err);
+    if (saveFailurePending && pendingExportSave) {
+      exportOutcome = 'rendered; save pending';
+      exportFailed = true;
+      retryAfterCleanup = false;
+      exportProgressHandler = null;
+      const message = 'The video finished rendering, but saving failed. Your completed MP4 is still preserved in temporary export storage. Check storage or Android save permissions, then tap Retry save. Keep MediaY open.';
+      say(message);
+      showBusyError('Video rendered — save failed', message);
+      $('busyDiscard').hidden = false;
+      const retry = $('busyDismiss');
+      retry.textContent = 'Retry save';
+      retry.onclick = retryPendingExportSave;
+    } else if (exportCancelRequested || /Export cancelled/i.test(errText)) {
+      exportOutcome = 'cancelled';
+      exportFailed = false;
+      retryAfterCleanup = false;
+      exportProgressHandler = null;
+      say('Export cancelled. Temporary files were cleaned up; your project was not changed.');
+    } else {
     const encoderNotLoaded = /ffmpeg is not loaded|not loaded, call.*ffmpeg\.load|called FFmpeg\.terminate/i.test(errText);
     if (encoderNotLoaded && recoveryAttempt < 1) {
       // The browser/WebView can lose the FFmpeg worker. A truthy `ff` reference is not proof
@@ -1452,36 +2428,53 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
       updateBusy('Restarting video engine…', 'The encoder worker stopped responding. MediaY is reloading it and retrying once.', 2, 'Recovery');
       exportOutcome = 'retried after worker failure';
       say('Video engine stopped responding; reloading it and retrying once…');
-      btn.disabled = false;
-      return $('goExport').onclick(null, recoveryAttempt + 1);
+      retryAfterCleanup = true;
+      retryAttempt = recoveryAttempt + 1;
     }
-    const memoryProblem = /out of memory|memory access out of bounds|failed to grow memory|cannot allocate|allocation failed|out of memory|oom/i.test(errText + ' ' + ffLogs.join(' '));
-    if (EXP.res > 1080 && memoryProblem) { // only downgrade resolution when there is evidence of a memory failure
-      EXP.res = 1080; [...$('resList').children].forEach(b => b.classList.toggle('on', +b.dataset.v === 1080));
-      exportProgressHandler = null; disposeFFmpeg(); updateBusy('Retrying at 1080p…', 'The selected resolution used too much memory. Retrying at a lower resolution.', 3, 'Retry'); say('That size ran out of memory. Trying again at 1080p…'); btn.disabled = false; return $('goExport').onclick();
+    const memoryProblem = /out of memory|memory access out of bounds|failed to grow memory|cannot allocate|allocation failed|\boom\b/i.test(errText + ' ' + ffLogs.join(' '));
+    const fallbackResolution = EXP.res > 1080 ? 1080 : (EXP.res > 720 ? 720 : null);
+    if (fallbackResolution && memoryProblem && recoveryAttempt < 1) {
+      EXP.res = fallbackResolution;
+      [...$('resList').children].forEach(b => b.classList.toggle('on', +b.dataset.v === fallbackResolution));
+      exportProgressHandler = null;
+      disposeFFmpeg();
+      updateBusy(`Retrying at ${fallbackResolution}p…`, 'The selected resolution used too much memory. Retrying at a lower resolution.', 3, 'Retry');
+      say(`That size ran out of memory. Trying again at ${fallbackResolution}p…`);
+      retryAfterCleanup = true;
+      retryAttempt = recoveryAttempt + 1;
     }
-    exportFailed = true;
     exportProgressHandler = null;
-    const diagnostics = ffLogs.length ? (' Encoder details: ' + ffLogs.slice(-4).join(' | ').slice(0, 650)) : '';
-    const message = 'Export problem: ' + (err && err.message || err) + '. Try 720p or a shorter clip.' + diagnostics;
-    say(message);
-    showBusyError('Export failed', message);
+    if (!retryAfterCleanup) {
+      exportFailed = true;
+      const diagnostics = ffLogs.length ? (' Encoder details: ' + ffLogs.slice(-4).join(' | ').slice(0, 650)) : '';
+      const message = 'Export problem: ' + (err && err.message || err) + '. Try 720p or a shorter clip.' + diagnostics;
+      say(message);
+      showBusyError('Export failed', message);
+    }
+    }
   } finally {
     exportMetric.stage('Clean FFmpeg workspace');
     // All virtual filesystem inputs and outputs created by this export are session-owned.
     // Clean them on every exit, including encoder recovery and a failed audio mix.
     if (ff) {
-      for (const name of exportWorkspaceFiles) {
-        try { await ff.deleteFile(name); } catch (_) {}
+      for (const name of [...exportWorkspaceFiles]) {
+        if (preserveOutputPath && name === preserveOutputPath) continue;
+        await removeExportFile(name);
       }
     }
     exportWorkspaceFiles.clear();
+    exportSourceMounts.clear();
+    if (!captionRunning) {
+      busyCancelButton.hidden = true;
+      busyCancelButton.disabled = false;
+      busyCancelButton.textContent = 'Request cancellation';
+    }
     if (exportVisibilityHandler) document.removeEventListener('visibilitychange', exportVisibilityHandler);
     if (exportWakeLock) {
       try { await exportWakeLock.release(); } catch (_) {}
       exportWakeLock = null;
     }
-    if (nativeExportServiceStarted) await endNativeExportService();
+    await Background.end(); // always balanced with Background.begin above
     const report = exportMetric.finish(exportOutcome);
     recentMediaYMetrics.export = report;
     renderMediaYPerformanceReport();
@@ -1489,7 +2482,28 @@ $('goExport').onclick = async (_event, recoveryAttempt = 0) => {
   }
   exportProgressHandler = null;
   btn.disabled = false;
+  if (retryAfterCleanup) {
+    // The previous FFmpeg job, workspace, wake lock, and foreground-service hold are now
+    // cleaned up. Only now is it safe to create a replacement worker and retry once.
+    return await $('goExport').onclick(null, retryAttempt);
+  }
   if (!exportFailed) hideBusy();
+  return delivered;
+};
+$('goExport').onclick = async (event, recoveryAttempt = 0) => {
+  exportInProgress++;
+  let result;
+  try {
+    result = await runExport(event, recoveryAttempt);
+  } finally {
+    exportInProgress--;
+    if (!exportInProgress) {
+      // The video engine's memory is returned after every export; it reloads on the next one.
+      await releaseHeavyResources({ includeSpeech: !captionRunning });
+      if (S.main.length) setTimeout(preloadEngine, 4000);
+    }
+  }
+  return result;
 };
 
 /* ---------- Effects sheet, fades, text styles ---------- */
@@ -1500,7 +2514,7 @@ function openSheet(name) {
   sheet.classList.toggle('sheet-tall', name === 'adjust' || name === 'blend');
   document.querySelectorAll('[data-pane]').forEach(p => (p.hidden = p.dataset.pane !== name));
   document.querySelectorAll('.dock button').forEach(b => b.classList.toggle('on', b.dataset.sheet === name));
-  if (name === 'fx') markFx(); else if (name === 'adjust') markAdjust(); else if (name === 'blend') markBlend(); else if (name === 'speed') markSp(); else if (name === 'vol') markVol(); else if (name === 'tr') markTr(); else if (name === 'text') markText(); else if (name === 'tpl') markTpl(); else if (name === 'key') markKey(); else if (window.lucide) lucide.createIcons();
+  if (name === 'fx') markFx(); else if (name === 'adjust') markAdjust(); else if (name === 'blend') markBlend(); else if (name === 'speed') markSp(); else if (name === 'vol') markVol(); else if (name === 'tr') markTr(); else if (name === 'text') markText(); else if (name === 'tpl') markTpl(); else if (name === 'key') markKey(); else if (window.MediaYIcons) MediaYIcons.render(document);
 }
 const closeSheet = () => { sheet.hidden = true; document.querySelectorAll('.dock button').forEach(b => b.classList.remove('on')); };
 $('sheetClose').onclick = closeSheet;
@@ -1591,14 +2605,14 @@ $('styleList').onclick = async e => {
   const b = e.target.closest('[data-ts]'); if (!b) return;
   txtStyle = +b.dataset.ts; [...$('styleList').children].forEach(x => x.classList.toggle('on', x === b));
   const o = sel && sel.lane === 'overlay' && S.overlays.find(x => x.id === sel.id && x.type === 'text');
-  if (o) { const old = objOf(o.id); if (old) canvas.remove(old); o.style = txtStyle; await buildObject(o); refresh(t); commit(); }
+  if (o) { const old = objOf(o.id); disposeOverlayObject(old, o); o.style = txtStyle; await buildObject(o); refresh(t); commit(); }
 };
 const textSel = () => { const o = sel && sel.lane === 'overlay' && S.overlays.find(x => x.id === sel.id); return o && o.type === 'text' ? o : null; };
 function markText() { const o = textSel(); $('textInput').value = o ? o.text : ''; $('addText').textContent = o ? 'Update text' : 'Add to video'; }
 $('addText').onclick = async () => {
   const s = $('textInput').value.trim(); if (!s) return say('Type your text first.');
   const o = textSel();
-  if (o) { const old = objOf(o.id); if (old) canvas.remove(old); o.text = s; await buildObject(o); restack(); commit(); refresh(t); closeSheet(); return; }
+  if (o) { const old = objOf(o.id); disposeOverlayObject(old, o); o.text = s; await buildObject(o); restack(); commit(); refresh(t); closeSheet(); return; }
   addOverlay({ type: 'text', text: s, style: txtStyle, top: RATIOS[S.ratio][1] * 0.7 }); $('textInput').value = ''; closeSheet();
 };
 
@@ -1680,14 +2694,35 @@ $('fitBtn').onclick = () => { // logo or music: stretch across the whole video
 const TPLKEY = 'pmy-templates'; let pendingTpl = null;
 const loadTpls = () => { try { return JSON.parse(localStorage.getItem(TPLKEY)) || []; } catch (e) { return []; } };
 const saveTpls = l => { try { localStorage.setItem(TPLKEY, JSON.stringify(l)); } catch (e) { say('Could not save the template on this device.'); } };
+function templateStorageIsDamaged() {
+  const raw = localStorage.getItem(TPLKEY);
+  if (raw == null) return false;
+  try {
+    const templates = JSON.parse(raw);
+    return !Array.isArray(templates) || templates.some(template =>
+      !template || typeof template !== 'object' ||
+      !Array.isArray(template.pre) || !Array.isArray(template.post) ||
+      !Array.isArray(template.overlays) || !Array.isArray(template.audio));
+  } catch (_) { return true; }
+}
+$('tplReset').onclick = () => {
+  if (!templateStorageIsDamaged()) return say('Your saved template list is healthy; nothing needs resetting.');
+  if (!confirm('Reset the damaged template list? This permanently removes saved templates, but does not delete projects or imported media.')) return;
+  localStorage.removeItem(TPLKEY);
+  $('tplReset').hidden = true;
+  markTpl();
+  if (typeof window.scheduleMediaGc === 'function') window.scheduleMediaGc();
+  say('Damaged templates reset. Your projects and imported media are safe; unused media will be cleaned up.');
+};
 function markTpl() {
+  $('tplReset').hidden = !templateStorageIsDamaged();
   const l = loadTpls(); $('tplList').textContent = '';
   if (!l.length) { const p = document.createElement('p'); p.className = 'lbl'; p.textContent = 'No templates yet. Build your intro, logo and outro, then save it below.'; $('tplList').appendChild(p); }
   l.forEach(p => {
     const row = document.createElement('div'), info = document.createElement('span'), use = document.createElement('button'), del = document.createElement('button'); row.className = 'tpl';
     info.textContent = `${p.name} · ${p.pre.length} intro, ${p.post.length} outro, ${p.overlays.length} layers`;
     use.className = 'primary'; use.textContent = 'Use'; use.onclick = () => { pendingTpl = p.id; $('tplInput').click(); };
-    del.textContent = '✕'; del.setAttribute('aria-label', 'Delete template'); del.onclick = () => { saveTpls(loadTpls().filter(x => x.id !== p.id)); markTpl(); };
+    del.textContent = '✕'; del.setAttribute('aria-label', 'Delete template'); del.onclick = () => { saveTpls(loadTpls().filter(x => x.id !== p.id)); markTpl(); if (typeof window.scheduleMediaGc === 'function') window.scheduleMediaGc(); };
     const open = document.createElement('button'); open.textContent = 'Open'; open.onclick = () => openTpl(p);
     row.append(info, open, use, del); $('tplList').appendChild(row);
   });
@@ -1756,24 +2791,145 @@ let asr, asrBackend = 'wasm', captionCancelRequested = false, captionRunning = f
 const CAPTION_SAMPLE_RATE = 16000;
 const CAPTION_CHUNK_SECONDS = 30;
 const abortCaption = () => Object.assign(new Error('Caption generation cancelled.'), { name: 'AbortError' });
+// ---- Speech engine: the JavaScript library, its WASM runtime and the model weights are three separate downloads ----
+//  1. Library + WASM runtime (CPU engine): bundled in the app under vendor/transformers/ (works offline).
+//     The CPU engine falls back to the same version on jsdelivr only if the bundled copy cannot be loaded.
+//  2. Library for the optional GPU engine (transformers 3.x): loaded from jsdelivr; a failure falls back to the CPU engine.
+//  3. Model weights (~40 MB): downloaded from huggingface.co on first use and kept in the browser Cache Storage
+//     ("transformers-cache"), so later runs work offline for as long as Android keeps the app's storage.
+const SPEECH_ENGINE = Object.freeze({
+  bundledModule: './vendor/transformers/transformers.min.js',
+  bundledRuntime: './vendor/transformers/',
+  cpuRemote: 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/transformers.min.js',
+  gpuRemote: 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/dist/transformers.min.js',
+  modelCache: 'transformers-cache'
+});
+const speechModules = new Map();
+const absoluteUrl = relative => { try { return new URL(relative, document.baseURI).href; } catch (_) { return relative; } };
+let speechRetryDelayMs = 1500; // tests set this to 0
+const isOnline = () => typeof navigator === 'undefined' || navigator.onLine !== false;
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+function withTimeout(promise, ms, message) {
+  let timer;
+  return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); })])
+    .finally(() => clearTimeout(timer));
+}
+async function loadSpeechEngineModule(useWebGPU) {
+  const key = useWebGPU ? 'gpu' : 'cpu';
+  if (speechModules.has(key)) return speechModules.get(key);
+  const sources = useWebGPU
+    ? [{ url: SPEECH_ENGINE.gpuRemote, bundled: false, label: 'online GPU library' }]
+    : [{ url: absoluteUrl(SPEECH_ENGINE.bundledModule), bundled: true, label: 'built-in library' },
+       { url: SPEECH_ENGINE.cpuRemote, bundled: false, label: 'online library' }];
+  let lastError = null;
+  for (const source of sources) {
+    for (let attempt = 1; attempt <= (source.bundled ? 1 : 3); attempt++) {
+      if (captionCancelRequested) throw abortCaption();
+      updateBusy('Loading speech engine…', `Loading the ${source.label}${attempt > 1 ? ` (attempt ${attempt})` : ''}. This is the code only, not the speech model.`, null, 'Speech engine');
+      try {
+        // A failed import() is remembered by the browser for that exact URL, so retries use a fresh one.
+        const url = attempt > 1 ? `${source.url}${source.url.includes('?') ? '&' : '?'}retry=${attempt}` : source.url;
+        const loaded = await withTimeout(import(url), source.bundled ? 15000 : 25000, `Timed out loading the ${source.label}.`);
+        const api = loaded && typeof loaded.pipeline === 'function' ? loaded : (loaded && loaded.default);
+        if (!api || typeof api.pipeline !== 'function' || !api.env) throw new Error('The speech library loaded but is not the expected version.');
+        if (source.bundled && await bundledRuntimeAvailable()) {
+          // Without this the library fetches its WASM runtime from the internet even though the code is local.
+          api.env.backends.onnx.wasm.wasmPaths = absoluteUrl(SPEECH_ENGINE.bundledRuntime);
+        }
+        if (api.env.backends && api.env.backends.onnx && api.env.backends.onnx.wasm) api.env.backends.onnx.wasm.numThreads = 1;
+        speechModules.set(key, api);
+        return api;
+      } catch (error) {
+        lastError = error;
+        if (captionCancelRequested) throw abortCaption();
+        if (attempt < 3 && !source.bundled) await sleep(500 * attempt);
+      }
+    }
+  }
+  const detail = lastError && lastError.message ? lastError.message : String(lastError);
+  throw new Error(isOnline()
+    ? `The speech engine could not be loaded (${detail}). Check the connection and try again.`
+    : 'The speech engine could not be loaded and this device looks offline. Reconnect and try again.');
+}
+// The runtime files are fetched into vendor/transformers/ by scripts/fetch_speech_engine.sh during the build. A source
+// checkout without them still works (online) because the library then falls back to its own default download location.
+async function bundledRuntimeAvailable() {
+  const controller = new AbortController();
+  try {
+    const response = await withTimeout(fetch(absoluteUrl(SPEECH_ENGINE.bundledRuntime) + 'ort-wasm-simd.wasm', { signal: controller.signal }), 4000, 'runtime probe timed out');
+    return response.ok;
+  } catch (_) {
+    return false;
+  } finally {
+    controller.abort(); // only the headers are needed, never the 10 MB body
+  }
+}
+const looksLikeCorruptModelCache = error => /protobuf|parsing failed|unexpected end|unexpected token|invalid (model|json)|corrupt|deserialize|not a valid/i.test(String(error && error.message || error));
+async function clearSpeechModelCache() {
+  try { if (window.caches) await caches.delete(SPEECH_ENGINE.modelCache); } catch (_) { /* nothing to clear */ }
+}
 async function createSpeechPipeline(useWebGPU) {
-  const packageName = useWebGPU ? '@huggingface/transformers@3.8.1' : '@xenova/transformers@2.17.2';
-  const { pipeline, env } = await import(`https://cdn.jsdelivr.net/npm/${packageName}`);
+  const { pipeline, env } = await loadSpeechEngineModule(useWebGPU);
   env.allowLocalModels = false;
+  env.useBrowserCache = true;
+  // The model is several files; report one overall percentage instead of one that jumps back for each file.
+  const files = new Map();
+  let shown = 0; // never move backwards when another model file starts reporting
   const progress_callback = p => {
-    if (p.status !== 'progress') return;
-    const detail = `Downloading speech model… ${Math.round(p.progress || 0)}%`;
+    if (!p || p.status !== 'progress' || !p.file) return;
+    files.set(p.file, { loaded: Number(p.loaded) || 0, total: Number(p.total) || 0 });
+    let loaded = 0, total = 0;
+    for (const f of files.values()) { loaded += f.loaded; total += f.total; }
+    const raw = total > 0 ? Math.min(100, loaded / total * 100) : (Number.isFinite(p.progress) ? p.progress : null);
+    const percent = raw === null ? null : (shown = Math.max(shown, raw));
+    const detail = `Downloading speech model… ${Math.round(percent || 0)}% (${(loaded / 1048576).toFixed(0)} of ${(total / 1048576).toFixed(0)} MB)`;
     say(detail);
-    updateBusy('Downloading speech model…', detail, Number.isFinite(p.progress) ? p.progress : null, 'Model download');
+    updateBusy('Downloading speech model…', detail, percent, 'Model download');
   };
   const options = { progress_callback };
-  if (useWebGPU) options.device = 'webgpu';
+  if (useWebGPU) {
+    options.device = 'webgpu';
+    options.dtype = { encoder_model: 'fp32', decoder_model_merged: 'q4' };
+  }
   const modelId = useWebGPU ? 'onnx-community/whisper-tiny' : 'Xenova/whisper-tiny';
-  const model = await pipeline('automatic-speech-recognition', modelId, options);
+  let model = null, lastError = null, clearedCache = false;
+  for (let attempt = 1; attempt <= 3 && !model; attempt++) {
+    if (captionCancelRequested) throw abortCaption();
+    updateBusy('Downloading speech model…', attempt === 1
+      ? 'The speech model (about 40 MB) downloads once and is then kept on this device.'
+      : `Retrying the speech model download (attempt ${attempt} of 3).`, null, 'Model download');
+    try {
+      model = await pipeline('automatic-speech-recognition', modelId, options);
+    } catch (error) {
+      lastError = error;
+      if (captionCancelRequested) throw abortCaption();
+      if (!clearedCache && looksLikeCorruptModelCache(error)) { // a damaged cached file would fail forever
+        clearedCache = true; files.clear(); await clearSpeechModelCache(); continue;
+      }
+      if (attempt < 3) await sleep(speechRetryDelayMs * attempt);
+    }
+  }
+  if (!model) {
+    const detail = lastError && lastError.message ? lastError.message : String(lastError);
+    throw new Error(!isOnline()
+      ? 'The speech model has not been downloaded yet and this device is offline. Connect once to download it (about 40 MB); after that captions work offline.'
+      : `The speech model could not be downloaded (${detail}). Check the connection and try again. Files already downloaded are kept.`);
+  }
   asrBackend = useWebGPU ? 'webgpu' : 'wasm';
   return model;
 }
-async function pcmOf(src, audioContext, decodeCache) {
+function normalizeQuietCaptionAudio(pcm) {
+  if (!pcm || !pcm.length) return pcm;
+  let peak = 0;
+  for (let i = 0; i < pcm.length; i++) peak = Math.max(peak, Math.abs(pcm[i]));
+  // Avoid boosting near-silence/noise or changing already healthy levels.
+  if (!(peak > 0.006 && peak < 0.5)) return pcm;
+  const gain = Math.min(12, 0.8 / peak);
+  const normalized = new Float32Array(pcm.length);
+  for (let i = 0; i < pcm.length; i++) normalized[i] = pcm[i] * gain;
+  return normalized;
+}
+async function pcmOf(src, audioContext, decodeCache, onDecoded = () => {}) {
   // Reuse at most one decoded source buffer. This avoids decoding the same source twice
   // when a video and its audio track reference the same media without retaining many hours of PCM.
   await loadMedia(src.m);
@@ -1792,6 +2948,7 @@ async function pcmOf(src, audioContext, decodeCache) {
     throw error;
   }
   const inputRate = buf.sampleRate || audioContext.sampleRate || CAPTION_SAMPLE_RATE;
+  onDecoded({ sampleRate: inputRate, channels: buf.numberOfChannels || 1, sourceDurationSeconds: buf.duration || (buf.length / inputRate) });
   const start = Math.max(0, Math.min(buf.length, Math.floor(src.in * inputRate)));
   const end = Math.max(start, Math.min(buf.length, Math.ceil(src.out * inputRate)));
   if (end - start < Math.floor(inputRate * 0.1)) throw new Error('The selected audio range is too short.');
@@ -1806,15 +2963,10 @@ async function pcmOf(src, audioContext, decodeCache) {
       for (let i = 0, source = start; source < end; i++, source++) mono[i] += data[source] / buf.numberOfChannels;
     }
   }
-  if (inputRate === CAPTION_SAMPLE_RATE) return mono;
-  const outLength = Math.max(1, Math.round(mono.length * CAPTION_SAMPLE_RATE / inputRate));
-  const resampled = new Float32Array(outLength);
-  const ratio = inputRate / CAPTION_SAMPLE_RATE;
-  for (let i = 0; i < outLength; i++) {
-    const position = i * ratio, lo = Math.min(Math.floor(position), mono.length - 1), hi = Math.min(lo + 1, mono.length - 1), f = position - lo;
-    resampled[i] = mono[lo] * (1 - f) + mono[hi] * f;
-  }
-  return resampled;
+  if (inputRate === CAPTION_SAMPLE_RATE) return normalizeQuietCaptionAudio(mono);
+  const Core = window.MediaYCore;
+  if (!Core || typeof Core.resamplePcm !== 'function') throw new Error('MediaY audio resampler did not load.');
+  return normalizeQuietCaptionAudio(Core.resamplePcm(mono, inputRate, CAPTION_SAMPLE_RATE));
 }
 function hasAudibleSignal(pcm) {
   if (!pcm || !pcm.length) return false;
@@ -1828,99 +2980,203 @@ function hasAudibleSignal(pcm) {
   const rms = Math.sqrt(sum / Math.max(1, count));
   return !(rms < 0.0012 && peak < 0.006);
 }
-async function captionFrom(pcm, src, onProgress = () => {}) {
+function captionPcmStats(pcm) {
+  if (!pcm || !pcm.length) return { durationSeconds: 0, rms: 0, peak: 0 };
+  const stride = Math.max(1, Math.floor(pcm.length / 200000));
+  let sum = 0, peak = 0, count = 0;
+  for (let i = 0; i < pcm.length; i += stride) {
+    const value = pcm[i], magnitude = Math.abs(value);
+    sum += value * value;
+    peak = Math.max(peak, magnitude);
+    count++;
+  }
+  return { durationSeconds: Number((pcm.length / CAPTION_SAMPLE_RATE).toFixed(3)), rms: Number(Math.sqrt(sum / Math.max(1, count)).toFixed(6)), peak: Number(peak.toFixed(6)) };
+}
+let asrWordTimestamps = false; // Whisper tiny's bundled DTW word alignment is unreliable; use native segment timestamps
+async function transcribeChunk(audioChunk) {
   const lang = $('capLang').value;
-  const chunkSamples = CAPTION_CHUNK_SECONDS * CAPTION_SAMPLE_RATE;
-  const chunkCount = Math.ceil(pcm.length / chunkSamples);
-  const drafts = [];
-  for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++) {
+  const options = {
+    chunk_length_s: CAPTION_CHUNK_SECONDS,
+    stride_length_s: 5,
+    ...(lang ? { language: lang } : {}),
+    ...($('capTr').checked
+      ? (lang ? { task: 'translate' } : { forced_decoder_ids: [[1, null], [2, 50358]] })
+      : {})
+  };
+  if (asrWordTimestamps) {
+    try { return { result: await asr(audioChunk, { ...options, return_timestamps: 'word' }), wordMode: true }; }
+    catch (error) {
+      if (error && error.name === 'AbortError') throw error;
+      // Only a model that cannot produce word times is downgraded; any other failure keeps its own recovery path.
+      if (!/cross.?attention|extract timestamps|output_attentions|alignment/i.test(String(error && error.message || error))) throw error;
+      asrWordTimestamps = false;
+    }
+  }
+  return { result: await asr(audioChunk, { ...options, return_timestamps: true }), wordMode: false };
+}
+async function captionFrom(pcm, src, onProgress = () => {}, diagnostics = null) {
+  // The speech model supplies the words; the audio itself supplies the timing (see mediay-core.js).
+  const Core = window.MediaYCore;
+  if (!Core) throw new Error('mediay-core.js did not load. Reload MediaY.');
+  const duration = pcm.length / CAPTION_SAMPLE_RATE;
+  const activity = Core.analyzeSpeechActivity(pcm, CAPTION_SAMPLE_RATE);
+  const plan = Core.planCaptionChunks(duration, activity, { maxSeconds: CAPTION_CHUNK_SECONDS });
+  if (diagnostics) Object.assign(diagnostics, {
+    speechThresholdDb: Number(activity.thresholdDb.toFixed(2)),
+    speechDynamicRangeDb: Number((activity.dynamicRangeDb || 0).toFixed(2)),
+    speechVoicedRatio: Number((activity.voicedRatio || 0).toFixed(4)),
+    speechIntervals: activity.intervals.length,
+    speechAnalysisReliable: !!activity.reliable,
+    plannedChunks: plan.length,
+    chunksSentToWhisper: 0,
+    rawWhisperSegments: 0
+  });
+  const mixedSegments = [];
+  let lastCaptionStart = 0;
+  for (let chunkIndex = 0; chunkIndex < plan.length; chunkIndex++) {
     if (captionCancelRequested) throw abortCaption();
-    const sampleStart = chunkIndex * chunkSamples;
-    const audioChunk = pcm.subarray(sampleStart, Math.min(pcm.length, sampleStart + chunkSamples));
-    if (!audioChunk.length) continue;
+    const [from, to] = plan[chunkIndex];
+    const audioChunk = pcm.subarray(Math.round(from * CAPTION_SAMPLE_RATE), Math.min(pcm.length, Math.round(to * CAPTION_SAMPLE_RATE)));
+    const progress = { chunkIndex, chunkCount: plan.length, percent: (chunkIndex + 1) / plan.length };
+    // Whisper invents text ("Thank you.") on silence, so never feed it a window with no detected speech.
+    if (!audioChunk.length || !Core.hasSpeech(activity, from, to)) { onProgress(progress); continue; }
+    const { result, wordMode } = await transcribeChunk(audioChunk);
+    if (diagnostics) {
+      diagnostics.chunksSentToWhisper++;
+      diagnostics.rawWhisperSegments += (result.chunks || []).length;
+    }
+    if (captionCancelRequested) throw abortCaption();
     const chunkDuration = audioChunk.length / CAPTION_SAMPLE_RATE;
-    const result = await asr(audioChunk, {
-      chunk_length_s: CAPTION_CHUNK_SECONDS,
-      stride_length_s: 5,
-      return_timestamps: 'word',
-      ...(lang ? { language: lang } : {}),
-      task: $('capTr').checked ? 'translate' : 'transcribe'
-    });
-    if (captionCancelRequested) throw abortCaption();
-    const timedWords = [];
     for (const chunk of result.chunks || []) {
       const text = String(chunk.text || '').trim();
-      const words = text.split(/\s+/).filter(Boolean);
-      if (!words.length || /^[\[(].*[\])]$/.test(text)) continue;
+      if (!text || /^[\[(].*[\])]$/.test(text)) continue;
       const stamp = Array.isArray(chunk.timestamp) ? chunk.timestamp : [];
-      let s0 = Number.isFinite(stamp[0]) ? stamp[0] : 0;
-      let e0 = Number.isFinite(stamp[1]) ? stamp[1] : Math.min(s0 + Math.max(0.1, words.length * 0.25), chunkDuration);
-      s0 = Math.max(0, Math.min(chunkDuration, s0));
-      e0 = Math.max(s0, Math.min(chunkDuration, e0));
-      if (e0 - s0 < 0.01) continue;
-
-      // Word-level timestamps are preferred. If the model returns a phrase-level
-      // chunk (or a test/older backend does), subdivide only that chunk as fallback.
-      for (let wordIndex = 0; wordIndex < words.length; wordIndex++) {
-        const a = s0 + (e0 - s0) * wordIndex / words.length;
-        const b = s0 + (e0 - s0) * (wordIndex + 1) / words.length;
-        const entry = {
-          word: words[wordIndex],
-          start: sampleStart / CAPTION_SAMPLE_RATE + a,
-          end: sampleStart / CAPTION_SAMPLE_RATE + b
-        };
-        if (/^[,.;:!?%…]+$/.test(entry.word) && timedWords.length) {
-          timedWords[timedWords.length - 1].word += entry.word;
-          timedWords[timedWords.length - 1].end = entry.end;
-        } else {
-          timedWords.push(entry);
-        }
-      }
+      const rawStart = Number.isFinite(stamp[0]) ? Math.max(0, Math.min(chunkDuration, stamp[0])) : 0;
+      const s0 = Math.max(rawStart, lastCaptionStart - from);
+      const e0 = Number.isFinite(stamp[1]) ? Math.max(s0, Math.min(chunkDuration, stamp[1])) : NaN;
+      const entry = { text, start: from + s0, end: Number.isFinite(e0) ? from + e0 : NaN };
+      lastCaptionStart = entry.start;
+      mixedSegments.push({ ...entry, word: wordMode && text.split(/\s+/).length === 1 });
     }
-
-    // Group up to four timed words into readable captions while keeping the actual
-    // first-word/last-word boundaries. This prevents phrase timestamps from being
-    // stretched evenly over unrelated words when the recognizer supplies word times.
-    let group = [];
-    const flushGroup = () => {
-      if (!group.length) return;
-      const rawText = group.map(item => item.word).join(' ');
-      const captionText = rawText.replace(/\s+([,.;:!?%…])/g, '$1').replace(/([([{])\s+/g, '$1').trim();
-      const relativeSourceStart = group[0].start;
-      const relativeSourceEnd = group[group.length - 1].end;
-      const speed = Number.isFinite(src.sp) && src.sp > 0 ? src.sp : 1;
-      const timelineStart = Number.isFinite(src.start) ? src.start : 0;
-      if (captionText && relativeSourceEnd > relativeSourceStart) {
-        drafts.push({
-          id: uid(),
-          layer: S.nextLayer + drafts.length,
-          type: 'text',
-          text: captionText,
-          style: txtStyle,
-          start: timelineStart + relativeSourceStart / speed,
-          dur: Math.max(MIN_TIMELINE_FRAME, (relativeSourceEnd - relativeSourceStart) / speed),
-          top: RATIOS[S.ratio][1] * 0.72
-        });
-      }
-      group = [];
-    };
-    for (const entry of timedWords) {
-      if (group.length) {
-        const gap = entry.start - group[group.length - 1].end;
-        const duration = entry.end - group[0].start;
-        if (gap > 0.55 || duration >= 2.6) flushGroup();
-      }
-      group.push(entry);
-      if (group.length >= 4 || /[.!?…]["')\]]?$/.test(entry.word)) flushGroup();
-    }
-    flushGroup();
-    onProgress({ chunkIndex, chunkCount, percent: (chunkIndex + 1) / chunkCount });
+    onProgress(progress);
   }
   if (captionCancelRequested) throw abortCaption();
-  return drafts;
+  const segments = Core.mergeCaptionSegments(mixedSegments);
+  const speed = Number.isFinite(src.sp) && src.sp > 0 ? src.sp : 1;
+  const timelineStart = Number.isFinite(src.start) ? src.start : 0;
+  const lines = Core.buildCaptionLines(segments, activity, duration);
+  if (diagnostics) diagnostics.finalCaptionLines = lines.length;
+  return lines.map((line, index) => ({
+    id: uid(),
+    layer: S.nextLayer + index,
+    type: 'text',
+    caption: true, // appears instantly in the preview, exactly like the exported video
+    text: line.text.replace(/\s+([,.;:!?%…])/g, '$1').replace(/([([{])\s+/g, '$1').trim(),
+    style: txtStyle,
+    start: Core.sourceToTimeline(line.start, timelineStart, speed),
+    dur: Math.max(MIN_TIMELINE_FRAME, (line.end - line.start) / speed),
+    top: RATIOS[S.ratio][1] * 0.72
+  }));
+}
+// Large caption sources are decoded and transcribed one bounded window at a time.
+// 16 kHz mono float32 PCM uses about 38.4 MB per 10-minute window.
+const CAPTION_STREAM_THRESHOLD_BYTES = 96 * 1024 * 1024;
+const CAPTION_STREAM_WINDOW_SECONDS = 10 * 60;
+const CAPTION_STREAM_OVERLAP_SECONDS = 1.5;
+const CAPTION_STREAM_MAX_SECONDS = 4 * 60 * 60;
+function shouldStreamCaptionSource(file, src) {
+  const selectedDuration = Math.max(0, Number(src && src.out) - Number(src && src.in));
+  // A short trim can still point into a very large original source. Keep the
+  // decode path bounded when either the selected range or source media is long.
+  const sourceDuration = Math.max(0, Number(src && src.src) || 0);
+  return !!file && (file.size > CAPTION_STREAM_THRESHOLD_BYTES ||
+    selectedDuration > CAPTION_STREAM_WINDOW_SECONDS || sourceDuration > CAPTION_STREAM_WINDOW_SECONDS);
+}
+function rawCaptionBytesToPcm(raw) {
+  if (!raw || raw.byteLength < 4 || raw.byteLength % 4 !== 0) return null;
+  return new Float32Array(raw.buffer, raw.byteOffset, raw.byteLength / 4).slice();
+}
+async function* streamCaptionPcmWindows(src, file, onProgress = () => {}) {
+  const clipStart = Math.max(0, Number(src.in) || 0);
+  const clipLength = Math.max(0, (Number(src.out) || 0) - clipStart);
+  if (!file || !file.size) throw new Error('The selected audio source is missing or empty.');
+  if (clipLength < 0.1) throw new Error('The selected audio range is too short.');
+  if (clipLength > CAPTION_STREAM_MAX_SECONDS) {
+    throw new Error('This captioning pass is limited to 4 hours of selected audio. Split the clip into shorter sections and try again.');
+  }
+  if (!window.FFmpegWASM || typeof FFmpegWASM.FFmpeg !== 'function') {
+    throw new Error('The local FFmpeg audio decoder is unavailable. Reload MediaY and try again.');
+  }
+  if (captionCancelRequested) throw abortCaption();
+  const engine = await getFFmpeg();
+  const token = uid();
+  const ext = ((file.name || 'media.mp4').split('.').pop() || 'mp4').toLowerCase().replace(/[^a-z0-9]/g, '') || 'mp4';
+  const inputName = `caption_source_${token}.${ext}`;
+  const outputName = `caption_window_${token}.f32`;
+  const mountDir = `/caption_source_${token}`;
+  let mounted = false, directoryCreated = false;
+  const Core = window.MediaYCore;
+  if (!Core || typeof Core.planCaptionStreamWindows !== 'function') throw new Error('The caption window planner is unavailable. Reload MediaY.');
+  const windows = Core.planCaptionStreamWindows(clipLength, CAPTION_STREAM_WINDOW_SECONDS, CAPTION_STREAM_OVERLAP_SECONDS);
+  const windowCount = windows.length;
+  try {
+    if (typeof engine.createDir !== 'function' || typeof engine.mount !== 'function' || typeof engine.unmount !== 'function') {
+      throw new Error('This FFmpeg build does not support safe file-backed audio streaming. Update the app before captioning this large file.');
+    }
+    await engine.createDir(mountDir);
+    directoryCreated = true;
+    const workerFs = (FFmpegWASM.FFFSType && FFmpegWASM.FFFSType.WORKERFS) || 'WORKERFS';
+    await engine.mount(workerFs, { blobs: [{ name: inputName, data: file }] }, mountDir);
+    mounted = true;
+    const inputPath = `${mountDir}/${inputName}`;
+    for (let index = 0; index < windowCount; index++) {
+      if (captionCancelRequested) throw abortCaption();
+      const planWindow = windows[index];
+      const { offsetSeconds, durationSeconds } = planWindow;
+      onProgress({ index, count: windowCount, percent: index / windowCount, stage: 'decode' });
+      const code = await engine.exec([
+        '-ss', String(clipStart + offsetSeconds), '-t', String(durationSeconds), '-i', inputPath,
+        '-vn', '-ac', '1', '-ar', String(CAPTION_SAMPLE_RATE), '-f', 'f32le', outputName
+      ]);
+      if (code !== 0) throw new Error(`FFmpeg could not decode audio window ${index + 1} of ${windowCount}.`);
+      let raw = null, pcm = null;
+      try {
+        raw = await engine.readFile(outputName);
+        pcm = rawCaptionBytesToPcm(raw);
+      } finally {
+        try { await engine.deleteFile(outputName); } catch (_) {}
+        raw = null;
+      }
+      if (!pcm || !pcm.length) throw new Error(`Audio window ${index + 1} of ${windowCount} decoded to no samples.`);
+      const normalizedPcm = normalizeQuietCaptionAudio(pcm);
+      pcm = null;
+      yield { pcm: normalizedPcm, ...planWindow };
+    }
+  } catch (error) {
+    if (error && error.name === 'AbortError') throw error;
+    if (/memory|out of memory|oom/i.test(String(error && error.message || error))) disposeFFmpeg();
+    throw error;
+  } finally {
+    try { if (mounted) await engine.unmount(mountDir); } catch (_) {}
+    try { if (directoryCreated && typeof engine.deleteDir === 'function') await engine.deleteDir(mountDir); } catch (_) {}
+    try { await engine.deleteFile(outputName); } catch (_) {}
+  }
+}
+async function transcribeCaptionPcmWithFallback(pcm, source, onChunk, diagnostics) {
+  try {
+    return await captionFrom(pcm, source, onChunk, diagnostics);
+  } catch (error) {
+    if (error && error.name === 'AbortError') throw error;
+    if (asrBackend !== 'webgpu') throw error;
+    asr = null;
+    updateBusy('Switching to compatible captions…', 'GPU inference failed on this device. Retrying this audio window with the CPU engine.', null, 'Compatibility');
+    asr = await createSpeechPipeline(false);
+    return await captionFrom(pcm, source, onChunk, diagnostics);
+  }
 }
 async function commitCaptionDrafts(drafts) {
   if (!drafts.length) return 0;
+  await ensureFontsReady();
   const originalNextLayer = S.nextLayer;
   const staged = drafts.map((draft, index) => ({ ...draft, layer: originalNextLayer + index }));
   const built = [];
@@ -1950,13 +3206,14 @@ async function commitCaptionDrafts(drafts) {
     ));
     if (!verified) throw new Error('Captions were generated but could not be verified in the saved project. Check device storage and try again.');
 
+    if (captionCancelRequested) throw abortCaption();
     restack();
     commit();
     return staged.length;
   } catch (error) {
     for (const id of built) {
       const object = objOf(id);
-      if (object) canvas.remove(object);
+      if (object) disposeOverlayObject(object, staged.find(overlay => overlay.id === id));
     }
     canvas.requestRenderAll();
     S.overlays = S.overlays.filter(overlay => !staged.some(draft => draft.id === overlay.id));
@@ -1964,6 +3221,19 @@ async function commitCaptionDrafts(drafts) {
     await saveProject().catch(() => {});
     throw error;
   }
+}
+function requestExportCancel() {
+  if (!exportInProgress || exportCancelRequested) return;
+  exportCancelRequested = true;
+  const button = $('busyCancel');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Cancelling export…';
+  }
+  say('Cancelling export. MediaY is stopping the encoder and removing unfinished output.');
+  // Terminating FFmpeg rejects its active command and releases the worker heap.
+  // The WebCodecs path also receives isCancelled and closes its decoder/encoder between frames.
+  if (ff) disposeFFmpeg();
 }
 function requestCaptionCancel() {
   if (!captionRunning || captionCancelRequested) return;
@@ -1976,17 +3246,20 @@ function requestCaptionCancel() {
   say('Cancellation requested. MediaY will finish the current model/audio operation and discard all generated captions.');
 }
 $('capCancelBtn').onclick = requestCaptionCancel;
-$('busyCancel').onclick = requestCaptionCancel;
+$('busyCancel').onclick = () => exportInProgress ? requestExportCancel() : requestCaptionCancel();
 $('capGo').onclick = async () => {
   const audioSelection = sel && sel.lane === 'audio' ? S.audio.find(x => x.id === sel.id) : null;
-  const selectedVideo = audioSelection ? null : clipNow();
-  const audioCandidate = item => ({ m: item.mediaId, in: item.in, out: item.out, start: item.start, sp: 1, label: item.name || 'audio track' });
-  const candidates = audioSelection
-    ? [audioCandidate(audioSelection)]
-    : [...(selectedVideo ? [{ m: selectedVideo.mediaId, in: selectedVideo.in, out: selectedVideo.out, start: startOf(selectedVideo, 'main'), sp: selectedVideo.speed || 1, label: selectedVideo.name || 'selected video clip' }] : []),
-       ...S.audio.map(audioCandidate)];
+  const explicitVideo = !audioSelection && sel && sel.lane === 'main' ? S.main.find(x => x.id === sel.id) : null;
+  const audioCandidate = item => ({ kind: 'audio', m: item.mediaId, in: item.in, out: item.out, src: item.src, start: item.start, sp: 1, label: item.name || 'audio track' });
+  const videoCandidate = clip => ({ kind: 'video', m: clip.mediaId, in: clip.in, out: clip.out, src: clip.src, start: startOf(clip, 'main'), sp: clip.speed || 1, rev: !!clip.rev, label: clip.name || 'video clip' });
+  // An explicit selection is authoritative: never silently switch to another lane.
+  // With no selection, try the main video first and use separate audio tracks only as fallback.
+  const candidates = audioSelection ? [audioCandidate(audioSelection)] :
+    explicitVideo ? [videoCandidate(explicitVideo)] :
+    [...S.main.map(videoCandidate), ...S.audio.map(audioCandidate)];
   if (!candidates.length) return say('Import a video or add audio first.');
   if (captionRunning) return;
+  if (exportInProgress) return say('An export is running. Wait for it to finish, then generate captions.');
   const captionMetric = createMediaYMetric('Automatic captions', {
     selectedSources: candidates.length, language: $('capLang').value || 'auto',
     translateToEnglish: $('capTr').checked, modelWarm: !!asr
@@ -2003,6 +3276,7 @@ $('capGo').onclick = async () => {
   busyCancelButton.textContent = 'Request cancellation';
   captionRunning = true;
   captionCancelRequested = false;
+  await Background.begin(); // keeps captions running if the app goes to the background
   let captionFailed = false, audioContext = null;
   const decodeCache = new Map();
   captionMetric.stage('Load speech model and runtime');
@@ -2033,45 +3307,138 @@ $('capGo').onclick = async () => {
     if (!AudioContextClass) throw new Error('This browser does not support audio decoding for captions.');
     try { audioContext = new AudioContextClass({ sampleRate: CAPTION_SAMPLE_RATE }); }
     catch (_) { audioContext = new AudioContextClass(); }
-    let chosenDrafts = [], used = '';
+    let chosenDrafts = [], usedLabels = [], skippedReversed = 0;
+    const sourceDiagnostics = [];
     for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
       const source = candidates[candidateIndex];
       if (captionCancelRequested) throw abortCaption();
+      // Audio tracks are only a fallback when the video clips themselves contain no speech.
+      if (source.kind === 'audio' && chosenDrafts.length) {
+        sourceDiagnostics.push({ kind: source.kind, label: source.label, decode: 'not attempted', transcription: 'skipped: video source already produced captions' });
+        break;
+      }
+      if (source.rev) { skippedReversed++; continue; } // reversed audio cannot be transcribed
       say(`Preparing ${source.label} for captions…`);
       captionMetric.stage('Decode and resample audio');
       updateBusy('Decoding audio…', `Preparing the audio from ${source.label}. Large source files can take time to decode.`, 10 + candidateIndex / candidates.length * 5, 'Audio decode');
-      let pcm;
-      try { pcm = await pcmOf(source, audioContext, decodeCache); }
-      catch (_) { continue; }
-      if (!hasAudibleSignal(pcm)) {
-        updateBusy('Skipping silent audio…', `No useful audio signal was detected in ${source.label}.`, 15 + (candidateIndex + 1) / candidates.length * 5, 'Audio check');
+      const sourceDiagnostic = {
+        kind: source.kind, label: source.label,
+        selectedRangeSeconds: Number(Math.max(0, source.out - source.in).toFixed(3)),
+        decode: 'pending', transcription: 'not attempted'
+      };
+      sourceDiagnostics.push(sourceDiagnostic);
+      let drafts = [];
+      const candidateBase = 20 + candidateIndex / candidates.length * 70;
+      const candidateSpan = 70 / candidates.length;
+      const clipLength = Math.max(0, Number(source.out) - Number(source.in));
+      const onChunk = p => {
+        const windowLabel = p.windowCount > 1 ? `, window ${(p.windowIndex || 0) + 1} of ${p.windowCount}` : '';
+        const detail = `${source.label}: audio chunk ${p.chunkIndex + 1} of ${p.chunkCount}${windowLabel}. You can cancel between chunks.`;
+        say(detail);
+        const percent = p.windowCount > 1 ? ((p.windowIndex + p.percent) / p.windowCount) : p.percent;
+        updateBusy('Transcribing speech…', detail, candidateBase + candidateSpan * percent, 'Transcription');
+      };
+      try {
+        await loadMedia(source.m);
+        const sourceFile = files[source.m];
+        if (!sourceFile) throw new Error('The selected audio source is missing.');
+        if (shouldStreamCaptionSource(sourceFile, source)) {
+          sourceDiagnostic.decodeMode = 'ffmpeg-windowed';
+          sourceDiagnostic.windowSeconds = CAPTION_STREAM_WINDOW_SECONDS;
+          sourceDiagnostic.windowOverlapSeconds = CAPTION_STREAM_OVERLAP_SECONDS;
+          sourceDiagnostic.windowCount = Math.ceil(clipLength / CAPTION_STREAM_WINDOW_SECONDS);
+          sourceDiagnostic.durationSeconds = Number(clipLength.toFixed(3));
+          let audibleWindows = 0, totalSamples = 0, totalPlanned = 0, totalSent = 0, totalRaw = 0, totalLines = 0;
+          for await (const windowData of streamCaptionPcmWindows(source, sourceFile, progress => {
+            const detail = `${source.label}: decoding audio window ${progress.index + 1} of ${progress.count}.`;
+            say(detail);
+            updateBusy('Decoding audio…', detail, 10 + (candidateIndex / candidates.length) * 5 + (progress.percent * 5 / candidates.length), 'Audio decode');
+          })) {
+            if (captionCancelRequested) throw abortCaption();
+            sourceDiagnostic.decode = 'success';
+            totalSamples += windowData.pcm.length;
+            if (!hasAudibleSignal(windowData.pcm)) { windowData.pcm = null; continue; }
+            audibleWindows++;
+            const speed = Number.isFinite(source.sp) && source.sp > 0 ? source.sp : 1;
+            const windowSource = { ...source, start: (Number(source.start) || 0) + windowData.offsetSeconds / speed };
+            const windowDiagnostics = {};
+            let windowDrafts;
+            try {
+              windowDrafts = await transcribeCaptionPcmWithFallback(windowData.pcm, windowSource, p => onChunk({
+                ...p, windowIndex: windowData.index, windowCount: windowData.count
+              }), windowDiagnostics);
+            } finally {
+              windowData.pcm = null;
+            }
+            const timelineStart = Number.isFinite(source.start) ? source.start : 0;
+            const windowSpeed = Number.isFinite(source.sp) && source.sp > 0 ? source.sp : 1;
+            const ownedDrafts = windowDrafts.filter(draft => {
+              const sourcePosition = (draft.start - timelineStart) * windowSpeed;
+              return sourcePosition >= windowData.ownershipStartSeconds - 0.001 &&
+                sourcePosition < windowData.ownershipEndSeconds - 0.001;
+            });
+            drafts.push(...ownedDrafts);
+            totalPlanned += Number(windowDiagnostics.plannedChunks) || 0;
+            totalSent += Number(windowDiagnostics.chunksSentToWhisper) || 0;
+            totalRaw += Number(windowDiagnostics.rawWhisperSegments) || 0;
+            totalLines += Number(windowDiagnostics.finalCaptionLines) || 0;
+            Object.assign(sourceDiagnostic, {
+              speechThresholdDb: windowDiagnostics.speechThresholdDb,
+              speechDynamicRangeDb: windowDiagnostics.speechDynamicRangeDb,
+              speechVoicedRatio: windowDiagnostics.speechVoicedRatio,
+              speechIntervals: (Number(sourceDiagnostic.speechIntervals) || 0) + (Number(windowDiagnostics.speechIntervals) || 0),
+              speechAnalysisReliable: !!(sourceDiagnostic.speechAnalysisReliable || windowDiagnostics.speechAnalysisReliable)
+            });
+          }
+          sourceDiagnostic.decode = 'success';
+          sourceDiagnostic.decodeComplete = true;
+          sourceDiagnostic.sampleRate = CAPTION_SAMPLE_RATE;
+          sourceDiagnostic.channels = 1;
+          sourceDiagnostic.rms = null;
+          sourceDiagnostic.peak = null;
+          sourceDiagnostic.durationSeconds = Number(clipLength.toFixed(3));
+          sourceDiagnostic.decodedAudioSeconds = Number((totalSamples / CAPTION_SAMPLE_RATE).toFixed(3));
+          sourceDiagnostic.plannedChunks = totalPlanned;
+          sourceDiagnostic.chunksSentToWhisper = totalSent;
+          sourceDiagnostic.rawWhisperSegments = totalRaw;
+          sourceDiagnostic.finalCaptionLines = totalLines;
+          sourceDiagnostic.audibleWindows = audibleWindows;
+          sourceDiagnostic.transcription = drafts.length ? 'captions generated' : 'no caption lines';
+          if (!audibleWindows) sourceDiagnostic.transcription = 'skipped: no audible signal';
+        } else {
+          let pcm;
+          try {
+            pcm = await pcmOf(source, audioContext, decodeCache, info => Object.assign(sourceDiagnostic, info));
+            sourceDiagnostic.decode = 'success';
+            Object.assign(sourceDiagnostic, captionPcmStats(pcm));
+          } catch (decodeError) {
+            sourceDiagnostic.decode = 'failed';
+            sourceDiagnostic.decodeError = String(decodeError && decodeError.message || decodeError && decodeError.name || 'Error');
+            continue;
+          }
+          if (!hasAudibleSignal(pcm)) {
+            sourceDiagnostic.transcription = 'skipped: no audible signal';
+            updateBusy('Skipping silent audio…', `No useful audio signal was detected in ${source.label}.`, 15 + (candidateIndex + 1) / candidates.length * 5, 'Audio check');
+            continue;
+          }
+          captionMetric.stage('Whisper inference');
+          drafts = await transcribeCaptionPcmWithFallback(pcm, source, onChunk, sourceDiagnostic);
+          sourceDiagnostic.transcription = drafts.length ? 'captions generated' : 'no caption lines';
+          pcm = null;
+        }
+      } catch (decodeOrInferenceError) {
+        if (decodeOrInferenceError && decodeOrInferenceError.name === 'AbortError') throw decodeOrInferenceError;
+        sourceDiagnostic.decode = sourceDiagnostic.decodeMode === 'ffmpeg-windowed' && !sourceDiagnostic.decodeComplete
+          ? 'failed' : (sourceDiagnostic.decode === 'success' ? 'success' : 'failed');
+        sourceDiagnostic.decodeError = String(decodeOrInferenceError && decodeOrInferenceError.message || decodeOrInferenceError || 'Error');
+        sourceDiagnostic.transcription = 'failed';
         continue;
       }
-      try {
-        captionMetric.stage('Whisper inference');
-        const candidateBase = 20 + candidateIndex / candidates.length * 70;
-        const candidateSpan = 70 / candidates.length;
-        chosenDrafts = await captionFrom(pcm, source, p => {
-          const percent = candidateBase + candidateSpan * p.percent;
-          const detail = `${source.label}: audio chunk ${p.chunkIndex + 1} of ${p.chunkCount}. You can cancel between chunks.`;
-          say(detail);
-          updateBusy('Transcribing speech…', detail, percent, 'Transcription');
-        });
-      } catch (inferenceError) {
-        if (inferenceError.name === 'AbortError') throw inferenceError;
-        if (asrBackend !== 'webgpu') throw inferenceError;
-        asr = null;
-        updateBusy('Switching to compatible captions…', 'GPU inference failed on this device. Retrying with the CPU engine.', null, 'Compatibility');
-        captionMetric.stage('Load CPU compatibility model');
-        asr = await createSpeechPipeline(false);
-        captionMetric.stage('Whisper inference (CPU fallback)');
-        chosenDrafts = await captionFrom(pcm, source, p => {
-          const percent = 20 + 70 * p.percent / candidates.length;
-          updateBusy('Transcribing speech…', `${source.label}: audio chunk ${p.chunkIndex + 1} of ${p.chunkCount}.`, percent, 'Transcription');
-        });
-      }
-      if (chosenDrafts.length) { used = source.label; break; }
+      if (drafts.length) { chosenDrafts.push(...drafts); usedLabels.push(source.label); if (source.kind === 'audio') break; }
     }
+    captionMetric.note('sourceDiagnostics', sourceDiagnostics);
+    captionMetric.note('usedCaptionSources', usedLabels);
+    const used = usedLabels.length > 1 ? `${usedLabels.length} clips` : (usedLabels[0] || '');
     if (captionCancelRequested) throw abortCaption();
     if (chosenDrafts.length) {
       updateBusy('Adding captions…', `Adding ${chosenDrafts.length} captions to the timeline.`, 95, 'Finishing captions');
@@ -2080,10 +3447,12 @@ $('capGo').onclick = async () => {
       captionOutcome = 'complete';
       refresh(t);
       closeSheet();
-      say(`Added ${count} captions from ${used}. Tap a caption to restyle or move it.`);
+      // Does by itself what closing and reopening the app and project used to do.
+      const refreshed = await reopenProjectInPlace('captions');
+      say(`Added ${count} captions from ${used}.` + (refreshed.ok ? ' Project refreshed automatically.' : '') + ' Tap a caption to restyle or move it.');
     } else {
       captionOutcome = 'no speech detected';
-      say(S.audio.length || audioSelection ? 'No speech was detected in the selected media.' : 'No audible speech was detected. Add or record audio, then try again.');
+      say(skippedReversed ? 'Captions cannot be generated for a reversed clip.' : (S.audio.length || audioSelection ? 'No speech was detected in the selected media.' : 'No audible speech was detected. Add or record audio, then try again.'));
     }
   } catch (error) {
     if (error && error.name === 'AbortError') {
@@ -2104,6 +3473,7 @@ $('capGo').onclick = async () => {
     }
     captionRunning = false;
     captionCancelRequested = false;
+    await Background.end();
     btn.disabled = false;
     cancelBtn.hidden = true;
     cancelBtn.disabled = false;
@@ -2361,13 +3731,13 @@ $('speedList').onclick = e => {
 };
 $('revBtn').onclick = () => { const c = clipNow(); if (!c) return say('Import a video first.'); c.rev = !c.rev; commit(); markSp(); say(c.rev ? 'Reverse added. It plays backwards in the exported video.' : 'Reverse removed.'); };
 $('addClip').onclick = () => $('importBtn').click();
-const opt = (id, vals, key) => { $(id).innerHTML = vals.map(v => `<button data-v="${v}" class="${EXP[key] === v ? 'on' : ''}">${key === 'res' ? (v === 1440 ? '2K' : v === 2160 ? '4K' : v + 'p' + (v === 720 ? ' · fast' : v === 1080 ? ' · HD' : '')) : v}</button>`).join(''); $(id).onclick = e => { const b = e.target.closest('[data-v]'); if (!b) return; EXP[key] = +b.dataset.v; [...$(id).children].forEach(x => x.classList.toggle('on', x === b)); }; };
+const opt = (id, vals, key) => { $(id).innerHTML = vals.map(v => `<button data-v="${v}" class="${EXP[key] === v ? 'on' : ''}">${key === 'res' ? (v === 1440 ? '2K' : v === 2160 ? '4K' : v + 'p' + (v === 720 ? ' · fast' : v === 1080 ? ' · HD' : '')) : v}</button>`).join(''); $(id).onclick = e => { const b = e.target.closest('[data-v]'); if (!b) return; EXP[key] = +b.dataset.v; EXP.fastDraft = false; [...$(id).children].forEach(x => x.classList.toggle('on', x === b)); }; };
 opt('resList', [480, 720, 1080, 1440, 2160], 'res'); opt('fpsList', [24, 30, 60], 'fps');
 function applyExportPreset(name) {
   const presets = { draft: { res: 480, fps: 24 } };
   const preset = presets[name];
   if (!preset) throw new Error('Unknown export preset: ' + name);
-  EXP.res = preset.res; EXP.fps = preset.fps;
+  EXP.res = preset.res; EXP.fps = preset.fps; EXP.fastDraft = name === 'draft';
   [['resList', 'res'], ['fpsList', 'fps']].forEach(([id, key]) => {
     [...$(id).children].forEach(button => button.classList.toggle('on', Number(button.dataset.v) === EXP[key]));
   });
@@ -2394,7 +3764,7 @@ const projectMediaReady = (async function init() {
     } catch (e) { console.warn('Could not restore the last project:', e); }
   }
   undoStack = [snap()]; drawTimeline(); refresh(0);
-  if (window.lucide) lucide.createIcons();
+  if (window.MediaYIcons) MediaYIcons.render(document);
   return true;
 })();
 // setup.js waits for this promise before showing the dashboard so startup cannot race IndexedDB restore.
