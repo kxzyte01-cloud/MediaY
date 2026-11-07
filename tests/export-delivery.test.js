@@ -42,16 +42,17 @@ test('Android build registers a MediaStore plugin that publishes MP4s to public 
 });
 
 
-test('a completed render remains in FFmpeg storage after a delivery failure and can be retried', () => {
+test('a completed render remains in FFmpeg storage after a delivery failure and can be retried without pinning a full-size JS buffer', () => {
   assert.match(app, /let pendingExportSave = null/);
   assert.match(app, /pendingExportSave = \{ engine: ff, path: out \}/);
   assert.match(app, /if \(preserveOutputPath && name === preserveOutputPath\) continue/);
   assert.match(app, /async function retryPendingExportSave\(\)/);
   assert.match(app, /retry\.onclick = retryPendingExportSave/);
   assert.match(app, /pendingExportSave && pendingExportSave\.engine === ff/);
-  assert.match(app, /error\.renderedData = data/);
-  assert.match(app, /pendingExportSave = \{ engine: null, path: null, data: saveError\.renderedData \}/);
-  assert.match(app, /pending\.data \? await saveVideo\(pending\.data\)/);
+  assert.doesNotMatch(app, /error\.renderedData = data/);
+  assert.doesNotMatch(app, /pendingExportSave = \{ engine: null, path: null, data:/);
+  assert.match(app, /const data = await engine\.readFile\(outputPath\);[\\s\\S]*?const delivery = await saveVideo\(data\);[\\s\\S]*?await engine\.deleteFile\(outputPath\)/);
+  assert.match(app, /const delivery = await saveFFmpegOutput\(pending\.engine, pending\.path\)/);
   assert.match(app, /if \(pending\.engine\) \{ try \{ await pending\.engine\.deleteFile\(pending\.path\)/);
   assert.match(app, /A completed render is waiting to be saved/);
 });
