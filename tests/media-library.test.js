@@ -29,7 +29,7 @@ test('Android native media library requests version-appropriate image/video perm
   assert.match(workflow, /Build\.VERSION\.SDK_INT >= 34[\s\S]{0,220}"mediaImages", "mediaVideos", "selectedVisualMedia"/);
   assert.match(workflow, /Build\.VERSION\.SDK_INT >= 33[\s\S]{0,180}"mediaImages", "mediaVideos"/);
   assert.match(workflow, /requestPermissionForAlias\("legacyRead"/);
-  assert.match(workflow, /state\.put\("partial", !\(images && videos\)\)/);
+  assert.match(workflow, /state\.put\("partial", \(images \|\| videos \|\| selected\) && !\(images && videos\)\)/);
 });
 
 test('native media browsing is paginated and stages content URIs through ContentResolver', () => {
