@@ -112,6 +112,15 @@ test('rotation metadata is read (90 and 270)', { skip: !haveFfmpeg }, async () =
   }
 });
 
+test('AnnexBSink counts every encoded output chunk as one frame', () => {
+  const sink = new Fast.AnnexBSink(1024);
+  const chunk = { byteLength: 3, copyTo(target) { target.set([1, 2, 3]); } };
+  sink.onChunk(chunk, null);
+  sink.onChunk(chunk, null);
+  assert.equal(sink.frameCount, 2);
+  assert.deepEqual(Array.from(sink.finish()), [1, 2, 3, 1, 2, 3]);
+});
+
 test('AVCC to Annex B: the converted stream decodes to the same frames as the original file', { skip: !haveFfmpeg }, async () => {
   // No B-frames here on purpose: that is what a WebCodecs encoder produces, and ffmpeg's raw .h264 reader
   // itself loses leading frames of B-frame streams (verified against ffmpeg's own h264_mp4toannexb).
