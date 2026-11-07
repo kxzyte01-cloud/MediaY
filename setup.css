@@ -262,5 +262,3 @@
   .media-library-item { padding: 5px; }
 }
 
-/* Inspector sliders sit on pale cards; use a darker teal with >=3:1 non-text contrast. */
-#sheet input[type=range] { accent-color:#006B78; }
