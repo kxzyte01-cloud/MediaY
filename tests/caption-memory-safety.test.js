@@ -10,6 +10,9 @@ test('large caption sources use bounded 10-minute file-backed windows', () => {
   assert.match(app, /CAPTION_STREAM_WINDOW_SECONDS = 10 \* 60/);
   assert.match(app, /CAPTION_STREAM_MAX_SECONDS = 4 \* 60 \* 60/);
   assert.match(app, /shouldStreamCaptionSource\(sourceFile, source\)/);
+  assert.match(app, /sourceDuration = Math\.max\(0, Number\(src && src\.src\) \|\| 0\)/);
+  assert.match(app, /out: item\.out, src: item\.src/);
+  assert.match(app, /out: clip\.out, src: clip\.src/);
   assert.match(app, /for await \(const windowData of streamCaptionPcmWindows\(/);
   assert.match(app, /engine\.mount\(workerFs, \{ blobs: \[\{ name: inputName, data: file \}\] \}, mountDir\)/);
   assert.match(app, /CAPTION_STREAM_OVERLAP_SECONDS = 1\.5/);
