@@ -64,3 +64,15 @@ test('malformed template references produce an actionable visible cleanup warnin
   assert.match(setup, /Storage cleanup skipped because a saved template is damaged/);
   assert.match(setup, /if \(typeof say === 'function'\) say\(warning\)/);
 });
+
+
+test('damaged template storage exposes an explicit reset that preserves projects and imported media', () => {
+  const app = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+  assert.match(html, /id="tplReset"[^>]*hidden/);
+  assert.match(app, /function templateStorageIsDamaged\(\)/);
+  assert.match(app, /templates\.some\(template =>[\s\S]*!Array\.isArray\(template\.audio\)/);
+  assert.match(app, /localStorage\.removeItem\(TPLKEY\)/);
+  assert.match(app, /does not delete projects or imported media/);
+  assert.match(app, /window\.scheduleMediaGc\(\)/);
+});
