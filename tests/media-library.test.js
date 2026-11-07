@@ -28,7 +28,9 @@ test('Android native media library requests version-appropriate image/video perm
   assert.match(workflow, /@Permission\(alias = "selectedVisualMedia", strings = \{ Manifest\.permission\.READ_MEDIA_VISUAL_USER_SELECTED \}\)/);
   assert.match(workflow, /if \(!images && \("all"\.equals\(kind\) \|\| "images"\.equals\(kind\)\)\) missing\.add\("mediaImages"\)/);
   assert.match(workflow, /if \(!videos && \("all"\.equals\(kind\) \|\| "videos"\.equals\(kind\)\)\) missing\.add\("mediaVideos"\)/);
-  assert.match(workflow, /requestPermissionForAlias\("legacyRead"/);\n  assert.match(workflow, /call\.getString\("kind"\)/);\n  assert.match(workflow, /missing\.add\("selectedVisualMedia"\)/);
+  assert.match(workflow, /requestPermissionForAlias\("legacyRead"/);
+  assert.match(workflow, /call\.getString\("kind"\)/);
+  assert.match(workflow, /missing\.add\("selectedVisualMedia"\)/);
   assert.match(workflow, /state\.put\("partial", \(images \|\| videos \|\| selected\) && !\(images && videos\)\)/);
 });
 
