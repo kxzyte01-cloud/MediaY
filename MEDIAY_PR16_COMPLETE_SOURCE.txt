@@ -1,0 +1,982 @@
+MEDIAY PR #16 — COMPLETE TEXT SOURCE SNAPSHOT
+Commit: cd7d83f7a0adb9991611bfada25d769fc21680c0
+Branch: hardening/pr16-device-export-safety
+Repository: https://github.com/kxzyte01-cloud/MediaY
+
+This file concatenates repository text files. Each section records its path and Git blob SHA. Binary PNG assets and the base64 ONNX fixture are excluded; they are not source code.
+
+
+
+==========================================================================================
+FILE: .github/workflows/built.yml
+BLOB SHA: 5b46b1163b937ee02f8b940cb294f0609d6c955d
+==========================================================================================
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      validate_signing:
+        description: "Build and verify a signed APK as a workflow artifact without publishing a release"
+        type: boolean
+        required: true
+        default: false
+      publish_release:
+        description: "Build, sign, and publish a production GitHub Release"
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - run: python3 -m pip install pillow
+
+      - name: Validate JavaScript and core tests
+        run: |
+          node --check mediay-core.js
+          node --check mediay-fast.js
+          node --check app.js
+          node --check setup.js
+          node --check mediay-icons.js
+          node --check sw.js
+          node --test tests/*.test.js
+
+      # Do not produce a downloadable APK unless the same commit passes the full
+      # browser, media, offline-runtime, and real-export QA suite.
+      - name: Install media QA dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Fetch and verify the bundled speech runtime
+        run: bash scripts/fetch_speech_engine.sh
+
+      - name: Run browser smoke tests
+        run: python test_smoke.py
+
+      - name: Run fast-export browser pipeline
+        run: python tests/fast_pipeline.py
+
+      - name: Run device-encoder FFmpeg integration
+        run: python tests/fast_integration.py
+
+      - name: Run FFmpeg worker integration
+        run: python test_ffmpeg_worker.py
+
+      - name: Verify speech runtime works offline
+        run: python tests/offline_speech_runtime.py
+
+      - name: Run real FFmpeg.wasm export integration
+        run: python tests/export_integration.py
+
+      - run: python3 make_icons.py before
+
+      - run: |
+          mkdir -p www
+          cp index.html style.css mediay-icons.js mediay-core.js mediay-fast.js app.js setup.js setup.css manifest.json sw.js legal.html favicon.svg icon-*.png www/
+          mkdir -p www/vendor/ffmpeg
+          cp vendor/ffmpeg/ffmpeg.js vendor/ffmpeg/814.ffmpeg.js vendor/ffmpeg/LICENSE www/vendor/ffmpeg/
+          mkdir -p www/vendor/media-libraries
+          cp vendor/media-libraries/fabric.min.js vendor/media-libraries/anime.min.js vendor/media-libraries/dexie.min.js vendor/media-libraries/LICENSES.md www/vendor/media-libraries/
+          bash scripts/fetch_speech_engine.sh
+          mkdir -p www/vendor/transformers
+          cp vendor/transformers/transformers.min.js vendor/transformers/ort-wasm-simd.wasm vendor/transformers/ort-wasm.wasm vendor/transformers/LICENSE www/vendor/transformers/
+
+      - run: |
+          npm init -y
+          npm i @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6
+          npm i @capacitor/filesystem@6 @capacitor/share@6
+          npx cap init "ProjectMedia Y" com.projectmediay.app --web-dir www
+          npx cap add android
+          npx cap sync android
+
+      - run: |
+          M=android/app/src/main/AndroidManifest.xml
+          grep -q RECORD_AUDIO "$M" || sed -i 's#<application#<uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <application#' "$M"
+
+      - name: Add native foreground service for background export
+        run: |
+          set -euo pipefail
+          APP_SRC="android/app/src/main/java/com/projectmediay/app"
+          mkdir -p "$APP_SRC"
+
+          cat > "$APP_SRC/MediaYExportService.java" <<'JAVA'
+          package com.projectmediay.app;
+
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.app.Service;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.pm.ServiceInfo;
+          import android.os.Build;
+          import android.os.Handler;
+          import android.os.IBinder;
+          import android.os.Looper;
+          import android.os.PowerManager;
+
+          public final class MediaYExportService extends Service {
+              public static final String ACTION_START = "com.projectmediay.app.EXPORT_START";
+              private static final String CHANNEL_ID = "mediay-export";
+              private static final int NOTIFICATION_ID = 26024;
+              // Safety net: if the web app never reports that the job ended, stop by itself instead of
+              // holding the CPU awake and showing a stale notification forever.
+              private static final long MAX_RUN_MS = 3L * 60L * 60L * 1000L;
+
+              private PowerManager.WakeLock wakeLock;
+              private final Handler handler = new Handler(Looper.getMainLooper());
+              private final Runnable stopWhenExpired = new Runnable() {
+                  @Override
+                  public void run() {
+                      stopSelf();
+                  }
+              };
+
+              @Override
+              public void onCreate() {
+                  super.onCreate();
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      NotificationChannel channel = new NotificationChannel(
+                          CHANNEL_ID, "MediaY export", NotificationManager.IMPORTANCE_LOW);
+                      channel.setDescription("Shows when MediaY is rendering a video.");
+                      NotificationManager manager = getSystemService(NotificationManager.class);
+                      if (manager != null) manager.createNotificationChannel(channel);
+                  }
+              }
+
+              @Override
+              public int onStartCommand(Intent intent, int flags, int startId) {
+                  // A foreground service must call startForeground promptly after startForegroundService,
+                  // so the notification is always built first.
+                  Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                      ? new Notification.Builder(this, CHANNEL_ID)
+                      : new Notification.Builder(this);
+                  builder.setSmallIcon(getApplicationInfo().icon)
+                      .setContentTitle("MediaY is working")
+                      .setContentText("Rendering your video. Tap to return to MediaY.")
+                      .setCategory(Notification.CATEGORY_PROGRESS)
+                      .setPriority(Notification.PRIORITY_LOW)
+                      .setOngoing(true)
+                      .setOnlyAlertOnce(true)
+                      .setProgress(0, 0, true);
+
+                  Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
+                  if (launchIntent != null) {
+                      int pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT;
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                          pendingFlags |= PendingIntent.FLAG_IMMUTABLE;
+                      }
+                      builder.setContentIntent(PendingIntent.getActivity(this, 0, launchIntent, pendingFlags));
+                  }
+
+                  Notification notification = builder.build();
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                      startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+                  } else {
+                      startForeground(NOTIFICATION_ID, notification);
+                  }
+
+                  // Without a wake lock Android may suspend the CPU as soon as the screen turns off,
+                  // even while a foreground service is running.
+                  if (wakeLock == null) {
+                      PowerManager power = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                      if (power != null) {
+                          wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MediaY:export");
+                          wakeLock.setReferenceCounted(false);
+                          wakeLock.acquire(MAX_RUN_MS);
+                      }
+                  }
+                  handler.removeCallbacks(stopWhenExpired);
+                  handler.postDelayed(stopWhenExpired, MAX_RUN_MS);
+
+                  // NOT_STICKY: if Android kills the process, do not resurrect an "export in progress"
+                  // notification for an export that no longer exists.
+                  return START_NOT_STICKY;
+              }
+
+              @Override
+              public void onDestroy() {
+                  handler.removeCallbacks(stopWhenExpired);
+                  if (wakeLock != null && wakeLock.isHeld()) {
+                      wakeLock.release();
+                  }
+                  wakeLock = null;
+                  stopForeground(true);
+                  super.onDestroy();
+              }
+
+              @Override
+              public IBinder onBind(Intent intent) {
+                  return null;
+              }
+          }
+          JAVA
+
+          cat > "$APP_SRC/MediaYExportServicePlugin.java" <<'JAVA'
+          package com.projectmediay.app;
+
+          import android.Manifest;
+          import android.content.Intent;
+          import android.content.pm.PackageManager;
+          import android.os.Build;
+
+          import com.getcapacitor.Plugin;
+          import com.getcapacitor.PluginCall;
+          import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.CapacitorPlugin;
+
+          @CapacitorPlugin(name = "MediaYExportService")
+          public class MediaYExportServicePlugin extends Plugin {
+              @PluginMethod
+              public void start(PluginCall call) {
+                  try {
+                      if (Build.VERSION.SDK_INT >= 33
+                          && getContext().checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                          && getActivity() != null) {
+                          getActivity().requestPermissions(new String[] { Manifest.permission.POST_NOTIFICATIONS }, 26024);
+                      }
+                      Intent intent = new Intent(getContext(), MediaYExportService.class);
+                      intent.setAction(MediaYExportService.ACTION_START);
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                          getContext().startForegroundService(intent);
+                      } else {
+                          getContext().startService(intent);
+                      }
+                      call.resolve();
+                  } catch (Exception error) {
+                      call.reject("Could not start the Android export service.", error);
+                  }
+              }
+
+              @PluginMethod
+              public void stop(PluginCall call) {
+                  try {
+                      getContext().stopService(new Intent(getContext(), MediaYExportService.class));
+                      call.resolve();
+                  } catch (Exception error) {
+                      call.reject("Could not stop the Android export service.", error);
+                  }
+              }
+          }
+          JAVA
+
+          cat > "$APP_SRC/MediaYMediaStorePlugin.java" <<'JAVA'
+          package com.projectmediay.app;
+
+          import android.Manifest;
+          import android.content.ContentResolver;
+          import android.content.ContentValues;
+          import android.media.MediaScannerConnection;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Environment;
+          import android.provider.MediaStore;
+
+          import com.getcapacitor.JSObject;
+          import com.getcapacitor.PermissionState;
+          import com.getcapacitor.Plugin;
+          import com.getcapacitor.PluginCall;
+          import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.CapacitorPlugin;
+          import com.getcapacitor.annotation.Permission;
+          import com.getcapacitor.annotation.PermissionCallback;
+
+          import java.io.BufferedInputStream;
+          import java.io.BufferedOutputStream;
+          import java.io.File;
+          import java.io.FileInputStream;
+          import java.io.FileOutputStream;
+          import java.io.IOException;
+          import java.io.InputStream;
+          import java.io.OutputStream;
+
+          @CapacitorPlugin(
+              name = "MediaYMediaStore",
+              permissions = {
+                  @Permission(alias = "legacyStorage", strings = { Manifest.permission.WRITE_EXTERNAL_STORAGE })
+              }
+          )
+          public final class MediaYMediaStorePlugin extends Plugin {
+              private Uri streamingUri;
+              private OutputStream streamingOutput;
+              private String streamingFileName;
+              private long streamingBytes;
+
+              @PluginMethod
+              public synchronized void beginStreamingSave(PluginCall call) {
+                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                      call.reject("Streaming MediaStore export requires Android 10 or newer.");
+                      return;
+                  }
+                  String fileName = call.getString("fileName");
+                  if (fileName == null || !fileName.matches("ProjectMedia-Y-[0-9]+\\.mp4")) {
+                      call.reject("Invalid exported video filename.");
+                      return;
+                  }
+                  abortStreamingSaveInternal();
+                  ContentResolver resolver = getContext().getContentResolver();
+                  try {
+                      ContentValues values = new ContentValues();
+                      values.put(MediaStore.Video.Media.DISPLAY_NAME, fileName);
+                      values.put(MediaStore.Video.Media.MIME_TYPE, "video/mp4");
+                      values.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/MediaY");
+                      values.put(MediaStore.Video.Media.IS_PENDING, 1);
+                      Uri uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
+                      if (uri == null) throw new IOException("Android did not create a Movies/MediaY media entry.");
+                      // Track the pending row before opening its stream so every failure path can delete it.
+                      streamingUri = uri;
+                      streamingFileName = fileName;
+                      OutputStream output = resolver.openOutputStream(uri, "w");
+                      if (output == null) {
+                          throw new IOException("Android did not open the destination file.");
+                      }
+                      streamingOutput = new BufferedOutputStream(output, 256 * 1024);
+                      streamingBytes = 0L;
+                      JSObject result = new JSObject();
+                      result.put("fileName", fileName);
+                      result.put("location", "Movies/MediaY");
+                      call.resolve(result);
+                  } catch (Exception error) {
+                      abortStreamingSaveInternal();
+                      call.reject("Could not start streaming export: " + error.getMessage(), error);
+                  }
+              }
+
+              @PluginMethod
+              public synchronized void appendStreamingChunk(PluginCall call) {
+                  String encoded = call.getString("data");
+                  if (streamingOutput == null || encoded == null || encoded.isEmpty()) {
+                      call.reject("No active streaming export or empty chunk.");
+                      return;
+                  }
+                  try {
+                      byte[] chunk = android.util.Base64.decode(encoded, android.util.Base64.DEFAULT);
+                      if (chunk.length == 0 || chunk.length > 4 * 1024 * 1024) {
+                          throw new IOException("Export chunk is outside the allowed size.");
+                      }
+                      streamingOutput.write(chunk);
+                      streamingBytes += chunk.length;
+                      JSObject result = new JSObject();
+                      result.put("bytesWritten", chunk.length);
+                      result.put("totalBytes", streamingBytes);
+                      call.resolve(result);
+                  } catch (Exception error) {
+                      abortStreamingSaveInternal();
+                      call.reject("Could not write export chunk: " + error.getMessage(), error);
+                  }
+              }
+
+              @PluginMethod
+              public synchronized void finishStreamingSave(PluginCall call) {
+                  if (streamingOutput == null || streamingUri == null || streamingBytes <= 0L) {
+                      abortStreamingSaveInternal();
+                      call.reject("The streamed MP4 is empty or no export is active.");
+                      return;
+                  }
+                  Uri uri = streamingUri;
+                  String fileName = streamingFileName;
+                  long bytes = streamingBytes;
+                  try {
+                      streamingOutput.flush();
+                      streamingOutput.close();
+                      streamingOutput = null;
+                      ContentValues published = new ContentValues();
+                      published.put(MediaStore.Video.Media.IS_PENDING, 0);
+                      if (getContext().getContentResolver().update(uri, published, null, null) <= 0) {
+                          throw new IOException("Android could not publish the exported video to Gallery.");
+                      }
+                      streamingUri = null;
+                      streamingFileName = null;
+                      streamingBytes = 0L;
+                      JSObject result = new JSObject();
+                      result.put("fileName", fileName);
+                      result.put("location", "Movies/MediaY");
+                      result.put("uri", uri.toString());
+                      result.put("bytes", bytes);
+                      call.resolve(result);
+                  } catch (Exception error) {
+                      abortStreamingSaveInternal();
+                      call.reject("Could not finish streaming export: " + error.getMessage(), error);
+                  }
+              }
+
+              @PluginMethod
+              public synchronized void abortStreamingSave(PluginCall call) {
+                  abortStreamingSaveInternal();
+                  call.resolve();
+              }
+
+              private void abortStreamingSaveInternal() {
+                  if (streamingOutput != null) {
+                      try { streamingOutput.close(); } catch (Exception ignored) {}
+                  }
+                  streamingOutput = null;
+                  if (streamingUri != null) {
+                      try { getContext().getContentResolver().delete(streamingUri, null, null); } catch (Exception ignored) {}
+                  }
+                  streamingUri = null;
+                  streamingFileName = null;
+                  streamingBytes = 0L;
+              }
+
+              @PluginMethod
+              public void saveVideo(PluginCall call) {
+                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+                      && getPermissionState("legacyStorage") != PermissionState.GRANTED) {
+                      requestPermissionForAlias("legacyStorage", call, "legacyStoragePermissionCallback");
+                      return;
+                  }
+                  saveVideoInternal(call);
+              }
+
+              @PermissionCallback
+              private void legacyStoragePermissionCallback(PluginCall call) {
+                  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+                      && getPermissionState("legacyStorage") != PermissionState.GRANTED) {
+                      call.reject("Storage permission was denied. MediaY could not save the MP4.");
+                      return;
+                  }
+                  saveVideoInternal(call);
+              }
+
+              private void saveVideoInternal(PluginCall call) {
+                  String fileName = call.getString("fileName");
+                  if (fileName == null || !fileName.matches("ProjectMedia-Y-[0-9]+\\.mp4")) {
+                      call.reject("Invalid exported video filename.");
+                      return;
+                  }
+
+                  File source = new File(getContext().getCacheDir(), fileName);
+                  if (!source.isFile() || source.length() <= 0L) {
+                      call.reject("The temporary exported MP4 is missing or empty.");
+                      return;
+                  }
+
+                  ContentResolver resolver = getContext().getContentResolver();
+                  Uri insertedUri = null;
+                  File legacyFile = null;
+                  try {
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                          ContentValues values = new ContentValues();
+                          values.put(MediaStore.Video.Media.DISPLAY_NAME, fileName);
+                          values.put(MediaStore.Video.Media.MIME_TYPE, "video/mp4");
+                          values.put(
+                              MediaStore.Video.Media.RELATIVE_PATH,
+                              Environment.DIRECTORY_MOVIES + "/MediaY"
+                          );
+                          values.put(MediaStore.Video.Media.IS_PENDING, 1);
+                          insertedUri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
+                          if (insertedUri == null) {
+                              throw new IOException("Android did not create a Movies/MediaY media entry.");
+                          }
+
+                          try (InputStream input = new BufferedInputStream(new FileInputStream(source));
+                               OutputStream output = resolver.openOutputStream(insertedUri, "w")) {
+                              if (output == null) throw new IOException("Android did not open the destination file.");
+                              copy(input, output);
+                          }
+
+                          ContentValues published = new ContentValues();
+                          published.put(MediaStore.Video.Media.IS_PENDING, 0);
+                          if (resolver.update(insertedUri, published, null, null) <= 0) {
+                              throw new IOException("Android could not publish the exported video to Gallery.");
+                          }
+                      } else {
+                          File movies = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES);
+                          File folder = new File(movies, "MediaY");
+                          if (!folder.isDirectory() && !folder.mkdirs() && !folder.isDirectory()) {
+                              throw new IOException("Could not create the Movies/MediaY folder.");
+                          }
+                          legacyFile = new File(folder, fileName);
+                          if (legacyFile.exists()) throw new IOException("A video with this name already exists.");
+                          try (InputStream input = new BufferedInputStream(new FileInputStream(source));
+                               OutputStream output = new BufferedOutputStream(new FileOutputStream(legacyFile))) {
+                              copy(input, output);
+                          }
+                          MediaScannerConnection.scanFile(
+                              getContext(),
+                              new String[] { legacyFile.getAbsolutePath() },
+                              new String[] { "video/mp4" },
+                              null
+                          );
+                      }
+
+                      JSObject result = new JSObject();
+                      result.put("fileName", fileName);
+                      result.put("location", "Movies/MediaY");
+                      result.put("uri", insertedUri != null ? insertedUri.toString() : legacyFile.getAbsolutePath());
+                      result.put("bytes", source.length());
+                      call.resolve(result);
+                  } catch (Exception error) {
+                      if (insertedUri != null) {
+                          try { resolver.delete(insertedUri, null, null); } catch (Exception ignored) {}
+                      }
+                      if (legacyFile != null && legacyFile.exists()) {
+                          try { legacyFile.delete(); } catch (Exception ignored) {}
+                      }
+                      call.reject("Could not save the MP4 to Movies/MediaY: " + error.getMessage(), error);
+                  }
+              }
+
+              private static void copy(InputStream input, OutputStream output) throws IOException {
+                  byte[] buffer = new byte[256 * 1024];
+                  int count;
+                  while ((count = input.read(buffer)) != -1) {
+                      output.write(buffer, 0, count);
+                  }
+                  output.flush();
+              }
+          }
+          JAVA
+
+          cat > "$APP_SRC/MainActivity.java" <<'JAVA'
+          package com.projectmediay.app;
+
+          import android.os.Bundle;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  registerPlugin(MediaYExportServicePlugin.class);
+                  registerPlugin(MediaYMediaStorePlugin.class);
+                  super.onCreate(savedInstanceState);
+              }
+          }
+          JAVA
+
+          M="android/app/src/main/AndroidManifest.xml"
+          grep -q 'android.permission.FOREGROUND_SERVICE"' "$M" || sed -i 's#<application#<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <application#' "$M"
+          grep -q 'android.permission.WAKE_LOCK"' "$M" || sed -i 's#<application#<uses-permission android:name="android.permission.WAKE_LOCK" />\n    <application#' "$M"
+          grep -q 'android.permission.WRITE_EXTERNAL_STORAGE' "$M" || sed -i 's#<application#<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />\n    <application#' "$M"
+          grep -q 'MediaYExportService' "$M" || sed -i 's#</application>#        <service android:name=".MediaYExportService" android:exported="false" android:foregroundServiceType="dataSync" />\n    </application>#' "$M"
+
+      - run: python3 make_icons.py after
+
+      - name: Set unique Android version
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          gradle_file = Path("android/app/build.gradle")
+          source = gradle_file.read_text()
+          number = int(os.environ["BUILD_NUMBER"])
+          if number < 1:
+              raise SystemExit("GitHub run number must be positive")
+
+          version_code, count_code = re.subn(
+              r"(?m)^(\s*versionCode\s+)\d+\s*$",
+              lambda match: match.group(1) + str(number),
+              source,
+              count=1,
+          )
+          version_name, count_name = re.subn(
+              r"(?m)^(\s*versionName\s+)[\"'][^\"']*[\"']\s*$",
+              lambda match: match.group(1) + f'"1.0.{number}"',
+              version_code,
+              count=1,
+          )
+          if count_code != 1 or count_name != 1:
+              raise SystemExit("Could not set versionCode/versionName in generated android/app/build.gradle")
+          gradle_file.write_text(version_name)
+          print(f"Set Android versionName=1.0.{number}, versionCode={number}")
+          PY
+
+      - run: |
+          SM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SM" --licenses > /dev/null || true
+          "$SM" "platforms;android-34" "build-tools;34.0.0" || true
+
+      - name: Build debug APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Stage debug APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk MediaY-debug.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MediaY-debug-apk
+          path: MediaY-debug.apk
+          if-no-files-found: error
+
+      - name: Build and verify production-signed APK
+        if: github.event_name == 'workflow_dispatch' && (inputs.validate_signing || inputs.publish_release)
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/mediay-release.jks
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+
+          for secret_name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!secret_name:-}" ]; then
+              echo "::error::Missing required GitHub Actions secret: $secret_name"
+              echo "Add all four Android signing secrets in Settings > Secrets and variables > Actions, then rerun the workflow."
+              exit 1
+            fi
+          done
+
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+          chmod 600 "$ANDROID_KEYSTORE_PATH"
+          test -s "$ANDROID_KEYSTORE_PATH"
+
+          cat > android/app/mediay-signing.gradle <<'GRADLE'
+          android {
+              signingConfigs {
+                  release {
+                      storeFile file(System.getenv("ANDROID_KEYSTORE_PATH"))
+                      storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                      keyAlias System.getenv("ANDROID_KEY_ALIAS")
+                      keyPassword System.getenv("ANDROID_KEY_PASSWORD")
+                  }
+              }
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.release
+                  }
+              }
+          }
+          GRADLE
+          printf "\napply from: 'mediay-signing.gradle'\n" >> android/app/build.gradle
+
+          (
+            cd android
+            ./gradlew assembleRelease
+          )
+
+          RELEASE_APK="android/app/build/outputs/apk/release/app-release.apk"
+          test -s "$RELEASE_APK"
+
+          APKSIGNER="$ANDROID_HOME/build-tools/34.0.0/apksigner"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs "$RELEASE_APK"
+
+          RELEASE_NAME="MediaY-v1.0.$BUILD_NUMBER.apk"
+          cp "$RELEASE_APK" "$RELEASE_NAME"
+          sha256sum "$RELEASE_NAME" > "$RELEASE_NAME.sha256"
+          rm -f "$ANDROID_KEYSTORE_PATH"
+
+          echo "Verified signed release APK: $RELEASE_NAME"
+          echo "Android versionCode: $BUILD_NUMBER"
+
+      - name: Upload signed APK validation artifact
+        if: github.event_name == 'workflow_dispatch' && (inputs.validate_signing || inputs.publish_release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: MediaY-signed-release-${{ github.run_number }}
+          path: |
+            MediaY-v1.0.*.apk
+            MediaY-v1.0.*.apk.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-release:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Download verified signed APK
+        uses: actions/download-artifact@v4
+        with:
+          name: MediaY-signed-release-${{ github.run_number }}
+          path: release-assets
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: MediaY v1.0.${{ github.run_number }}
+          body: |
+            Production-signed Android APK for MediaY.
+
+            - Version: 1.0.${{ github.run_number }}
+            - Android versionCode: ${{ github.run_number }}
+            - APK signature verification ran in GitHub Actions before publishing.
+            - SHA-256 checksum is included alongside the APK.
+          files: |
+            release-assets/MediaY-v1.0.${{ github.run_number }}.apk
+            release-assets/MediaY-v1.0.${{ github.run_number }}.apk.sha256
+
+
+
+==========================================================================================
+FILE: .github/workflows/export-integration.yml
+BLOB SHA: 5055aa3b35a8982adc79e24969fc958375ccbee6
+==========================================================================================
+name: MediaY real export test
+
+# Runs a real FFmpeg.wasm export (about 3 minutes) and inspects the MP4. Kept separate from the quick smoke tests
+# because it downloads the 31 MB FFmpeg core from a CDN and depends on that network being reachable.
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install ffmpeg (used only to create test clips and inspect the output)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install Playwright
+        run: python -m pip install playwright
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Real export test
+        run: python tests/export_integration.py
+
+
+
+==========================================================================================
+FILE: .github/workflows/smoke-test.yml
+BLOB SHA: 37f240fc6c9462c7b0dd80f71736ea96589025fb
+==========================================================================================
+name: MediaY smoke tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check JavaScript syntax
+        run: |
+          node --check mediay-core.js
+          node --check mediay-fast.js
+          node --check app.js
+          node --check setup.js
+          node --check mediay-icons.js
+          node --check sw.js
+      - name: Download and verify the bundled speech engine (pinned npm version, SHA-256 checked)
+        run: bash scripts/fetch_speech_engine.sh
+      - name: Run caption timing unit tests
+        run: node --test tests/core.test.js
+      - name: Install ffmpeg (test media for the fast-export tests)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Run fast-export unit tests (MP4 parsing, Annex B, planning)
+        run: node --test tests/fast.test.js
+      - name: Install Playwright
+        run: python -m pip install playwright
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Run browser smoke tests
+        run: python test_smoke.py
+      - name: Run fast-export pipeline test (WebCodecs, VP9 stand-in for H.264)
+        run: python tests/fast_pipeline.py
+      - name: Run device-encoder integration test (real app.js function, real ffmpeg commands)
+        run: python tests/fast_integration.py
+      - name: Run FFmpeg worker integration test
+        run: python test_ffmpeg_worker.py
+      - name: Prove the bundled speech engine runs with the network blocked
+        run: python tests/offline_speech_runtime.py
+
+
+
+==========================================================================================
+FILE: AGENTS.md
+BLOB SHA: 43d33efab996d089472be8e230df6bb7e0f1a446
+==========================================================================================
+# Instructions for AI coding agents
+
+## Read first
+
+- `docs/timeline-trim-architecture.md` — timeline timing model, trim invariants, and the intended transactional edit architecture.
+- `docs/performance-triage.md` — what has been optimized, known latency limits, release gates, and the prioritized next-agent task list.
+
+## Project constraints
+
+MediaY is a browser-first video editor with a Capacitor Android build. Project media is stored locally in IndexedDB; do not introduce an upload/server dependency for editing or captions without explicitly designing the privacy model and asking for user consent.
+
+The main video lane is a serialized list. Audio and overlays use independent absolute timeline positions. Do not implement global ripple by shifting every `start` field: items crossing a ripple range need source-correct splitting, and video overlays must preserve `sourceIn`.
+
+Treat timeline edits as transactions:
+1. Capture stable target IDs and source/timeline times.
+2. Validate all affected ranges before mutation.
+3. Commit one complete valid state as one Undo operation, or leave the project unchanged.
+4. Keep preview timing, audio timing, export timing, autosave, and Undo/Redo consistent.
+
+The FFmpeg export runs in WebAssembly (unless the device-encoder path in `docs/fast-export.md` handles the video). Memory usage is a first-class constraint on Android. Keep source/overlay asset caches bounded and clean generated FFmpeg virtual-filesystem files on both success and failure.
+
+Auto captions use Transformers.js Whisper. A first run downloads the model; browser model caching is enabled by the library. Caption inference is chunked, but source audio decoding still uses whole-buffer `decodeAudioData`, which is a known long-file latency bottleneck. Do not claim performance improvements without recording measurements on real media.
+
+## Required validation
+
+For JavaScript changes:
+```sh
+node --check app.js
+node --check setup.js
+node --check sw.js
+```
+
+For browser and media-worker regressions, install Playwright plus Chromium and run:
+```sh
+python test_smoke.py
+python test_ffmpeg_worker.py
+```
+
+The GitHub Actions **MediaY smoke tests** workflow runs those checks for pull requests. **Build APK** compiles the Android debug APK and uploads it as `MediaY-debug-apk`. The build also stamps a monotonically increasing Android version code from the workflow run number. A worker smoke test is not a substitute for an app-level export test; add real end-to-end export coverage as the next agent task.
+
+Do not merge if the same PR head has a failing/pending required check. After code changes, verify the Android APK build as well as browser tests.
+
+## Releases
+
+A push/merge to `main` builds and uploads only a **debug APK**. It does not publish a GitHub Release automatically.
+
+Production release publication is explicit: use **Actions → Build APK → Run workflow** and opt in to **Build, sign, and publish a production GitHub Release**. Before doing so, the repository owner must configure these Actions secrets:
+
+- `ANDROID_KEYSTORE_BASE64`: Base64-encoded contents of the private release keystore.
+- `ANDROID_KEYSTORE_PASSWORD`: keystore password.
+- `ANDROID_KEY_ALIAS`: signing key alias.
+- `ANDROID_KEY_PASSWORD`: key password.
+
+Never commit the keystore, print the secrets, or replace an established app signing key without a deliberate migration plan. The workflow decodes the keystore into the ephemeral runner, builds `assembleRelease`, verifies the resulting APK with Android `apksigner`, and publishes the signed APK plus a SHA-256 checksum. Release tags are `v1.0.<workflow-run-number>`; Android `versionCode` uses the same positive run number. If a signing secret is absent, the release job should fail rather than publish a debug or unsigned APK. Debug APKs and production-signed APKs are different signing identities and may not update each other in place.
+
+## Known scope gaps
+
+- Physical-device export performance has not yet been benchmarked.
+- The device-encoder (WebCodecs) export path in `mediay-fast.js` is new and has not run on a physical Android device. See `docs/fast-export.md`; it falls back to the FFmpeg-only path on any problem. CI exercises H.264 WebCodecs output when its Chromium build supports it, but Android WebView hardware support and speed still require a phone test.
+- No full app-level automated test validates export duration, frame/audio sync, and repeat export after Undo/Redo.
+- Export cancellation is not implemented. Export/caption stage timing diagnostics are available in the Export pane, but physical-device benchmark data is still missing.
+- Whole-media caption audio decoding is still slow for long videos.
+- Multi-thread FFmpeg has not been enabled; it requires cross-origin isolation / `SharedArrayBuffer` verification and may increase memory use.
+- Global ripple-across-tracks, slip, and roll edits are not yet implemented.
+
+
+
+==========================================================================================
+FILE: README-MediaY-Full-Fix.txt
+BLOB SHA: 6f2cd9b9d3752327c99ffcfbc5440207980c3529
+==========================================================================================
+ProjectMedia Y — mobile editor repair package
+
+This patch is based on the source files read from https://github.com/kxzyte01-cloud/MediaY and the project files supplied in the conversation.
+
+REPLACEMENT FILES
+- index.html
+- app.js
+- style.css
+- setup.js
+- setup.css
+- sw.js
+
+WHAT THIS PATCH FIXES / ADDS
+1. Home dashboard is shown on every app launch, after the saved editor state finishes restoring.
+2. A Home button stays in the editor toolbar so the dashboard is reachable while editing.
+3. Fixes the opposite empty-state visibility condition in updateChrome(). When a video, overlay, or audio track exists, the “What are you making?” panel no longer reappears over the editor/preview.
+4. Enables pointer/touch interaction on Fabric's overlay canvas and recalculates canvas offset after responsive layout changes.
+5. Adds a local project library: save named projects, continue the recent project, open other saved projects, and delete saved project records. Starting a new project first preserves the existing edit instead of silently replacing it.
+6. Makes home-screen loading wait for IndexedDB project restoration, preventing the dashboard from racing startup.
+7. Keeps transition duration changes in one undo step after the slider is released.
+8. Updates the service worker cache version and makes its shell caching tolerant of optional/missing routes so a single missing file does not prevent installation.
+
+INSTALL
+1. Download and extract this ZIP.
+2. In the root of the GitHub repository, replace the six files listed above.
+3. Commit the changes and wait for your host / GitHub Pages deployment to finish.
+4. On the phone, reload the website. If it still serves the old app, clear the site's stored cache/service worker or open it in a private tab to verify the new version.
+5. Test: open Home, create a project, add a video, add an overlay, move/resize it, save the project, go Home, create another project, and reopen the saved project. Also test template save/use and export with a short video.
+
+TESTING
+- JavaScript syntax checks passed for app.js, setup.js, and sw.js.
+- Automated Chromium smoke test passed for: home on startup, new-project setup, entering editor, returning Home, empty-state stays hidden when an overlay exists, named project save, and preservation of a previous project when starting another.
+- The smoke test uses stubs for browser libraries and does not validate real media decoding, Fabric touch behavior on a physical Android device, FFmpeg export, or native APK packaging.
+
+IMPORTANT
+- This is a web-source patch, not a rebuilt APK. If your Android app embeds the web project, rebuild/repackage the APK after the source is deployed.
+- Projects and media are stored locally in the browser's IndexedDB. They are not synced to GitHub or another device. Deleting browser storage can remove local projects/media.
+- The GitHub integration allowed reading the repository files, but GitHub rejected write/branch operations with HTTP 403. Therefore this ZIP is prepared for upload; the repository itself has NOT been changed by this assistant.
+
+
+
+==========================================================================================
+FILE: README-MediaY-Patch.txt
+BLOB SHA: ede959b5140709bfde827d733e92a433d5dfdff2
+==========================================================================================
+ProjectMedia Y — mobile editor patch
+
+Included replacement files:
+- index.html   Adds an adjustable transition duration control to the Transition sheet.
+- app.js       Fixes template edge cases and supports adjustable transition duration during export.
+- style.css    Existing editor styling from the supplied project.
+- setup.js     Adds a mobile-first Home screen with Continue Editing, New Project, My Templates, and Export Last Project.
+- setup.css    Home screen, setup flow, overlay touch handling, and transition styling.
+- sw.js        Bumps the service-worker cache and precaches the setup files. The precache list only uses files supplied in this patch.
+
+How to use
+1. Download and extract the ZIP.
+2. In your GitHub repository root, replace the six files above with the files from this ZIP.
+3. Commit and push the changes, then wait for GitHub Pages/your host to deploy.
+4. On the phone, fully reload the site. If it still shows the old UI, clear the site's cached data/service worker or open it once in a private tab to test.
+5. Test: Home > New project > Start editing > Media; add a video, tap Overlay to add a picture/video, select the overlay and drag/resize it in the preview; open Templates to save and reuse a template; select the second main clip > Transition to choose an effect and duration; export.
+
+Important limitations
+- This is a source-code patch, not a rebuilt APK. If you install a native APK, rebuild/repackage it from the updated web source.
+- The supplied app currently stores one active project as “current”; the Home screen resumes that last project. It does not yet provide a multi-project library/history.
+- Transition effects and their chosen duration are rendered during export; this source does not implement real-time transition preview playback in the editor.
+- Export uses FFmpeg.wasm and may be slow or memory-limited on phones, especially at 2K/4K.
+
