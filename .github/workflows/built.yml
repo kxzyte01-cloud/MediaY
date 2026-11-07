@@ -868,6 +868,15 @@ jobs:
           path: MediaY-debug.apk
           if-no-files-found: error
 
+      - name: Explain debug APK update compatibility
+        if: always()
+        run: |
+          {
+            echo "### Debug APK install note"
+            echo "This CI debug APK uses the runner-generated Android debug signing key. Different workflow runs may use different keys, so Android may reject an in-place update from an older CI debug APK."
+            echo "If installation reports a signature conflict, uninstall the previous CI debug build first. This does not affect production-signed APK update compatibility when the same release keystore is used."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build and verify production-signed APK
         if: github.event_name == 'workflow_dispatch' && (inputs.validate_signing || inputs.publish_release)
         env:
