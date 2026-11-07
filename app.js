@@ -128,7 +128,6 @@ $('busyDiscard').onclick = async () => {
   if (!pending) return;
   if (!window.confirm('Discard the completed render? Your editing project will remain unchanged, but this exported MP4 will be lost.')) return;
   pendingExportSave = null;
-  pending.data = null;
   if (pending.engine && pending.path) {
     try { await pending.engine.deleteFile(pending.path); } catch (_) {}
   }
@@ -1673,15 +1672,14 @@ async function saveFFmpegOutput(engine, outputPath) {
 // service helps keep the app process alive during export when the user switches apps.
 async function retryPendingExportSave() {
   const pending = pendingExportSave;
-  if (!pending || (!pending.engine && !pending.data)) return hideBusy();
+  if (!pending || !pending.engine) return hideBusy();
   const button = $('busyDismiss');
   button.disabled = true;
   updateBusy('Saving completed video…', 'The render is preserved in MediaY. Retrying the device save.', 97, 'Saving video');
   try {
-    const delivery = pending.data ? await saveVideo(pending.data) : await saveFFmpegOutput(pending.engine, pending.path);
+    const delivery = await saveFFmpegOutput(pending.engine, pending.path);
     pendingExportSave = null;
     if (pending.engine) { try { await pending.engine.deleteFile(pending.path); } catch (_) {} }
-    pending.data = null;
     if (delivery.method === 'device') {
       say(`Export complete — saved to ${delivery.location}/${delivery.filename}. Open Gallery or Files to find it.`);
     } else if (delivery.method === 'browser-download') {
@@ -2321,11 +2319,9 @@ const runExport = async (_event, recoveryAttempt = 0) => {
     try {
       delivery = await saveFFmpegOutput(ff, out);
     } catch (saveError) {
-      if (saveError && saveError.renderedData instanceof Uint8Array) {
-        pendingExportSave = { engine: null, path: null, data: saveError.renderedData };
-        preserveOutputPath = null;
-        saveFailurePending = true;
-      } else if (ff && ff.loaded) {
+      if (ff && ff.loaded) {
+        // Keep the completed MP4 in FFmpeg storage; never pin a full render buffer
+        // in the WebView heap while the user decides whether to retry or discard.
         pendingExportSave = { engine: ff, path: out };
         preserveOutputPath = out;
         saveFailurePending = true;
