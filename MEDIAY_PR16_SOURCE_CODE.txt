@@ -8680,3 +8680,779 @@ test('FFmpeg commands have a progress/log inactivity watchdog, not a fixed expor
   assert.ok(app.includes('FFmpeg stopped reporting activity for 15 minutes'));
 });
 
+
+
+========================================================================================
+FILE: tests/export-memory.test.js
+BLOB SHA: d9e1cfccd8fb690ba1d23efaf8018332d8e7d70d
+========================================================================================
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const app = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+
+test('video source staging mounts original Blob through WORKERFS instead of copying full ArrayBuffers', () => {
+  const start = app.indexOf('const ensureExportSource = async');
+  const end = app.indexOf('const ensureOverlayPng = async', start);
+  assert.ok(start >= 0 && end > start);
+  const source = app.slice(start, end);
+  assert.ok(source.includes('mountExportFile(file, name)'));
+  assert.ok(!source.includes('file.arrayBuffer()'));
+  assert.ok(app.includes("ff.mount('WORKERFS', { blobs: [{ name, data: file }] }, mountDir)"));
+});
+
+test('repeated audio tracks reuse one file-backed source and one FFmpeg input per media ID', () => {
+  const start = app.indexOf('const activeTracks = [], ins = [];');
+  const end = app.indexOf('const originalHasAudio', start);
+  assert.ok(start >= 0 && end > start);
+  const audio = app.slice(start, end);
+  assert.ok(audio.includes('const audioSources = new Map()'));
+  assert.ok(audio.includes('ensureExportSource(track.m, new Set([track.m]), audioSources)'));
+  assert.ok(!audio.includes('audioInputIndices'));
+  assert.ok(audio.includes('const inputIndex = activeTracks.length + 1'));
+  assert.ok(audio.includes('// Give every timeline track its own FFmpeg input index; filter graphs consume input pads once.'));
+  assert.ok(audio.includes('const audioStreamCache = new Map()'));
+  assert.ok(audio.includes("ins.push('-i', sourceName)"));
+  assert.ok(audio.includes('activeTracks.push({ ...track, inputIndex })'));
+  assert.ok(!audio.includes('mountExportFile('));
+  assert.ok(!audio.includes('arrayBuffer()'));
+});
+
+test('mounted source files are unmounted and their directories removed on eviction and final cleanup', () => {
+  const start = app.indexOf('const removeExportFile = async name =>');
+  const end = app.indexOf('const mountExportFile = async', start);
+  const cleanup = app.slice(start, end);
+  assert.ok(cleanup.includes('ff.unmount(mountDir)'));
+  assert.ok(cleanup.includes('ff.deleteDir(mountDir)'));
+  assert.ok(app.includes('for (const name of [...exportWorkspaceFiles]) {'));
+  assert.ok(app.includes('if (preserveOutputPath && name === preserveOutputPath) continue;'));
+  assert.ok(app.includes('await removeExportFile(name);'));
+});
+
+
+
+========================================================================================
+FILE: tests/export-overlay-resolution.test.js
+BLOB SHA: 1d7df38454a717994fad94163c89a2cccda50c56
+========================================================================================
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const app = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+
+test('overlay PNG rasterization scales to the selected export width', () => {
+  assert.match(app, /async function overlayPNG\(o, outputWidth = canvas\.getWidth\(\)\)/);
+  assert.match(app, /const multiplier = Math\.max\(1, Number\(outputWidth\) \/ Math\.max\(1, canvas\.getWidth\(\)\)\)/);
+  assert.match(app, /canvas\.toDataURL\(\{ format: 'png', multiplier \}\)/);
+});
+
+test('both FFmpeg and WebCodecs export paths request output-resolution overlay PNGs', () => {
+  assert.match(app, /overlayPNG\(overlay, W\)/);
+  assert.match(app, /overlayPNG\(o, W\), W, H/);
+});
+
+test('WebCodecs frame-count mismatch declines the fast path before muxing', () => {
+  assert.match(app, /sink\.frameCount !== chunkFrames/);
+  assert.match(app, /using the FFmpeg fallback/);
+});
+
+
+
+========================================================================================
+FILE: tests/export-safety.test.js
+BLOB SHA: a8661a26b45e832f574dd6e27ff5c31d41ce164c
+========================================================================================
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const app = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+
+test('muted picture-in-picture video audio is not unexpectedly mixed into exports', () => {
+  assert.match(app, /el\.muted\s*=\s*true/);
+  assert.match(app, /const ovA = \[\];/);
+  assert.match(app, /Do not unexpectedly mix their hidden audio into the exported soundtrack/);
+});
+
+test('dropping media caches releases decoded audio buffers and thumbnail data', () => {
+  const start = app.indexOf('function dropMediaCaches()');
+  const end = app.indexOf('// Does by itself what closing', start);
+  assert.ok(start >= 0 && end > start);
+  const source = app.slice(start, end);
+  assert.match(source, /for \(const id of Object\.keys\(decoded\)\) delete decoded\[id\]/);
+  assert.match(source, /for \(const id of Object\.keys\(thumbs\)\) delete thumbs\[id\]/);
+});
+
+test('undo history remains bounded and Fabric overlay media is explicitly disposed', () => {
+  assert.match(app, /undoStack\.length > 50/);
+  assert.match(app, /function disposeOverlayObject\(object, overlay\)/);
+  assert.match(app, /object\.dispose\(\)/);
+  assert.match(app, /element\.pause\(\)/);
+  assert.match(app, /element\.removeAttribute\('src'\)/);
+  assert.match(app, /for \(const object of canvas\.getObjects\(\)\.slice\(\)/);
+});
+
+test('overlay rebuild releases Fabric-owned video elements and ignores stale asynchronous rebuilds', () => {
+  assert.match(app, /object\.getElement\(\)/);
+  assert.match(app, /let rebuildGeneration = 0/);
+  assert.match(app, /generation !== rebuildGeneration/);
+  assert.match(app, /element\.removeAttribute\('src'\)/);
+});
+
+test('OOM retry detection matches the oom token, not arbitrary words containing those letters', () => {
+  assert.match(app, /\\boom\\b/);
+  assert.doesNotMatch(app, /allocation failed\|out of memory\|oom\/i/);
+});
+
+
+test('FFmpeg cache is purged only after an integrity or WebAssembly instantiation failure', () => {
+  assert.match(app, /function isFFmpegCacheIntegrityError\(error\)/);
+  assert.match(app, /if \(isFFmpegCacheIntegrityError\(error\) && window\.caches\)/);
+  const start = app.indexOf('async function loadFFmpegEngine()');
+  const end = app.indexOf('// One shared load:', start);
+  assert.ok(start >= 0 && end > start);
+  const load = app.slice(start, end);
+  assert.doesNotMatch(load, /if \(window\.caches\) caches\.delete\(ENGINE_CACHE\)/);
+});
+
+
+test('skip_loop_filter is restricted to the explicit Fast Draft preset', () => {
+  assert.match(app, /fastDraft: false/);
+  assert.match(app, /EXP\.fastDraft = false/);
+  assert.match(app, /EXP\.fastDraft = name === 'draft'/);
+  assert.match(app, /hiRate && EXP\.fastDraft \? \[true, false\] : \[false\]/);
+});
+
+
+
+========================================================================================
+FILE: tests/export_integration.py
+BLOB SHA: 3be562b738444b3cb9ef4b24783aeddddd10c335
+========================================================================================
+"""Real export test: real app + real FFmpeg.wasm + real H.264 encode, then inspects the MP4 that comes out.
+
+Checks, for a single clip and for two clips with a fade transition and a timed text overlay:
+  - the export completes and is a playable H.264 + AAC MP4 at the requested size,
+  - its duration matches the timeline,
+  - the transition occupies the right part of the timeline,
+  - the overlay appears and disappears where the timeline says (within two frames).
+Needs: ffmpeg + ffprobe on PATH, Playwright, and internet access (the app downloads Fabric, Dexie and the 31 MB FFmpeg
+core from CDNs). Offline: set MEDIAY_LOCAL_LIBS to a folder containing node_modules with fabric, animejs, dexie, lucide and
+@ffmpeg/core (npm packages) and those requests are served from disk instead.
+Run: python tests/export_integration.py
+"""
+import functools, http.server, json, os, socketserver, subprocess, sys, tempfile, threading, time
+from pathlib import Path
+from playwright.sync_api import sync_playwright
+
+ROOT = Path(__file__).resolve().parent.parent
+LOCAL = os.environ.get("MEDIAY_LOCAL_LIBS")
+FPS = 24
+
+def sh(*cmd, **kw):
+    return subprocess.run(cmd, capture_output=True, text=kw.pop("text", True), check=True, **kw)
+
+def make_clips(folder):
+    a, b = Path(folder) / "a.webm", Path(folder) / "b.webm"
+    common = ["-vf", "format=yuv420p", "-c:v", "libvpx", "-b:v", "300k", "-auto-alt-ref", "0", "-deadline", "realtime", "-cpu-used", "8", "-c:a", "libopus", "-shortest"]
+    sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=3", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=3", *common, str(a))
+    sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "rgbtestsrc=size=640x360:rate=30:duration=3", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=44100:duration=3", *common, str(b))
+    return str(a), str(b)
+
+def make_silent_clip(folder, name="silent.webm", duration=2, size="640x360"):
+    out = Path(folder) / name
+    sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=navy:s={size}:r=30:d={duration}",
+       "-vf", "format=yuv420p", "-c:v", "libvpx", "-b:v", "200k", "-deadline", "realtime", "-cpu-used", "8", "-an", str(out))
+    return str(out)
+
+def make_tone(folder, name, freq, duration=1.5):
+    out = Path(folder) / name
+    sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"sine=frequency={freq}:sample_rate=44100:duration={duration}",
+       "-c:a", "libopus", str(out))
+    return str(out)
+
+def make_voiced_clip(folder, name="pip_voiced.webm", duration=2, freq=880, size="320x180"):
+    out = Path(folder) / name
+    sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=blue:s={size}:r=30:d={duration}",
+       "-f", "lavfi", "-i", f"sine=frequency={freq}:sample_rate=44100:duration={duration}",
+       "-vf", "format=yuv420p", "-c:v", "libvpx", "-b:v", "200k", "-deadline", "realtime", "-cpu-used", "8",
+       "-c:a", "libopus", "-shortest", str(out))
+    return str(out)
+
+def probe(path):
+    j = json.loads(sh("ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type,codec_name,width,height", "-of", "json", path).stdout)
+    return float(j["format"]["duration"]), [(s["codec_type"], s["codec_name"], s.get("width"), s.get("height")) for s in j["streams"]]
+
+def rms_db(path, start, length):
+    output = sh("ffmpeg", "-v", "info", "-ss", str(start), "-t", str(length), "-i", path,
+                "-af", "astats=metadata=1:reset=0", "-f", "null", "-").stderr
+    values = []
+    for line in output.splitlines():
+        if "RMS level dB:" not in line:
+            continue
+        value = line.rsplit(":", 1)[-1].strip()
+        if value.lower() != "-inf":
+            try:
+                values.append(float(value))
+            except ValueError:
+                pass
+    return max(values) if values else -120.0
+
+def overlay_window(path, quiet_time, start, length, w=120, h=214):
+    """Seconds at which text appears/disappears in the bottom third, found from frame differences."""
+    raw = sh("ffmpeg", "-v", "error", "-ss", str(start), "-t", str(length), "-i", path, "-vf", f"fps=30,scale={w}:{h},format=gray", "-f", "rawvideo", "-", text=False).stdout
+    n = len(raw) // (w * h)
+    frames = [raw[i * w * h:(i + 1) * w * h] for i in range(n)]
+    crop = lambda f: [f[y * w + x] for y in range(int(h * .62), int(h * .82)) for x in range(w)]
+    base = crop(frames[int((quiet_time - start) * 30)])
+    diffs = [sum(abs(p - q) for p, q in zip(crop(f), base)) / len(base) for f in frames]
+    on = [i for i, d in enumerate(diffs) if d > 4]
+    return start + on[0] / 30, start + (on[-1] + 1) / 30
+
+def run_export(base, files, setup_js, route_libs, assets=None):
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        context = browser.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True, service_workers="block")
+        route_libs(context)
+        for asset_name, asset_path in (assets or {}).items():
+            context.route(f"**/{asset_name.lstrip('/')}", lambda route, _request, path=str(asset_path): route.fulfill(path=path))
+        context.add_init_script("try{localStorage.setItem('pmy-consent-v1','yes')}catch(e){}")
+        page = context.new_page(); errors = []; browser_logs = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.on("console", lambda msg: browser_logs.append(f"{msg.type}: {msg.text}") if msg.type == "error" else None)
+        page.goto(base + "/index.html", wait_until="load")
+        page.wait_for_selector("#homeScreen:not([hidden])", timeout=30000)
+        page.locator("#hmNew").click(); page.wait_for_selector("#setup:not([hidden])")
+        page.locator("#suStart").click(); page.wait_for_function("document.querySelector('#homeScreen').hidden === true")
+        page.set_input_files("#mediaInput", files)
+        page.wait_for_function(f"S.main.length === {len(files)}", timeout=60000)
+        page.wait_for_function("document.querySelector('#busyOverlay').hidden === true", timeout=60000)
+        page.evaluate(setup_js)
+        # Wait for the browser download itself, then save it before closing Chromium.
+        # A page.on("download") callback can still be saving the artifact when browser.close()
+        # runs, which cancels Download.save_as and makes a successful export look like a failure.
+        try:
+            with page.expect_download(timeout=180000) as download_info:
+                page.evaluate("() => { $('goExport').onclick(null, 0); return true; }")
+            download = download_info.value
+        except Exception as error:
+            diagnostics = page.evaluate("""() => ({
+              status: document.getElementById('status')?.textContent || '',
+              busy: document.getElementById('busyOverlay')?.innerText || '',
+              progress: document.getElementById('busyProgress')?.getAttribute('aria-valuenow') || '',
+              ffLogs: (window.ffLogs || []).slice(-30),
+              native: !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform())
+            })""")
+            browser.close()
+            raise AssertionError(f"Export did not deliver a browser download: {error}; diagnostics={diagnostics}; pageErrors={errors[:10]}; consoleErrors={browser_logs[-15:]}") from error
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as output:
+            saved_path = output.name
+        download.save_as(saved_path)
+        status = page.evaluate("document.getElementById('status').textContent")
+        total = page.evaluate("total()")
+        browser.close()
+    return saved_path, status, total, errors
+
+def main():
+    class Quiet(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *a): pass
+    socketserver.TCPServer.allow_reuse_address = True
+    server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), functools.partial(Quiet, directory=str(ROOT)))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def route_libs(context):
+        if not LOCAL: return
+        nm = Path(LOCAL) / "node_modules"
+        files = {"fabric.min.js": nm / "fabric/dist/fabric.min.js", "anime.min.js": nm / "animejs/lib/anime.min.js", "dexie.min.js": nm / "dexie/dist/dexie.min.js",
+                 "lucide.min.js": nm / "lucide/dist/umd/lucide.min.js", "ffmpeg-core.js": nm / "@ffmpeg/core/dist/umd/ffmpeg-core.js", "ffmpeg-core.wasm": nm / "@ffmpeg/core/dist/umd/ffmpeg-core.wasm"}
+        def handler(route):
+            for name, path in files.items():
+                if route.request.url.endswith(name):
+                    return route.fulfill(body=path.read_bytes(), content_type="application/wasm" if name.endswith(".wasm") else "application/javascript")
+            return route.abort() if "fonts.g" in route.request.url else route.continue_()
+        for pattern in ("https://cdnjs.cloudflare.com/**", "https://unpkg.com/**", "https://cdn.jsdelivr.net/**", "https://fonts.googleapis.com/**", "https://fonts.gstatic.com/**"):
+            context.route(pattern, handler)
+
+    folder = tempfile.mkdtemp()
+    clip_a, clip_b = make_clips(folder)
+    fast = f"EXP.res = 480; EXP.fps = {FPS};"
+
+    # 1) single clip
+    t0 = time.time()
+    path, status, total, errors = run_export(base, [clip_a], fast + " 0", route_libs)
+    assert path, f"no file was produced ({status}; errors {errors[:2]})"
+    duration, streams = probe(path)
+    assert "Export complete" in status, status
+    assert abs(duration - total) < 0.15, (duration, total)
+    assert ("video", "h264", 480, 854) in streams and any(s[0] == "audio" for s in streams), streams
+    assert not errors, errors
+    print(f"PASS: single-clip export is a valid H.264+AAC MP4 of {duration:.2f} s (timeline {total:.2f} s) in {time.time() - t0:.0f} s")
+
+    # 2) two clips + fade transition + text overlay at 4.0-5.0 s
+    t0 = time.time()
+    setup = fast + """(async () => { S.main[1].tr = 'fade'; S.main[1].trDur = 0.5;
+      await commitCaptionDrafts([{ id: 'marker1', layer: S.nextLayer, type: 'text', caption: true, text: 'MARKER', style: 0, start: 4.0, dur: 1.0, top: RATIOS[S.ratio][1] * 0.72 }]); })()"""
+    path, status, total, errors = run_export(base, [clip_a, clip_b], setup, route_libs)
+    assert path, f"no file was produced ({status}; errors {errors[:2]})"
+    duration, streams = probe(path)
+    assert "Export complete" in status and not errors, (status, errors)
+    assert abs(duration - total) < 0.2, (duration, total)       # the transition must not shorten or lengthen the timeline
+    on, off = overlay_window(path, quiet_time=3.8, start=3.6, length=2.8)
+    frame = 1 / FPS
+    assert abs(on - 4.0) <= 2.5 * frame and abs(off - 5.0) <= 2.5 * frame, (on, off)
+    print(f"PASS: two-clip export keeps the timeline length ({duration:.2f} s vs {total:.2f} s) and shows the overlay at {on:.2f}-{off:.2f} s (timeline 4.00-5.00 s) in {time.time() - t0:.0f} s")
+
+    # 3) Silent intro + voiced clip + fade transition + silent video PiP.
+    # The main audio from clip_a must survive both the silent segment and silent PiP.
+    t0 = time.time()
+    silent_intro = make_silent_clip(folder, "intro_silent.webm", duration=2)
+    pip_silent = make_silent_clip(folder, "pip_silent.webm", duration=1, size="320x180")
+    setup = fast + """(async () => {
+      S.main[1].tr = 'fade'; S.main[1].trDur = 0.5;
+      const blob = await (await fetch('/pip_silent.webm')).blob();
+      const file = new File([blob], 'pip_silent.webm', { type: 'video/webm' });
+      const mediaId = await storeMedia(file);
+      await addOverlay({ type: 'video', mediaId, name: file.name, start: 0.5, dur: 1.0, sourceIn: 0, srcDur: 1.0 });
+    })()"""
+    path, status, total, errors = run_export(base, [silent_intro, clip_a], setup, route_libs,
+                                             assets={"pip_silent.webm": pip_silent})
+    duration, streams = probe(path)
+    assert "Export complete" in status and not errors, (status, errors)
+    assert abs(duration - total) < 0.2, (duration, total)
+    assert any(s[0] == "audio" for s in streams), f"missing AAC after silent intro: {streams}"
+    assert rms_db(path, 2.5, 1.5) > -30.0, "voiced main clip audio was lost after silent intro / silent PiP"
+    print(f"PASS: silent main segment and silent PiP preserve the voiced clip's audio ({duration:.2f} s) in {time.time() - t0:.0f} s")
+
+    # 4) Two external voice-overs on a silent main clip. The later track must not be
+    # truncated by the duration of the first (earlier) track.
+    t0 = time.time()
+    silent_main = make_silent_clip(folder, "silent_main.webm", duration=3)
+    voice_early = make_tone(folder, "voice_early.webm", 440, duration=0.8)
+    voice_late = make_tone(folder, "voice_late.webm", 880, duration=0.8)
+    setup = fast + """(async () => {
+      for (const [url, name, start] of [
+        ['/voice_early.webm', 'voice_early.webm', 0.2],
+        ['/voice_late.webm', 'voice_late.webm', 1.8]
+      ]) {
+        const blob = await (await fetch(url)).blob();
+        const file = new File([blob], name, { type: 'audio/webm' });
+        const mediaId = await storeMedia(file);
+        S.audio.push({ id: uid(), mediaId, name, start, in: 0, out: 0.8, src: 0.8 });
+      }
+    })()"""
+    path, status, total, errors = run_export(base, [silent_main], setup, route_libs,
+        assets={"voice_early.webm": voice_early, "voice_late.webm": voice_late})
+    duration, streams = probe(path)
+    assert "Export complete" in status and not errors, (status, errors)
+    assert abs(duration - total) < 0.15 and abs(duration - 3.0) < 0.15, (duration, total)
+    assert any(s[0] == "audio" for s in streams), f"missing mixed audio stream: {streams}"
+    assert rms_db(path, 0.3, 0.5) > -30.0, "first external voice-over was not audible in its window"
+    assert rms_db(path, 1.15, 0.45) < -45.0, "unexpected audio bleed in silent gap between voice-overs"
+    assert rms_db(path, 1.9, 0.6) > -30.0, "second external voice-over was truncated"
+    print(f"PASS: both delayed voice-overs remain independently audible and output stays within {duration:.2f} s timeline in {time.time() - t0:.0f} s")
+
+    # 5) PiP videos are intentionally muted in preview and export because there is no
+    # overlay-volume control. A voiced PiP must not add a hidden audio track.
+    t0 = time.time()
+    silent_main = make_silent_clip(folder, "pip_main_silent.webm", duration=3)
+    pip_silent = make_silent_clip(folder, "pip_only_silent.webm", duration=1, size="320x180")
+    pip_voiced = make_voiced_clip(folder, duration=2)
+    setup = fast + """(async () => {
+      const silentBlob = await (await fetch('/pip_only_silent.webm')).blob();
+      const silentFile = new File([silentBlob], 'pip_only_silent.webm', { type: 'video/webm' });
+      const silentId = await storeMedia(silentFile);
+      await addOverlay({ type: 'video', mediaId: silentId, name: silentFile.name, start: 0.2, dur: 0.8, sourceIn: 0, srcDur: 1.0 });
+      const voicedBlob = await (await fetch('/pip_voiced.webm')).blob();
+      const voicedFile = new File([voicedBlob], 'pip_voiced.webm', { type: 'video/webm' });
+      const voicedId = await storeMedia(voicedFile);
+      await addOverlay({ type: 'video', mediaId: voicedId, name: voicedFile.name, start: 1.0, dur: 0.8, sourceIn: 0.5, srcDur: 2.0 });
+    })()"""
+    path, status, total, errors = run_export(base, [silent_main], setup, route_libs,
+        assets={"pip_only_silent.webm": pip_silent, "pip_voiced.webm": pip_voiced})
+    duration, streams = probe(path)
+    assert "Export complete" in status and not errors, (status, errors)
+    assert abs(duration - total) < 0.15, (duration, total)
+    assert not any(s[0] == "audio" for s in streams), f"muted PiP unexpectedly added an audio track: {streams}"
+    print(f"PASS: silent and voiced PiP overlays remain muted; no hidden PiP audio is exported ({duration:.2f} s) in {time.time() - t0:.0f} s")
+
+    # 6) Reversed external audio-track order & overlong music track.
+    # Later music is pushed first and exceeds the 3-second project timeline.
+    t0 = time.time()
+    silent_main_rev = make_silent_clip(folder, "silent_main_rev.webm", duration=3)
+    music_overlong = make_tone(folder, "music_overlong.webm", 660, duration=5.0)
+    voice_first = make_tone(folder, "voice_first.webm", 440, duration=0.8)
+    setup = fast + """(async () => {
+      for (const [url, name, start, outDur, srcDur] of [
+        ['/music_overlong.webm', 'music_overlong.webm', 1.6, 4.5, 5.0],
+        ['/voice_first.webm', 'voice_first.webm', 0.2, 0.8, 0.8]
+      ]) {
+        const blob = await (await fetch(url)).blob();
+        const file = new File([blob], name, { type: 'audio/webm' });
+        const mediaId = await storeMedia(file);
+        S.audio.push({ id: uid(), mediaId, name, start, in: 0, out: outDur, src: srcDur });
+      }
+    })()"""
+    path, status, total, errors = run_export(base, [silent_main_rev], setup, route_libs,
+        assets={"music_overlong.webm": music_overlong, "voice_first.webm": voice_first})
+    duration, streams = probe(path)
+    assert "Export complete" in status and not errors, (status, errors)
+    assert abs(duration - total) < 0.15 and abs(duration - 3.0) < 0.15, (duration, total)
+    assert any(s[0] == "audio" and s[1] == "aac" for s in streams), f"missing AAC audio stream: {streams}"
+    assert rms_db(path, 0.3, 0.5) > -30.0, "earlier voice track (pushed second in reverse S.audio order) was lost"
+    assert rms_db(path, 1.1, 0.35) < -45.0, "unexpected audio bleed in silent gap before overlong music track"
+    assert rms_db(path, 1.8, 1.0) > -30.0, "overlong music track (pushed first in reverse S.audio order) was lost"
+    print(f"PASS: reversed S.audio order and overlong music track trim cleanly to {duration:.2f} s while preserving both tracks in {time.time() - t0:.0f} s")
+
+    # 7) Short overlapping fades & voiced -> silent -> voiced xfade transitions.
+    t0 = time.time()
+    short_voiced_1 = make_voiced_clip(folder, name="short_voiced_1.webm", duration=0.8, freq=440, size="640x360")
+    short_silent_mid = make_silent_clip(folder, name="short_silent_mid.webm", duration=0.6, size="640x360")
+    short_voiced_2 = make_voiced_clip(folder, name="short_voiced_2.webm", duration=0.8, freq=880, size="640x360")
+    setup = fast + """(() => {
+      S.main.forEach(c => { c.fade = true; });
+      S.main[1].tr = 'fade'; S.main[1].trDur = 0.2;
+      S.main[2].tr = 'fade'; S.main[2].trDur = 0.2;
+    })()"""
+    path, status, total, errors = run_export(base, [short_voiced_1, short_silent_mid, short_voiced_2], setup, route_libs)
+    duration, streams = probe(path)
+    assert "Export complete" in status and not errors, (status, errors)
+    assert abs(duration - total) < 0.2 and abs(total - 2.2) < 0.1, (duration, total)
+    assert ("video", "h264", 480, 854) in streams, f"invalid H.264 stream header: {streams}"
+    assert any(s[0] == "audio" and s[1] == "aac" for s in streams), f"missing AAC stream header: {streams}"
+    assert rms_db(path, 0.1, 0.5) > -35.0, "first sub-second voiced clip lost audio across fade/xfade"
+    assert rms_db(path, 1.45, 0.5) > -35.0, "second sub-second voiced clip lost audio after silent middle clip and xfade"
+    print(f"PASS: sub-second voiced -> silent -> voiced clips with overlapping fades and xfade transitions preserve both voiced segments ({duration:.2f} s) in {time.time() - t0:.0f} s")
+
+    server.shutdown()
+
+if __name__ == "__main__":
+    main()
+
+
+
+========================================================================================
+FILE: tests/fast_pipeline.py
+BLOB SHA: b7fdc7edeeadf42416b6d90977b27e7d628c194f
+========================================================================================
+"""Pipeline test for the fast export engine (mediay-fast.js) in a real browser.
+
+Real MP4 files -> real WebCodecs decode -> trim/speed/fade/overlay/rotation compositing -> real WebCodecs encode ->
+the result is decoded by ffmpeg and checked frame by frame.
+
+Source frames carry a 12-bit "barcode" of their frame number in the top-left corner, so the test can tell exactly
+which source frame ended up in which output frame.
+
+CODEC NOTE: The main frame-accuracy matrix uses VP9 for deterministic coverage. A separate test also attempts a real H.264
+WebCodecs encode and validates the Annex B output with FFmpeg when the installed Chromium build exposes an H.264 encoder.
+That desktop-browser check does not prove that Android WebView exposes a hardware encoder; physical-device validation remains
+required. See docs/fast-export.md.
+
+Needs: ffmpeg + ffprobe on PATH, Playwright with Chromium.
+Run: python tests/fast_pipeline.py
+"""
+import base64, functools, http.server, json, shutil, socketserver, subprocess, sys, tempfile, threading
+from pathlib import Path
+from playwright.sync_api import sync_playwright
+
+ROOT = Path(__file__).resolve().parent.parent
+FPS = 30
+
+
+def sh(*cmd, binary=False):
+    r = subprocess.run(cmd, capture_output=True, check=True)
+    return r.stdout if binary else r.stdout.decode()
+
+
+def make_source(path, offset=0, rot=None, seconds=4):
+    """640x360 VP9-in-MP4. Top-left: barcode of (frame number + offset). Background: dark gradient (asymmetric, for rotation checks)."""
+    expr = ("if(lt(Y,24),if(lt(X,288),if(bitand(floor((N+%d)/pow(2,floor(X/24))),1),235,16),16),16+X/8+Y/8)" % offset)
+    tmp = str(path) + ".tmp.mp4" if rot else str(path)
+    sh("ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=black:s=640x360:r={FPS}:d={seconds}",
+       "-vf", f"format=gray,geq=lum='{expr}',format=yuv420p", "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "22", "-g", "15",
+       "-deadline", "realtime", "-cpu-used", "5", "-an", tmp)
+    if rot:
+        sh("ffmpeg", "-y", "-loglevel", "error", "-display_rotation", str(rot), "-i", tmp, "-c", "copy", str(path))
+
+
+def decode_gray(path, w, h, input_format=None):
+    args = ["ffmpeg", "-v", "error"]
+    if input_format:
+        args += ["-f", input_format]
+    args += ["-i", str(path), "-vf", "format=gray", "-f", "rawvideo", "-"]
+    raw = sh(*args, binary=True)
+    n = len(raw) // (w * h)
+    return [raw[i * w * h:(i + 1) * w * h] for i in range(n)]
+
+
+def barcode(frame, w):
+    bits = ["1" if frame[12 * w + 12 + 24 * i] > 128 else "0" for i in range(12)]
+    return int("".join(reversed(bits)), 2)
+
+
+def mean(frame, w, x0, y0, x1, y1):
+    vals = [frame[y * w + x] for y in range(y0, y1) for x in range(x0, x1)]
+    return sum(vals) / len(vals)
+
+
+HARNESS = """
+async (spec) => {
+  const Fast = window.MediaYFast;
+  const clips = [];
+  for (const c of spec.clips) {
+    const blob = await (await fetch(c.url)).blob();
+    const { video } = await Fast.demux(blob);
+    clips.push({ file: blob, track: video, in: c.in, out: c.out, speed: c.speed || 1, fade: !!c.fade });
+  }
+  const h264 = spec.codec === 'h264';
+  const sink = h264 ? new Fast.AnnexBSink() : new Fast.IvfSink('VP90', spec.W, spec.H, spec.fps);
+  let choice;
+  const overlays = (spec.overlays || []).map(o => {
+    const c = new OffscreenCanvas(o.w, o.h), x = c.getContext('2d');
+    x.fillStyle = '#fff'; x.fillRect(0, 0, o.w, o.h);
+    return { bitmap: c.transferToImageBitmap(), x: o.x, y: o.y, w: o.w, h: o.h, start: o.start, end: o.end };
+  });
+  let polled = 0;
+  const progress = [];
+  let result, error = null;
+  try {
+    choice = await Fast.chooseEncoderConfig({
+      W: spec.W, H: spec.H, fps: spec.fps, bitrate: 6e6,
+      ...(h264 ? {} : { codecs: ['vp09.00.10.08'], acceleration: ['no-preference'] })
+    });
+    result = await Fast.renderTimeline({ clips, W: spec.W, H: spec.H, fps: spec.fps, choice, sink, overlays,
+      isCancelled: () => spec.cancelAfter != null && ++polled > spec.cancelAfter, onProgress: p => progress.push(p) });
+  } catch (e) { error = String(e && e.message || e); }
+  const bytes = sink.finish();
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 32768) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 32768));
+  return { error, result, progress, format: h264 ? 'h264' : 'ivf', b64: btoa(bin) };
+}
+"""
+
+BENCH = """
+async () => {
+  const Fast = window.MediaYFast;
+  const choice = await Fast.chooseEncoderConfig({ W: 640, H: 360, fps: 30, codecs: ['vp09.00.10.08'], acceleration: ['no-preference'] });
+  return await Fast.benchmarkEncoder(choice, 12);
+}
+"""
+
+
+def main():
+    work = Path(tempfile.mkdtemp(prefix="mediay-fast-"))
+    try:
+        shutil.copy(ROOT / "mediay-fast.js", work / "mediay-fast.js")
+        (work / "index.html").write_text("<!doctype html><title>t</title>")
+        make_source(work / "a.mp4", 0)
+        make_source(work / "b.mp4", 1000)
+        make_source(work / "rot.mp4", 0, rot=90)
+
+        handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(work))
+        handler.log_message = lambda *a, **k: None
+        socketserver.TCPServer.allow_reuse_address = True
+        server = socketserver.TCPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://localhost:{server.server_address[1]}"
+
+        failures = []
+
+        def check(name, cond, detail=""):
+            print(("PASS " if cond else "FAIL ") + name + ("" if cond else f"  [{detail}]"))
+            if not cond:
+                failures.append(name)
+
+        with sync_playwright() as p:
+            browser = p.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage"])
+            page = browser.new_page()
+            errors = []
+            page.on("pageerror", lambda e: errors.append(str(e)))
+            page.goto(base + "/index.html")
+            page.add_script_tag(url=base + "/mediay-fast.js")
+
+            def render(case_id, spec):
+                out = page.evaluate(HARNESS, spec)
+                output = work / f"{case_id}.h264" if spec.get("codec") == "h264" else work / f"{case_id}.ivf"
+                output.write_bytes(base64.b64decode(out["b64"]))
+                return out, output
+
+            def ids(output, w, h):
+                frames = decode_gray(output, w, h, "h264" if output.suffix == ".h264" else None)
+                return [barcode(f, w) for f in frames], frames
+
+            def clip(url, a, b, **kw):
+                return dict(url=f"{base}/{url}", **{"in": a, "out": b}, **kw)
+
+            # A. plain pass-through
+            out, ivf = render("A", dict(W=640, H=360, fps=30, clips=[clip("a.mp4", 0, 2)]))
+            got, _ = ids(ivf, 640, 360)
+            check("A: 2 s clip -> 60 frames in order", out["error"] is None and got == list(range(60)), f"{out['error']} {got[:6]}...{got[-3:]} n={len(got)}")
+            check("A: progress reaches 1", out["progress"] and out["progress"][-1] == 1, str(out["progress"][-2:]))
+
+            # B. trim
+            out, ivf = render("B", dict(W=640, H=360, fps=30, clips=[clip("a.mp4", 1.0, 2.0)]))
+            got, _ = ids(ivf, 640, 360)
+            check("B: trim 1.0-2.0 s -> source frames 30..59", got == list(range(30, 60)), f"{got}")
+
+            # C. 2x speed
+            out, ivf = render("C", dict(W=640, H=360, fps=30, clips=[clip("a.mp4", 0, 2, speed=2)]))
+            got, _ = ids(ivf, 640, 360)
+            check("C: 2x speed -> every 2nd frame, 30 frames", got == list(range(0, 60, 2)), f"{got}")
+
+            # D. half speed
+            out, ivf = render("D", dict(W=640, H=360, fps=30, clips=[clip("a.mp4", 0, 1, speed=0.5)]))
+            got, _ = ids(ivf, 640, 360)
+            check("D: 0.5x speed -> each frame twice, 60 frames", got == [k // 2 for k in range(60)], f"{got}")
+
+            # E. two clips from two files, one continuous stream
+            out, ivf = render("E", dict(W=640, H=360, fps=30, clips=[clip("a.mp4", 0, 1), clip("b.mp4", 1, 2)]))
+            got, _ = ids(ivf, 640, 360)
+            check("E: two clips join without gap or repeat", got == list(range(0, 30)) + list(range(1030, 1060)), f"{got}")
+            frames_total = out["result"]["frames"] if out["result"] else None
+            check("E: engine reports 60 frames", frames_total == 60, str(out["result"]))
+
+            # F. lower output frame rate
+            out, ivf = render("F", dict(W=640, H=360, fps=15, clips=[clip("a.mp4", 0, 2)]))
+            got, _ = ids(ivf, 640, 360)
+            check("F: 15 fps output from 30 fps source", got == list(range(0, 60, 2)), f"{got}")
+
+            # G. overlay window (timeline seconds 0.5 .. 1.0 inclusive -> frames 15..30)
+            out, ivf = render("G", dict(W=640, H=360, fps=30, clips=[clip("a.mp4", 0, 2)],
+                                        overlays=[dict(x=300, y=200, w=40, h=40, start=0.5, end=1.0)]))
+            _, frames = ids(ivf, 640, 360)
+            lit = [i for i, f in enumerate(frames) if mean(f, 640, 310, 210, 330, 230) > 200]
+            check("G: overlay visible exactly on frames 15..30", lit == list(range(15, 31)), f"{lit}")
+
+            # G2. overlay on the second clip uses TIMELINE time, not clip time
+            out, ivf = render("G2", dict(W=640, H=360, fps=30, clips=[clip("a.mp4", 0, 1), clip("b.mp4", 1, 2)],
+                                         overlays=[dict(x=300, y=200, w=40, h=40, start=1.5, end=1.8)]))
+            _, frames = ids(ivf, 640, 360)
+            lit = [i for i, f in enumerate(frames) if mean(f, 640, 310, 210, 330, 230) > 200]
+            check("G2: overlay timing continues across clips", lit == list(range(45, 55)), f"{lit}")
+
+            # H. letterbox: 640x360 into a 360x640 portrait frame
+            out, ivf = render("H", dict(W=360, H=640, fps=30, clips=[clip("a.mp4", 0, 1)]))
+            _, frames = ivf and ids(ivf, 360, 640)
+            f = frames[10]
+            top = mean(f, 360, 0, 10, 360, 100); mid = mean(f, 360, 0, 300, 360, 340)
+            check("H: letterbox bars are black, picture in the middle", top < 25 and mid > 25 and len(frames) == 30, f"top={top:.1f} mid={mid:.1f} n={len(frames)}")
+
+            # I. rotation: compare with ffmpeg's own auto-rotated decode of the same file
+            out, ivf = render("I", dict(W=360, H=640, fps=30, clips=[clip("rot.mp4", 0, 1)]))
+            _, ours = ids(ivf, 360, 640)
+            ref = decode_gray(work / "rot.mp4", 360, 640)
+            def diff(a, b):
+                return sum(abs(x - y) for x, y in zip(a[::7], b[::7])) / len(a[::7])
+            wrong = bytes(reversed(ref[10]))  # 180 degrees off
+            d_ok, d_bad = diff(ours[10][100 * 360:], ref[10][100 * 360:]), diff(ours[10][100 * 360:], wrong[100 * 360:])
+            check("I: 90-degree metadata is honoured (matches ffmpeg's autorotate)", d_ok < 12 and d_ok * 2 < d_bad and len(ref) >= 30, f"d_ok={d_ok:.1f} d_bad={d_bad:.1f}")
+
+            # J. fade in/out
+            out, ivf = render("J", dict(W=640, H=360, fps=30, clips=[clip("a.mp4", 0, 2, fade=True)]))
+            _, frames = ids(ivf, 640, 360)
+            first, middle, last = mean(frames[0], 640, 0, 100, 640, 360), mean(frames[30], 640, 0, 100, 640, 360), mean(frames[-1], 640, 0, 100, 640, 360)
+            check("J: fade starts and ends near black", first < middle * 0.4 and last < middle * 0.4, f"{first:.1f} {middle:.1f} {last:.1f}")
+
+            # K. cancel stops cleanly and fast
+            out, ivf = render("K", dict(W=640, H=360, fps=30, clips=[clip("a.mp4", 0, 3)], cancelAfter=10))
+            check("K: cancel is reported and does not hang", out["error"] and "cancel" in out["error"].lower(), str(out["error"]))
+
+            # L. self-test benchmark
+            bench = page.evaluate(BENCH)
+            check("L: encoder self-test reports a speed", bench["fps"] > 1, str(bench))
+            print(f"   (info) software VP9 encoder self-test here: {bench['fps']:.0f} fps at 640x360")
+
+            # M. Exercise the actual H.264 WebCodecs encoder and Annex B sink where Chromium supports it.
+            h264_out, h264_file = render("M", dict(W=640, H=360, fps=30, codec="h264", clips=[clip("a.mp4", 0, 2)]))
+            if h264_out["error"] and "no usable video encoder" in h264_out["error"]:
+                print("SKIP M: this Chromium build does not expose an H.264 WebCodecs encoder")
+            elif h264_out["error"] or not h264_out["result"]:
+                check("M: H.264 WebCodecs output is valid Annex B and preserves all 60 frames", False, h264_out["error"])
+            else:
+                h264_ids, _ = ids(h264_file, 640, 360)
+                check("M: H.264 WebCodecs output is valid Annex B and preserves all 60 frames",
+                      h264_out["result"]["frames"] == 60 and h264_ids == list(range(60)),
+                      f"frames={len(h264_ids)} ids={h264_ids[:8]}...{h264_ids[-4:]}")
+
+            # N. fractional clip lengths share one cumulative frame grid instead of rounding each clip up.
+            out, ivf = render("N", dict(W=640, H=360, fps=30,
+                                        clips=[clip("a.mp4", 0, 1.01), clip("b.mp4", 0, 1.01)]))
+            got, _ = ids(ivf, 640, 360)
+            expected = list(range(0, 30)) + list(range(1000, 1031))
+            check("N: fractional clips use cumulative frame boundaries (61 frames)",
+                  out["error"] is None and out["result"] and out["result"]["frames"] == 61 and got == expected,
+                  f"frames={len(got)} result={out['result']} ids={got[:5]}...{got[-5:]}")
+
+            check("no page errors", not errors, str(errors))
+            browser.close()
+        server.shutdown()
+        if failures:
+            print(f"\n{len(failures)} FAILED: {failures}")
+            sys.exit(1)
+        print("\nAll fast-export pipeline checks passed.")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+========================================================================================
+FILE: tests/history-autosave.test.js
+BLOB SHA: a8469fb03aa71b9a1ff31cc71ae2726d4461c9b8
+========================================================================================
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const app = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+
+test('history autosave is debounced and reports storage failures without losing editor state', () => {
+  const start = app.indexOf('function scheduleProjectSave()');
+  const end = app.indexOf('function commit()', start);
+  assert.ok(start >= 0 && end > start, 'shared autosave helper must exist');
+  const helper = app.slice(start, end);
+  assert.match(helper, /clearTimeout\(saveTimer\)/);
+  assert.match(helper, /setTimeout\(/);
+  assert.match(helper, /\), 800\)/);
+  assert.match(helper, /saveProject\(\)\.catch/);
+  assert.match(helper, /Auto-save failed/);
+});
+
+test('normal edit commits schedule persistence and retain bounded undo history', () => {
+  const start = app.indexOf('function commit()');
+  const end = app.indexOf('function normalizeState', start);
+  assert.ok(start >= 0 && end > start);
+  const commit = app.slice(start, end);
+  assert.match(commit, /undoStack\.push\(snap\(\)\)/);
+  assert.match(commit, /undoStack\.length > 50/);
+  assert.match(commit, /redoStack = \[\]/);
+  assert.match(commit, /scheduleProjectSave\(\)/);
+});
+
+test('undo and redo schedule persistence only after the restored state is applied', () => {
+  const undoStart = app.indexOf("$('undoBtn').onclick");
+  const redoStart = app.indexOf("$('redoBtn').onclick", undoStart);
+  const saveStart = app.indexOf('async function saveProject()', redoStart);
+  assert.ok(undoStart >= 0 && redoStart > undoStart && saveStart > redoStart);
+  const undo = app.slice(undoStart, redoStart);
+  const redo = app.slice(redoStart, saveStart);
+  assert.match(undo, /await restore\(undoStack\[undoStack\.length - 1\]\)/);
+  assert.match(undo, /await restore[\s\S]*scheduleProjectSave\(\)/);
+  assert.match(redo, /await restore\(s\)/);
+  assert.match(redo, /await restore[\s\S]*scheduleProjectSave\(\)/);
+  assert.match(undo, /if \(undoStack\.length < 2\) return/);
+  assert.match(redo, /if \(!redoStack\.length\) return/);
+});
+
