@@ -593,7 +593,7 @@ async function loadMediaLibrary(reset = false) {
     mediaLibraryOffset += items.length;
     $('mediaLibraryLoadMore').hidden = items.length < 36;
     const access = result.access || {};
-    const partial = access.partial ? ' Showing only the photos/videos you selected.' : '';
+    const partial = access.partial ? ' Showing only the photos/videos Android currently allows MediaY to access.' : '';
     $('mediaLibraryStatus').textContent = items.length
       ? `Showing ${mediaLibraryOffset} items.${partial} Tap one to import it.`
       : (mediaLibraryOffset ? 'No more media found.' : 'No photos or videos are available with the current permission.');
@@ -647,7 +647,7 @@ async function openMediaLibrary(kind = 'all') {
   $('mediaLibraryStatus').textContent = 'Requesting photo and video access…';
   $('mediaLibraryGrid').textContent = '';
   try {
-    const access = await plugin.requestMediaAccess();
+    const access = await plugin.requestMediaAccess({ kind });
     if (!access || !access.allowed) {
       $('mediaLibraryStatus').textContent = 'Media access was not granted. You can still choose individual files from Android.';
       return;
@@ -667,10 +667,22 @@ $('mediaLibrarySystemPicker').onclick = () => {
 };
 $('mediaLibraryLoadMore').onclick = () => loadMediaLibrary(false);
 document.querySelectorAll('[data-media-kind]').forEach(button => {
-  button.onclick = () => {
+  button.onclick = async () => {
     mediaLibraryKind = button.dataset.mediaKind;
     document.querySelectorAll('[data-media-kind]').forEach(tab => tab.classList.toggle('active', tab === button));
-    loadMediaLibrary(true);
+    const plugin = mediaLibraryPlugin();
+    try {
+      const access = plugin && typeof plugin.requestMediaAccess === 'function'
+        ? await plugin.requestMediaAccess({ kind: mediaLibraryKind }) : { allowed: true };
+      if (!access || !access.allowed) {
+        $('mediaLibraryGrid').textContent = '';
+        $('mediaLibraryStatus').textContent = 'Access to this media type was not granted. Use Choose from device to import individual files.';
+        return;
+      }
+      await loadMediaLibrary(true);
+    } catch (error) {
+      $('mediaLibraryStatus').textContent = 'Could not request media access: ' + (error && error.message || error);
+    }
   };
 });
 $('audioBtn').onclick = () => { $('mediaInput').accept = 'audio/*'; $('mediaInput').click(); };
