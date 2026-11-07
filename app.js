@@ -1400,15 +1400,65 @@ async function saveVideo(data) {
   return { method: 'browser-download', filename: name, location: 'Downloads' };
 }
 
+/* Stream a completed FFmpeg file through Capacitor's cache on legacy Android builds.
+   This keeps multi-gigabyte exports out of the WebView heap even when MediaStore streaming
+   is unavailable (Android 9 and earlier). */
+async function saveFFmpegLegacyNative(engine, outputPath, nativeStore) {
+  const plugins = (window.Capacitor && window.Capacitor.Plugins) || {};
+  const Filesystem = plugins.Filesystem;
+  if (!nativeStore || typeof nativeStore.saveVideo !== 'function' || !Filesystem ||
+      typeof Filesystem.writeFile !== 'function' || typeof Filesystem.appendFile !== 'function' ||
+      typeof engine.readFileChunk !== 'function') return null;
+
+  const name = `ProjectMedia-Y-${Date.now()}.mp4`;
+  const CHUNK_BYTES = 1024 * 1024;
+  let offset = 0, totalBytes = null, cacheFileCreated = false;
+  try {
+    while (totalBytes == null || offset < totalBytes) {
+      if (exportCancelRequested) throw new Error('Export cancelled');
+      const part = await engine.readFileChunk(outputPath, offset, CHUNK_BYTES);
+      if (!part || !part.bytesRead || !(part.data instanceof Uint8Array)) {
+        throw new Error('The video engine returned an incomplete MP4 chunk.');
+      }
+      totalBytes = Number(part.fileSize) || totalBytes;
+      let binary = '';
+      for (let i = 0; i < part.data.length; i += 0x8000) {
+        binary += String.fromCharCode.apply(null, part.data.subarray(i, i + 0x8000));
+      }
+      const options = { path: name, directory: 'CACHE', data: btoa(binary) };
+      if (offset === 0) {
+        await Filesystem.writeFile(options);
+        cacheFileCreated = true;
+      } else {
+        await Filesystem.appendFile(options);
+      }
+      offset += part.bytesRead;
+      updateBusy('Saving your MP4…', `Writing ${(offset / 1048576).toFixed(1)} MB of ${(totalBytes / 1048576).toFixed(1)} MB to Movies/MediaY.`,
+        totalBytes ? Math.min(99, 97 + offset / totalBytes * 2) : null, 'Saving video');
+      if (part.eof) break;
+    }
+    if (!totalBytes || offset !== totalBytes) throw new Error('The completed MP4 could not be read in full.');
+    const saved = await nativeStore.saveVideo({ fileName: name });
+    return { method: 'device', filename: (saved && saved.fileName) || name,
+      location: (saved && saved.location) || 'Movies/MediaY' };
+  } finally {
+    if (cacheFileCreated) await Filesystem.deleteFile({ path: name, directory: 'CACHE' }).catch(() => {});
+  }
+}
+
 /* Stream a completed FFmpeg file to Android without materializing the entire MP4 in WebView memory. */
 async function saveFFmpegOutput(engine, outputPath) {
   const plugins = (window.Capacitor && window.Capacitor.Plugins) || {};
   const nativeStore = isNative() && plugins.MediaYMediaStore;
+  if (nativeStore && typeof engine.readFileChunk === 'function' &&
+      (typeof nativeStore.beginStreamingSave !== 'function' || !nativeStore.beginStreamingSave)) {
+    const legacyDelivery = await saveFFmpegLegacyNative(engine, outputPath, nativeStore);
+    if (legacyDelivery) return legacyDelivery;
+  }
   if (!nativeStore || typeof nativeStore.beginStreamingSave !== 'function' ||
       typeof engine.readFileChunk !== 'function') {
-    // The legacy path must not keep a second full MP4 in FFmpeg MEMFS while
-    // saveVideo builds its native/browser delivery copy. Keep the JS buffer
-    // attached to a thrown error so Retry save still works after MEMFS cleanup.
+    // Browser delivery (or a very old FFmpeg wrapper without chunk reads) still needs
+    // a byte buffer. Android builds with chunk reads use the bounded native paths above.
     const data = await engine.readFile(outputPath);
     try { await engine.deleteFile(outputPath); } catch (_) { /* retain the in-memory render */ }
     try { return await saveVideo(data); }
@@ -1458,7 +1508,9 @@ async function saveFFmpegOutput(engine, outputPath) {
     }
     // Android 9 and earlier retain the established legacy-storage path.
     if (/Android 10 or newer/.test(String(error && error.message || error))) {
-      return saveVideo(await engine.readFile(outputPath));
+      const legacyDelivery = await saveFFmpegLegacyNative(engine, outputPath, nativeStore);
+      if (legacyDelivery) return legacyDelivery;
+      throw new Error('This Android version needs chunked legacy saving, but this build cannot read FFmpeg output in chunks.');
     }
     throw error;
   }
