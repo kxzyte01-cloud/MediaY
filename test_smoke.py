@@ -4,8 +4,15 @@ from playwright.sync_api import sync_playwright
 def assert_computed_contrast(page, selectors, label):
     report = page.evaluate("""selectors => {
       const parse = value => {
-        const m = String(value).match(/rgba?\\(\\s*([\\d.]+)[,\\s]+([\\d.]+)[,\\s]+([\\d.]+)(?:\\s*[,/]\\s*([\\d.]+))?\\s*\\)/i);
-        return m ? [Number(m[1]), Number(m[2]), Number(m[3]), m[4] === undefined ? 1 : Number(m[4])] : null;
+        const text = String(value);
+        const m = text.match(/rgba?\\(\\s*([\\d.]+)[,\\s]+([\\d.]+)[,\\s]+([\\d.]+)(?:\\s*[,/]\\s*([\\d.]+))?\\s*\\)/i);
+        if (m) return [Number(m[1]), Number(m[2]), Number(m[3]), m[4] === undefined ? 1 : Number(m[4])];
+        const h = text.match(/^#([0-9a-f]{3,8})$/i);
+        if (!h) return null;
+        let v = h[1];
+        if (v.length === 3 || v.length === 4) v = v.slice(0,3).split('').map(x=>x+x).join('') + (v.length === 4 ? v[3]+v[3] : '');
+        if (v.length !== 6 && v.length !== 8) return null;
+        return [parseInt(v.slice(0,2),16),parseInt(v.slice(2,4),16),parseInt(v.slice(4,6),16),v.length===8?parseInt(v.slice(6,8),16)/255:1];
       };
       const luminance = rgb => {
         const c = rgb.map(v => { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; });
@@ -15,21 +22,28 @@ def assert_computed_contrast(page, selectors, label):
       for (const selector of selectors) for (const el of document.querySelectorAll(selector)) {
         const cs = getComputedStyle(el);
         if (!el.textContent.trim() || el.matches(':disabled') || cs.display === 'none' || cs.visibility === 'hidden' || !el.getClientRects().length) continue;
-        let chain = [], node = el, gradient = false, bg = [8, 13, 24], opacity = 1;
+        let chain = [], node = el, backgrounds = [[8, 13, 24]], opacity = 1;
         while (node) { chain.unshift(node); node = node.parentElement; }
+        const blend = (bg, color) => bg.map((v, i) => color[i] * color[3] + v * (1 - color[3]));
         for (const item of chain) {
           const st = getComputedStyle(item);
-          if (item === el && st.backgroundImage !== 'none') { gradient = true; break; }
+          if (st.backgroundImage !== 'none') {
+            const tokens = st.backgroundImage.match(/#[0-9a-f]{3,8}|rgba?\\([^)]*\\)/gi) || [];
+            const stops = tokens.map(parse).filter(color => color && color[3] > 0);
+            if (stops.length) backgrounds = backgrounds.flatMap(bg => stops.map(color => blend(bg, color)));
+          }
           const color = parse(st.backgroundColor);
-          if (color && color[3] > 0) bg = bg.map((v, i) => color[i] * color[3] + v * (1 - color[3]));
+          if (color && color[3] > 0) backgrounds = backgrounds.map(bg => blend(bg, color));
           const nodeOpacity = parseFloat(st.opacity); if (Number.isFinite(nodeOpacity)) opacity *= nodeOpacity;
         }
-        if (gradient) continue;
         const fg = parse(cs.color);
         if (!fg) continue;
         const alpha = fg[3] * opacity;
-        const visibleFg = fg.slice(0, 3).map((v, i) => v * alpha + bg[i] * (1 - alpha));
-        const ratio = (Math.max(luminance(visibleFg), luminance(bg)) + .05) / (Math.min(luminance(visibleFg), luminance(bg)) + .05);
+        const ratios = backgrounds.map(bg => {
+          const visibleFg = fg.slice(0, 3).map((v, i) => v * alpha + bg[i] * (1 - alpha));
+          return (Math.max(luminance(visibleFg), luminance(bg)) + .05) / (Math.min(luminance(visibleFg), luminance(bg)) + .05);
+        });
+        const ratio = Math.min(...ratios);
         const size = parseFloat(cs.fontSize) || 16, weight = parseInt(cs.fontWeight, 10) || 400;
         results.push({selector, text:el.textContent.trim().slice(0,32), ratio:Number(ratio.toFixed(2)), threshold:(size >= 24 || (size >= 18.66 && weight >= 700)) ? 3 : 4.5, foreground:cs.color, background:bg.map(v=>Math.round(v))});
       }
