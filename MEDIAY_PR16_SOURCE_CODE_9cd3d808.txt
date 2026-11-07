@@ -10695,4 +10695,4 @@ BLOB SHA: 4540d6124f9c82578d4f9b4e1b78a10c118fc711
 
 
 END OF SOURCE BUNDLE.
-Included text files: 53. Excluded: binary PNG icons, ONNX/base64 model fixture, third-party vendor libraries/bundles (FFmpeg, Anime, Dexie, Fabric, Transformers runtime), and old embedded snapshot.
+Included text files: 45. Excluded: binary PNG icons, ONNX/base64 model fixture, third-party vendor libraries/bundles (FFmpeg, Anime, Dexie, Fabric, Transformers runtime), and old embedded snapshot.
